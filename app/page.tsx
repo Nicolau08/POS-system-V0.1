@@ -55,8 +55,56 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { supabase, isConfigured } from '@/lib/supabase';
 
+const normalizeUnknownError = (error: any) => {
+  if (error instanceof Error) {
+    return {
+      message: error.message || 'Erro desconhecido',
+      details: (error as any).details || 'Sem detalhes adicionais',
+      hint: (error as any).hint || 'Sem sugestões',
+      code: (error as any).code || 'Sem código de erro',
+      raw: error,
+    };
+  }
+
+  if (typeof Event !== 'undefined' && error instanceof Event) {
+    return {
+      message: `Evento inesperado: ${error.type || 'desconhecido'}`,
+      details: 'O navegador retornou um evento em vez de um erro estruturado.',
+      hint: 'Verifique a ligação com a internet ou tente novamente.',
+      code: 'BROWSER_EVENT',
+      raw: error,
+    };
+  }
+
+  if (typeof error === 'string') {
+    return {
+      message: error,
+      details: 'Sem detalhes adicionais',
+      hint: 'Sem sugestões',
+      code: 'STRING_ERROR',
+      raw: error,
+    };
+  }
+
+  return {
+    message: error?.message || error?.error_description || error?.error || 'Erro desconhecido',
+    details: error?.details || 'Sem detalhes adicionais',
+    hint: error?.hint || 'Sem sugestões',
+    code: error?.code || 'Sem código de erro',
+    raw: error,
+  };
+};
+
 // --- Error Handling ---
 const handleSupabaseError = (error: any, operation: string) => {
+  const normalized = normalizeUnknownError(error);
+  console.error(`Supabase Error (${operation}): ${normalized.message}`, normalized.raw);
+  return {
+    message: normalized.message,
+    details: normalized.details,
+    hint: normalized.hint,
+    code: normalized.code,
+  };
   let message = 'Erro desconhecido';
   if (typeof error === 'string') message = error;
   else if (error?.message) message = error.message;
@@ -109,6 +157,26 @@ interface User {
   role: 'admin' | 'user';
   avatar?: string;
 }
+
+const getDocumentYear = (date = new Date()) => date.getFullYear();
+
+const formatDocumentNumber = (sequence: number, date = new Date()) =>
+  `${getDocumentYear(date)}/${String(sequence).padStart(4, '0')}`;
+
+const getDocumentCounterStorageKey = (year: number) => `pos_vd_counter_${year}`;
+
+const extractVDSequence = (documentNumber: string | null | undefined, year: number) => {
+  if (typeof documentNumber !== 'string') return null;
+  const match = documentNumber.match(new RegExp(`^${year}/(\\d{4,})$`));
+  if (!match) return null;
+
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isDuplicateDocumentNumberError = (error: any) =>
+  error?.code === '23505' ||
+  typeof error?.message === 'string' && error.message.includes('idx_orders_document_number_unique');
 
 const DEFAULT_PRODUCTS: Product[] = [
   { id: '550e8400-e29b-41d4-a716-446655440001', name: 'CARNES', price: 0, category: 'Category', color: 'bg-zinc-800' },
@@ -346,7 +414,8 @@ export default function POSPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
-  const [lastOrderNumber, setLastOrderNumber] = useState(1);
+  const [nextVDNumber, setNextVDNumber] = useState(1);
+  const [currentReceiptNumber, setCurrentReceiptNumber] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [salesMode, setSalesMode] = useState<'customer' | 'table'>('customer');
   const [docType, setDocType] = useState<'VD' | 'TK' | 'FP'>('VD');
@@ -361,7 +430,17 @@ export default function POSPage() {
   const [cashierEndDate, setCashierEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentDate, setCurrentDate] = useState('');
   const familiesScrollRef = useRef<HTMLDivElement | null>(null);
-  const familiesDragStateRef = useRef({ isDragging: false, startX: 0, startScrollLeft: 0, moved: false });
+  const familiesMomentumFrameRef = useRef<number | null>(null);
+  const familiesDragStateRef = useRef({
+    isDragging: false,
+    pointerId: null as number | null,
+    startX: 0,
+    lastX: 0,
+    startScrollLeft: 0,
+    lastMoveTime: 0,
+    velocity: 0,
+    moved: false,
+  });
 
   // Stock Modal State
   const [isStockModalOpen, setIsStockModalOpen] = useState(false);
@@ -376,10 +455,117 @@ export default function POSPage() {
   }, []);
 
   useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (!event.reason) return;
+
+      const normalized = normalizeUnknownError(event.reason);
+      const isBrowserEvent = normalized.code === 'BROWSER_EVENT';
+
+      if (!isBrowserEvent) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      console.warn('Unhandled promise rejection interceptada:', normalized.message, normalized.raw);
+    };
+
+    const handleWindowError = (event: ErrorEvent) => {
+      const normalized = normalizeUnknownError(event.error || event);
+      const isBrowserEvent = normalized.code === 'BROWSER_EVENT' || !event.error;
+
+      if (!isBrowserEvent) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      console.warn('Erro global do navegador interceptado:', normalized.message, normalized.raw);
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection, { capture: true });
+    window.addEventListener('error', handleWindowError, { capture: true });
+
+    return () => {
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection, { capture: true });
+      window.removeEventListener('error', handleWindowError, { capture: true });
+    };
+  }, []);
+
+  const syncNextVDNumber = useCallback(async () => {
+    const year = getDocumentYear();
+    const localSequence = Number(localStorage.getItem(getDocumentCounterStorageKey(year)) || '1');
+
+    if (!isConfigured) {
+      setNextVDNumber(localSequence);
+      return;
+    }
+
+    try {
+      const startOfYear = `${year}-01-01T00:00:00`;
+      const endOfYear = `${year}-12-31T23:59:59`;
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('document_number, created_at')
+        .eq('doc_type', 'VD')
+        .gte('created_at', startOfYear)
+        .lte('created_at', endOfYear);
+
+      if (error) throw error;
+
+      const maxSequence = (data || []).reduce((highest, order: any) => {
+        const parsed = extractVDSequence(order.document_number, year);
+        return parsed ? Math.max(highest, parsed) : highest;
+      }, 0);
+
+      const nextSequence = Math.max(localSequence, maxSequence + 1);
+      localStorage.setItem(getDocumentCounterStorageKey(year), String(nextSequence));
+      setNextVDNumber(nextSequence);
+    } catch (error) {
+      const fallbackSequence = Math.max(1, localSequence);
+      handleSupabaseError(error, 'syncNextVDNumber');
+      setNextVDNumber(fallbackSequence);
+    }
+  }, []);
+
+  const getNextVDSequence = useCallback(async (date = new Date()) => {
+    const year = getDocumentYear(date);
+    const localSequence = Number(localStorage.getItem(getDocumentCounterStorageKey(year)) || '1');
+
+    if (!isConfigured) {
+      return Math.max(1, localSequence);
+    }
+
+    const startOfYear = `${year}-01-01T00:00:00`;
+    const endOfYear = `${year}-12-31T23:59:59`;
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('document_number, created_at')
+      .eq('doc_type', 'VD')
+      .gte('created_at', startOfYear)
+      .lte('created_at', endOfYear);
+
+    if (error) throw error;
+
+    const maxSequence = (data || []).reduce((highest, order: any) => {
+      const parsed = extractVDSequence(order.document_number, year);
+      return parsed ? Math.max(highest, parsed) : highest;
+    }, 0);
+
+    return Math.max(1, localSequence, maxSequence + 1);
+  }, []);
+
+  useEffect(() => {
     const node = familiesScrollRef.current;
     if (!node) return;
 
+    const stopMomentum = () => {
+      if (familiesMomentumFrameRef.current !== null) {
+        window.cancelAnimationFrame(familiesMomentumFrameRef.current);
+        familiesMomentumFrameRef.current = null;
+      }
+    };
+
     const handleWheel = (event: WheelEvent) => {
+      stopMomentum();
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
         event.preventDefault();
         node.scrollLeft += event.deltaY;
@@ -390,29 +576,101 @@ export default function POSPage() {
     };
 
     node.addEventListener('wheel', handleWheel, { passive: false });
-    const handleMouseMove = (event: MouseEvent) => {
-      const state = familiesDragStateRef.current;
-      if (!state.isDragging) return;
-      const delta = event.clientX - state.startX;
-      if (Math.abs(delta) > 4) {
-        state.moved = true;
-      }
-      node.scrollLeft = state.startScrollLeft - delta;
-    };
-
-    const handleMouseUp = () => {
-      familiesDragStateRef.current.isDragging = false;
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
 
     return () => {
+      stopMomentum();
       node.removeEventListener('wheel', handleWheel);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
+
+  const stopFamiliesMomentum = useCallback(() => {
+    if (familiesMomentumFrameRef.current !== null) {
+      window.cancelAnimationFrame(familiesMomentumFrameRef.current);
+      familiesMomentumFrameRef.current = null;
+    }
+  }, []);
+
+  const startFamiliesMomentum = useCallback((initialVelocity: number) => {
+    const node = familiesScrollRef.current;
+    if (!node) return;
+
+    stopFamiliesMomentum();
+
+    let velocity = initialVelocity;
+
+    const step = () => {
+      if (Math.abs(velocity) < 0.2) {
+        familiesMomentumFrameRef.current = null;
+        return;
+      }
+
+      node.scrollLeft -= velocity;
+      velocity *= 0.94;
+      familiesMomentumFrameRef.current = window.requestAnimationFrame(step);
+    };
+
+    familiesMomentumFrameRef.current = window.requestAnimationFrame(step);
+  }, [stopFamiliesMomentum]);
+
+  const handleFamiliesPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const node = familiesScrollRef.current;
+    if (!node) return;
+
+    stopFamiliesMomentum();
+    familiesDragStateRef.current = {
+      isDragging: true,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      lastX: event.clientX,
+      startScrollLeft: node.scrollLeft,
+      lastMoveTime: performance.now(),
+      velocity: 0,
+      moved: false,
+    };
+  }, [stopFamiliesMomentum]);
+
+  const handleFamiliesPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const node = familiesScrollRef.current;
+    const state = familiesDragStateRef.current;
+    if (!node || !state.isDragging || state.pointerId !== event.pointerId) return;
+
+    const delta = event.clientX - state.startX;
+    const movement = event.clientX - state.lastX;
+    const now = performance.now();
+    const elapsed = Math.max(now - state.lastMoveTime, 1);
+
+    if (Math.abs(delta) > 4) {
+      if (!state.moved) {
+        node.setPointerCapture(event.pointerId);
+      }
+      state.moved = true;
+    }
+
+    state.velocity = movement / elapsed * 16;
+    state.lastX = event.clientX;
+    state.lastMoveTime = now;
+    node.scrollLeft = state.startScrollLeft - delta;
+  }, []);
+
+  const handleFamiliesPointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const node = familiesScrollRef.current;
+    const state = familiesDragStateRef.current;
+    if (!node || state.pointerId !== event.pointerId) return;
+
+    if (node.hasPointerCapture(event.pointerId)) {
+      node.releasePointerCapture(event.pointerId);
+    }
+
+    familiesDragStateRef.current = {
+      ...state,
+      isDragging: false,
+      pointerId: null,
+    };
+
+    if (state.moved) {
+      startFamiliesMomentum(state.velocity);
+    }
+  }, [startFamiliesMomentum]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
@@ -473,9 +731,9 @@ export default function POSPage() {
 
   const buildPrintReceiptMarkup = () => {
     const now = new Date();
-    const orderCode = `${now.getFullYear()}/${String(lastOrderNumber).padStart(4, '0')}`;
+    const orderCode = currentReceiptNumber || formatDocumentNumber(nextVDNumber, now);
     const customerLabel = selectedCustomer ? selectedCustomer.name : 'Consumidor Final';
-    const documentLabel = isSaleFinalized ? 'VD' : 'Cons. Doc';
+    const documentLabel = isSaleFinalized ? docType : 'Cons. Doc';
     const totalPaid = !isSaleFinalized
       ? 0
       : !isMultiplePayment
@@ -631,8 +889,14 @@ export default function POSPage() {
     const savedLogin = localStorage.getItem('isLoggedIn');
     const savedUser = localStorage.getItem('currentUser');
     if (savedLogin === 'true' && savedUser) {
-      setIsLoggedIn(true);
-      setCurrentUser(JSON.parse(savedUser));
+      try {
+        setIsLoggedIn(true);
+        setCurrentUser(JSON.parse(savedUser));
+      } catch (error) {
+        console.error('Error restoring auth session:', error);
+        localStorage.removeItem('currentUser');
+        localStorage.setItem('isLoggedIn', 'false');
+      }
     }
 
     // Cart
@@ -701,8 +965,14 @@ export default function POSPage() {
       } else {
         localStorage.removeItem('currentUser');
       }
+      window.dispatchEvent(new Event('pos-auth-changed'));
     }
   }, [isLoggedIn, currentUser, isAuthRestored]);
+
+  useEffect(() => {
+    if (!isAuthRestored) return;
+    syncNextVDNumber();
+  }, [isAuthRestored, syncNextVDNumber]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -953,6 +1223,7 @@ export default function POSPage() {
     setIsMultiplePayment(false);
     setMultiplePaymentAmount('');
     setSelectedCustomer(null);
+    setCurrentReceiptNumber(null);
     setDocType('VD');
     if (salesMode === 'table' && selectedTableId) {
       setTableOrders(prev => {
@@ -1015,11 +1286,21 @@ export default function POSPage() {
   };
 
   const handleFinalizePayment = async () => {
+    const saleDate = new Date();
+    const saleTimestamp = saleDate.toISOString();
+    const isVDDocument = docType === 'VD';
     if (!isConfigured) {
+      const offlineSequence = isVDDocument ? nextVDNumber : null;
+      const offlineDocumentNumber = isVDDocument && offlineSequence ? formatDocumentNumber(offlineSequence, saleDate) : null;
       alert('Configuração do Supabase ausente ou inválida. O pedido não será salvo no banco de dados, mas o recibo será gerado.');
+      setCurrentReceiptNumber(offlineDocumentNumber);
       setIsReceiptModalOpen(true);
       setIsSaleFinalized(true);
-      setLastOrderNumber(prev => prev + 1);
+      if (isVDDocument && offlineSequence) {
+        const updatedNext = offlineSequence + 1;
+        setNextVDNumber(updatedNext);
+        localStorage.setItem(getDocumentCounterStorageKey(getDocumentYear(saleDate)), String(updatedNext));
+      }
       setIsPaymentModalOpen(false);
       return;
     }
@@ -1034,29 +1315,51 @@ export default function POSPage() {
     
     // Save to Supabase
     try {
-      const orderData = {
-        customer_id: selectedCustomer?.id || null,
-        table_number: selectedTableId ? String(selectedTableId) : null,
-        total: total,
-        subtotal: subtotal,
-        tax: tax,
-        discount: totalDiscount,
-        payment_method: isMultiplePayment ? 'multiple' : paymentMethod,
-        received_amount: amount,
-        change_amount: change,
-        status: 'completed',
-        created_at: new Date().toISOString(),
-        // We might want to store the multiple payments in a separate table or as JSON if the schema allows
-        // For now, we'll store the primary method or 'multiple'
-      };
+      let order: any = null;
+      let usedSequence: number | null = null;
+      let usedDocumentNumber: string | null = null;
 
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .insert(orderData)
-        .select()
-        .single();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        usedSequence = isVDDocument ? await getNextVDSequence(saleDate) : null;
+        usedDocumentNumber = isVDDocument && usedSequence ? formatDocumentNumber(usedSequence, saleDate) : null;
 
-      if (orderError) throw orderError;
+        const orderData = {
+          customer_id: selectedCustomer?.id || null,
+          table_number: selectedTableId ? String(selectedTableId) : null,
+          total: total,
+          subtotal: subtotal,
+          tax: tax,
+          discount: totalDiscount,
+          payment_method: isMultiplePayment ? 'multiple' : paymentMethod,
+          received_amount: amount,
+          change_amount: change,
+          doc_type: docType,
+          document_number: usedDocumentNumber,
+          status: 'completed',
+          created_at: saleTimestamp,
+          // We might want to store the multiple payments in a separate table or as JSON if the schema allows
+          // For now, we'll store the primary method or 'multiple'
+        };
+
+        const { data: insertedOrder, error: orderError } = await supabase
+          .from('orders')
+          .insert(orderData)
+          .select()
+          .single();
+
+        if (!orderError) {
+          order = insertedOrder;
+          break;
+        }
+
+        if (!isVDDocument || !isDuplicateDocumentNumberError(orderError) || attempt === 2) {
+          throw orderError;
+        }
+      }
+
+      if (!order) {
+        throw new Error('Não foi possível gerar um número de VD único.');
+      }
 
       // Save order items
       const orderItems = cart.map(item => ({
@@ -1075,9 +1378,14 @@ export default function POSPage() {
       if (itemsError) throw itemsError;
 
       // Open receipt modal for manual printing
+      setCurrentReceiptNumber(usedDocumentNumber);
       setIsReceiptModalOpen(true);
       setIsSaleFinalized(true);
-      setLastOrderNumber(prev => prev + 1);
+      if (isVDDocument && usedSequence) {
+        const updatedNext = usedSequence + 1;
+        setNextVDNumber(updatedNext);
+        localStorage.setItem(getDocumentCounterStorageKey(getDocumentYear(saleDate)), String(updatedNext));
+      }
       setIsPaymentModalOpen(false);
 
     } catch (error: any) {
@@ -1085,9 +1393,10 @@ export default function POSPage() {
       alert(`Erro ao salvar o pedido: ${err.message}\n\nO recibo será exibido para impressão.`);
       
       // Still allow viewing receipt even if saving fails
+      setCurrentReceiptNumber(null);
       setIsReceiptModalOpen(true);
       setIsSaleFinalized(true);
-      setLastOrderNumber(prev => prev + 1);
+      void syncNextVDNumber();
       setIsPaymentModalOpen(false);
     }
   };
@@ -1287,6 +1596,9 @@ export default function POSPage() {
           const foundUser = userToAuth.find(u => u.id === selectedLoginUser?.id);
           
           if (foundUser && loginPassword === foundUser.password) {
+            localStorage.setItem('isLoggedIn', 'true');
+            localStorage.setItem('currentUser', JSON.stringify(foundUser));
+            window.dispatchEvent(new Event('pos-auth-changed'));
             setCurrentUser(foundUser);
             setIsLoggedIn(true);
             setLoginError(false);
@@ -1375,17 +1687,12 @@ export default function POSPage() {
           <div className="flex-1 p-4 overflow-y-auto scrollbar-hide">
             <div
               ref={familiesScrollRef}
-              className="mb-4 max-w-full overflow-x-auto scrollbar-hide"
-              onMouseDown={(e) => {
-                const node = familiesScrollRef.current;
-                if (!node) return;
-                familiesDragStateRef.current = {
-                  isDragging: true,
-                  startX: e.clientX,
-                  startScrollLeft: node.scrollLeft,
-                  moved: false,
-                };
-              }}
+              className="mb-4 max-w-full overflow-x-auto scrollbar-hide cursor-grab active:cursor-grabbing select-none [touch-action:pan-y]"
+              onPointerDown={handleFamiliesPointerDown}
+              onPointerMove={handleFamiliesPointerMove}
+              onPointerUp={handleFamiliesPointerRelease}
+              onPointerCancel={handleFamiliesPointerRelease}
+              onLostPointerCapture={handleFamiliesPointerRelease}
               onClickCapture={(e) => {
                 if (familiesDragStateRef.current.moved) {
                   e.preventDefault();
@@ -2526,7 +2833,7 @@ export default function POSPage() {
                     <span>Atendido por: {currentUser?.name || 'Admin'}</span>
                   </div>
                   <div className="text-[12px] font-bold mt-1">
-                    {isSaleFinalized ? 'VD' : 'Cons. Doc'} nº: {new Date().getFullYear()}/{String(lastOrderNumber).padStart(4, '0')}
+                    {isSaleFinalized ? docType : 'Cons. Doc'} nº: {currentReceiptNumber || formatDocumentNumber(nextVDNumber)}
                   </div>
                 </div>
 
@@ -2622,6 +2929,7 @@ export default function POSPage() {
                       setReceivedAmount('');
                       setGlobalDiscount(null);
                       setSelectedCustomer(null);
+                      setCurrentReceiptNumber(null);
                       setIsSaleFinalized(false);
                       setPayments([]);
                       setIsMultiplePayment(false);
@@ -2992,6 +3300,9 @@ export default function POSPage() {
                     icon={<LogOut size={18} />} 
                     label="Logout" 
                     onClick={() => {
+                      localStorage.setItem('isLoggedIn', 'false');
+                      localStorage.removeItem('currentUser');
+                      window.dispatchEvent(new Event('pos-auth-changed'));
                       setIsLoggedIn(false);
                       setCurrentUser(null);
                       setIsAdminSidebarOpen(false);
@@ -3146,7 +3457,7 @@ export default function POSPage() {
                 {/* Left Sidebar - Status Buttons */}
                 <div className="w-48 p-4 border-r border-zinc-800 flex flex-col gap-2 bg-zinc-900/30">
                   <button 
-                    className={`h-16 rounded font-bold text-xs capitalize transition-all ${isCashierOpen ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-700 hover:bg-red-600'} text-white`}
+                    className={`h-16 rounded font-bold text-base leading-tight capitalize transition-all ${isCashierOpen ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-700 hover:bg-red-600'} text-white`}
                     onClick={() => {
                       if (isCashierOpen) {
                         showToast("O caixa já está aberto", "info");
@@ -3159,7 +3470,7 @@ export default function POSPage() {
                     Abrir<br/>Caixa
                   </button>
                   <button 
-                    className={`h-16 rounded font-bold text-xs capitalize transition-all ${isSessionOpen ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'} text-white`}
+                    className={`h-16 rounded font-bold text-base leading-tight capitalize transition-all ${isSessionOpen ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'} text-white`}
                     onClick={() => {
                       if (!isCashierOpen) {
                         showToast("O caixa deve estar aberto para abrir uma sessão", "error");
@@ -3176,7 +3487,7 @@ export default function POSPage() {
                   
                   <div className="mt-auto flex flex-col gap-2">
                     <button 
-                      className={`h-16 rounded font-bold text-xs capitalize transition-all ${isSessionOpen ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}
+                      className={`h-16 rounded font-bold text-base leading-tight capitalize transition-all ${isSessionOpen ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}
                       onClick={() => {
                         if (!isSessionOpen) {
                           showToast("Não existe uma sessão aberta para fechar", "error");
@@ -3189,7 +3500,7 @@ export default function POSPage() {
                       Fechar<br/>sessão
                     </button>
                     <button 
-                      className={`h-16 rounded font-bold text-xs capitalize transition-all ${isCashierOpen ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}
+                      className={`h-16 rounded font-bold text-base leading-tight capitalize transition-all ${isCashierOpen ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-500'}`}
                       onClick={() => {
                         if (!isCashierOpen) {
                           showToast("O caixa já está fechado", "info");
@@ -3211,14 +3522,14 @@ export default function POSPage() {
                   {/* Documento de Caixa Section */}
                   <section>
                     <div className="flex items-center gap-4 mb-4">
-                      <h3 className="text-xs font-bold text-zinc-400 capitalize tracking-widest whitespace-nowrap">Documento de caixa</h3>
+                      <h3 className="text-sm md:text-base font-bold text-zinc-400 capitalize tracking-[0.2em] whitespace-nowrap">Documento de caixa</h3>
                       <div className="h-px w-full bg-zinc-800" />
                     </div>
                     <div className="grid grid-cols-4 gap-3">
                       {['Vale', 'Saída Caixa', 'Entrada Caixa', 'Vale liquidação', 'Saída de fundo de maneio', 'Entrada de fundo de maneio', 'Recibo de adiantamento'].map((doc) => (
                         <button 
                           key={doc}
-                          className="h-16 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-bold text-[10px] capitalize transition-all border border-zinc-700/50 flex items-center justify-center text-center px-2"
+                          className="h-16 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-bold text-sm md:text-base leading-tight capitalize transition-all border border-zinc-700/50 flex items-center justify-center text-center px-3"
                         >
                           {doc}
                         </button>
@@ -3229,7 +3540,7 @@ export default function POSPage() {
                   {/* Relatórios de Caixa Section */}
                   <section>
                     <div className="flex items-center gap-4 mb-4">
-                      <h3 className="text-xs font-bold text-zinc-400 capitalize tracking-widest whitespace-nowrap">Relatórios de caixa</h3>
+                      <h3 className="text-sm md:text-base font-bold text-zinc-400 capitalize tracking-[0.2em] whitespace-nowrap">Relatórios de caixa</h3>
                       <div className="h-px w-full bg-zinc-800" />
                     </div>
                     <div className="grid grid-cols-4 gap-3">
@@ -3245,7 +3556,7 @@ export default function POSPage() {
                       ].map((report) => (
                         <button 
                           key={report}
-                          className="h-16 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-bold text-[10px] capitalize transition-all border border-zinc-700/50 flex items-center justify-center text-center px-2"
+                          className="h-16 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-bold text-sm md:text-base leading-tight capitalize transition-all border border-zinc-700/50 flex items-center justify-center text-center px-3"
                         >
                           {report}
                         </button>
@@ -3258,25 +3569,25 @@ export default function POSPage() {
               {/* Bottom Row - Red Buttons */}
               <div className="p-4 border-t border-zinc-800 flex gap-3">
                 <button 
-                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-[10px] capitalize transition-all flex flex-col items-center justify-center"
+                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-sm md:text-base capitalize transition-all flex flex-col items-center justify-center"
                   onClick={() => showToast("Dia fechado com sucesso", "success")}
                 >
-                  <span className="text-[8px]">Fechar dia:</span>
-                  <span className="text-[9px] leading-tight">{new Date().toLocaleDateString('pt-PT', { weekday: 'long' })}</span>
-                  <span className="text-[9px] leading-tight">{new Date().toISOString().split('T')[0]}</span>
+                  <span className="text-[10px] md:text-xs">Fechar dia:</span>
+                  <span className="text-xs md:text-sm leading-tight">{new Date().toLocaleDateString('pt-PT', { weekday: 'long' })}</span>
+                  <span className="text-xs md:text-sm leading-tight">{new Date().toISOString().split('T')[0]}</span>
                 </button>
                 <button 
-                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-[10px] capitalize transition-all"
+                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-sm md:text-base leading-tight capitalize transition-all"
                 >
                   Registar relógio de ponto
                 </button>
                 <button 
-                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-[10px] capitalize transition-all"
+                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-sm md:text-base leading-tight capitalize transition-all"
                 >
                   Transferir vendas ativas
                 </button>
                 <button 
-                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-[10px] capitalize transition-all"
+                  className="flex-1 h-14 bg-red-600 hover:bg-red-500 text-white rounded font-bold text-sm md:text-base leading-tight capitalize transition-all"
                 >
                   Transferência de turno
                 </button>
@@ -3285,32 +3596,32 @@ export default function POSPage() {
               {/* Footer Inputs */}
               <div className="p-4 bg-zinc-900/50 border-t border-zinc-800 grid grid-cols-3 gap-6">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold text-zinc-500 capitalize">Impressora</label>
+                  <label className="text-xs md:text-sm font-bold text-zinc-500 capitalize">Impressora</label>
                   <select 
                     value={cashierPrinter}
                     onChange={(e) => setCashierPrinter(e.target.value)}
-                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-sm text-white focus:outline-none focus:border-red-500"
+                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-base text-white focus:outline-none focus:border-red-500"
                   >
                     <option value="Impressora do evento">Impressora do evento</option>
                     <option value="Impressora térmica">Impressora térmica</option>
                   </select>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold text-zinc-500 capitalize">Dia inicial</label>
+                  <label className="text-xs md:text-sm font-bold text-zinc-500 capitalize">Dia inicial</label>
                   <input 
                     type="date"
                     value={cashierStartDate}
                     onChange={(e) => setCashierStartDate(e.target.value)}
-                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-sm text-white focus:outline-none focus:border-red-500"
+                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-base text-white focus:outline-none focus:border-red-500"
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold text-zinc-500 capitalize">Dia final</label>
+                  <label className="text-xs md:text-sm font-bold text-zinc-500 capitalize">Dia final</label>
                   <input 
                     type="date"
                     value={cashierEndDate}
                     onChange={(e) => setCashierEndDate(e.target.value)}
-                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-sm text-white focus:outline-none focus:border-red-500"
+                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-base text-white focus:outline-none focus:border-red-500"
                   />
                 </div>
               </div>

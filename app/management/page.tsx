@@ -32,6 +32,7 @@ import {
 import { supabase, isConfigured } from '@/lib/supabase';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
+import ReportsManager from './components/ReportsManager';
 
 // Dynamically import Recharts to avoid SSR issues
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -119,23 +120,27 @@ export default function ManagementPage() {
   const [salesByHour, setSalesByHour] = useState<{hour: string, sales: number}[]>([]);
   const [topCustomers, setTopCustomers] = useState<{name: string, total: number}[]>([]);
 
-  useEffect(() => {
-    // Restore Auth State
+  const restoreAuthState = React.useCallback(() => {
     const savedLogin = localStorage.getItem('isLoggedIn');
     const savedUser = localStorage.getItem('currentUser');
     if (savedLogin === 'true' && savedUser) {
-      setIsLoggedIn(true);
-      setCurrentUser(JSON.parse(savedUser));
-    } else {
-      // If not logged in, redirect to main page
-      router.push('/');
+      try {
+        setIsLoggedIn(true);
+        setCurrentUser(JSON.parse(savedUser));
+        return true;
+      } catch (error) {
+        console.error('Error restoring management session:', error);
+        localStorage.removeItem('currentUser');
+        localStorage.setItem('isLoggedIn', 'false');
+      }
     }
-    setIsAuthRestored(true);
-    
-    fetchDashboardData();
-  }, [router]);
 
-  const fetchDashboardData = async () => {
+    setIsLoggedIn(false);
+    setCurrentUser(null);
+    return false;
+  }, []);
+
+  const fetchDashboardData = React.useCallback(async () => {
     if (!isConfigured) {
       console.warn('Supabase não configurado. Painel de gestão desativado.');
       setIsLoading(false);
@@ -275,7 +280,64 @@ export default function ManagementPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const isAuthenticated = restoreAuthState();
+    setIsAuthRestored(true);
+
+    if (isAuthenticated) {
+      fetchDashboardData();
+      return;
+    }
+
+    router.replace('/');
+  }, [fetchDashboardData, restoreAuthState, router]);
+
+  useEffect(() => {
+    const syncSession = () => {
+      const isAuthenticated = restoreAuthState();
+
+      if (!isAuthenticated) {
+        router.replace('/');
+        return;
+      }
+
+      router.refresh();
+      fetchDashboardData();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncSession();
+      }
+    };
+
+    window.addEventListener('focus', syncSession);
+    window.addEventListener('storage', syncSession);
+    window.addEventListener('pos-auth-changed', syncSession as EventListener);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', syncSession);
+      window.removeEventListener('storage', syncSession);
+      window.removeEventListener('pos-auth-changed', syncSession as EventListener);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [fetchDashboardData, restoreAuthState, router]);
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      router.refresh();
+      fetchDashboardData();
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
+  }, [fetchDashboardData, isLoggedIn, router]);
 
   // Memoize components to prevent unnecessary re-renders
   const sidebarItems = useMemo(() => [
@@ -297,8 +359,26 @@ export default function ManagementPage() {
     router.push('/');
   };
 
-  if (!isLoggedIn || !isAuthRestored) {
-    return null;
+  if (!isAuthRestored) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#1a1a1a] text-zinc-400">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 size={18} className="animate-spin text-blue-500" />
+          Restaurando sessao...
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#1a1a1a] text-zinc-400">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 size={18} className="animate-spin text-blue-500" />
+          Redirecionando...
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -308,13 +388,30 @@ export default function ManagementPage() {
           CONFIGURAÇÃO DO SUPABASE AUSENTE OU INVÁLIDA: Adicione NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY nas Definições (Settings).
         </div>
       )}
+      <header className="h-10 shrink-0 bg-[#141414] border-b border-zinc-800/30 flex items-center justify-between px-4">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={handleBack}
+            className="p-1 hover:bg-zinc-800 rounded transition-colors text-blue-500"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <span className="text-xs font-medium text-zinc-400">Gerenciamento â€¢ Painel de Controle</span>
+        </div>
+        <button 
+          onClick={handleBack}
+          className="p-1 hover:bg-red-600/20 hover:text-red-500 rounded transition-colors text-zinc-500"
+        >
+          <X size={16} />
+        </button>
+      </header>
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside 
           className={`bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-all duration-300 relative ${isSidebarCollapsed ? 'w-16' : ''}`}
           style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
         >
-          <div className="flex-1 py-2 overflow-y-auto custom-scrollbar">
+          <div className="flex-1 pt-0 pb-2 overflow-y-auto custom-scrollbar">
             {sidebarItems.map((item) => (
               <button
                 key={item.id}
@@ -348,7 +445,7 @@ export default function ManagementPage() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Header Bar */}
-        <header className="h-10 bg-[#0c0c0c] border-b border-zinc-800/30 flex items-center justify-between px-4">
+        <header className="hidden">
           <div className="flex items-center gap-3">
             <button 
               onClick={handleBack}
@@ -532,8 +629,9 @@ export default function ManagementPage() {
 
           {activeTab === 'products' && <ProductsManager />}
           {activeTab === 'inventory' && <InventoryManager />}
+          {activeTab === 'reports' && <ReportsManager />}
           
-          {activeTab !== 'dashboard' && activeTab !== 'products' && activeTab !== 'inventory' && (
+          {activeTab !== 'dashboard' && activeTab !== 'products' && activeTab !== 'inventory' && activeTab !== 'reports' && (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-600 italic">
               <Package size={48} className="mb-4 opacity-20" />
               <p>Módulo {activeTab} em desenvolvimento</p>
