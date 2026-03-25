@@ -14,7 +14,6 @@ import {
   FileText, 
   History, 
   TrendingUp, 
-  ArrowLeft,
   Calendar,
   ChevronLeft,
   ChevronRight,
@@ -355,6 +354,10 @@ export default function ManagementPage() {
     { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
   ], []);
 
+  const currentModuleLabel = useMemo(() => {
+    return sidebarItems.find((item) => item.id === activeTab)?.label ?? 'Painel de Controle';
+  }, [activeTab, sidebarItems]);
+
   const handleBack = () => {
     router.push('/');
   };
@@ -390,17 +393,12 @@ export default function ManagementPage() {
       )}
       <header className="h-10 shrink-0 bg-[#141414] border-b border-zinc-800/30 flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
-          <button 
-            onClick={handleBack}
-            className="p-1 hover:bg-zinc-800 rounded transition-colors text-blue-500"
-          >
-            <ArrowLeft size={16} />
-          </button>
-          <span className="text-xs font-medium text-zinc-400">Gerenciamento â€¢ Painel de Controle</span>
+          <span className="text-sm font-medium text-zinc-300">{`Gerenciamento - ${currentModuleLabel}`}</span>
         </div>
         <button 
           onClick={handleBack}
-          className="p-1 hover:bg-red-600/20 hover:text-red-500 rounded transition-colors text-zinc-500"
+          className="p-1 text-zinc-500 transition-colors hover:text-red-500"
+          aria-label="Fechar gerenciamento"
         >
           <X size={16} />
         </button>
@@ -416,14 +414,14 @@ export default function ManagementPage() {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 transition-colors relative group ${
+                className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors relative group ${
                   activeTab === item.id 
                     ? 'bg-zinc-800/50 text-white shadow-lg shadow-black/20' 
                     : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 <div className="flex-shrink-0">{item.icon}</div>
-                {!isSidebarCollapsed && <span className="text-[13px] font-bold truncate capitalize tracking-tighter">{item.label}</span>}
+                {!isSidebarCollapsed && <span className="text-xs font-medium truncate capitalize leading-none">{item.label}</span>}
                 {isSidebarCollapsed && (
                   <div className="absolute left-full ml-2 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
                     {item.label}
@@ -447,17 +445,12 @@ export default function ManagementPage() {
         {/* Top Header Bar */}
         <header className="hidden">
           <div className="flex items-center gap-3">
-            <button 
-              onClick={handleBack}
-              className="p-1 hover:bg-zinc-800 rounded transition-colors text-blue-500"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <span className="text-xs font-medium text-zinc-400">Gerenciamento • Painel de Controle</span>
+            <span className="text-sm font-medium text-zinc-300">{`Gerenciamento - ${currentModuleLabel}`}</span>
           </div>
           <button 
             onClick={handleBack}
-            className="p-1 hover:bg-red-600/20 hover:text-red-500 rounded transition-colors text-zinc-500"
+            className="p-1 text-zinc-500 transition-colors hover:text-red-500"
+            aria-label="Fechar gerenciamento"
           >
             <X size={16} />
           </button>
@@ -677,3 +670,4 @@ function DashboardWidget({ title, subtitle, isLarge, children }: { title: string
     </div>
   );
 }
+
