@@ -6,7 +6,8 @@ import {
   ClipboardCheck, Zap, HelpCircle, Search, ChevronRight, 
   ChevronDown, Folder, Loader2, AlertCircle
 } from 'lucide-react';
-import { supabase, isConfigured } from '@/lib/supabase';
+
+const API_URL = 'http://localhost:3001';
 
 interface Product {
   id: string;
@@ -51,25 +52,13 @@ export default function InventoryManager() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      if (!isConfigured) {
-        setLoading(false);
-        return;
-      }
-
-      const { data: catData, error: catError } = await supabase
-        .from('categories')
-        .select('*')
-        .order('name');
-      
-      if (catError) throw catError;
+      const [catRes, prodRes] = await Promise.all([
+        fetch(`${API_URL}/categorias`),
+        fetch(`${API_URL}/produtos`)
+      ]);
+      const catData = await catRes.json();
+      const prodData = await prodRes.json();
       setCategories(catData || []);
-
-      const { data: prodData, error: prodError } = await supabase
-        .from('products')
-        .select('*, categories(name)')
-        .order('name');
-      
-      if (prodError) throw prodError;
       setProducts(prodData || []);
     } catch (error) {
       console.error('Error fetching inventory data:', error);

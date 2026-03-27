@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Archive, CreditCard, Percent, User, Utensils } from 'lucide-react';
+import { SyncStatus } from '@/components/SyncStatus';
 
 // Top bar actions extracted from the POS page to reduce page-level JSX size.
 export function Header({
@@ -53,6 +54,7 @@ export function Header({
       />
 
       <div className="flex-grow" />
+      <SyncStatus />
       <button
         onClick={onOpenAdminSidebar}
         className="p-2 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors"

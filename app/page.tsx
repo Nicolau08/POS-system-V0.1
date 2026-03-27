@@ -747,7 +747,7 @@ export default function POSPage() {
 
     void (async () => {
       try {
-        const nextSequence = await posSyncNextVDNumber(new Date());
+        const nextSequence = 1;
         if (cancelled) return;
         setNextVDNumber(nextSequence);
       } catch (error) {
@@ -764,29 +764,25 @@ export default function POSPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      if (!isConfigured) {
-        console.warn('Supabase nÃ£o configurado. A aplicaÃ§Ã£o irÃ¡ operar sem dados carregados.');
-        setProducts([]);
-        setCustomers([]);
-        setUsers([]);
-        setSelectedLoginUser(null);
-        return;
-      }
       try {
-        const [productsData, customersData] = await Promise.all([posFetchProducts(), posFetchCustomers()]);
+        const [productsData, customersData] = await Promise.all([
+          posFetchProducts(),
+          posFetchCustomers()
+        ]);
+  
+        console.log('🔥 PRODUTOS DO BACKEND:', productsData);
+  
         setProducts(productsData || []);
         setCustomers(customersData || []);
       } catch (error) {
-        handleSupabaseError(error, 'fetchProducts/fetchCustomers');
+        console.error('Erro ao carregar dados:', error);
         setProducts([]);
         setCustomers([]);
       }
-
-      // Fetch Users
-      await fetchUsers();
     };
 
-    fetchData();
+    void fetchData();
+    void fetchUsers();
 
     // Check for query param to open sidebar
     const params = new URLSearchParams(window.location.search);
