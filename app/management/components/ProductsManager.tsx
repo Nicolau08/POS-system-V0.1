@@ -8,7 +8,8 @@ import {
   Check, X, Loader2, ArrowRight, AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { supabase, isConfigured } from '@/lib/supabase';
+
+const API_URL = 'http://localhost:3001';
 
 interface Product {
   id: string;
@@ -147,25 +148,13 @@ export default function ProductsManager() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      if (!isConfigured) {
-        setLoading(false);
-        return;
-      }
-
-      const { data: catData, error: catError } = await supabase
-        .from('categories')
-        .select('*')
-        .order('name');
-      
-      if (catError) throw catError;
+      const [catRes, prodRes] = await Promise.all([
+        fetch(`${API_URL}/categorias`),
+        fetch(`${API_URL}/produtos`)
+      ]);
+      const catData = await catRes.json();
+      const prodData = await prodRes.json();
       setCategories(catData || []);
-
-      const { data: prodData, error: prodError } = await supabase
-        .from('products')
-        .select('*, categories(name)')
-        .order('name');
-      
-      if (prodError) throw prodError;
       setProducts(prodData || []);
     } catch (error) {
       console.error('Error fetching products/categories:', error);
@@ -180,7 +169,7 @@ export default function ProductsManager() {
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isConfigured || !newProduct.name || !newProduct.price) return;
+    if (!newProduct.name || !newProduct.price) return;
 
     try {
       let finalCode = Number(newProduct.code);
@@ -191,9 +180,10 @@ export default function ProductsManager() {
         finalCode = maxCode + 1;
       }
 
-      const { error } = await supabase
-        .from('products')
-        .insert([{
+      const response = await fetch(`${API_URL}/produtos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           code: finalCode,
           name: newProduct.name,
           price: Number(newProduct.price),
@@ -209,11 +199,10 @@ export default function ProductsManager() {
           is_service: newProduct.is_service,
           default_quantity: newProduct.default_quantity,
           stock_quantity: Number(newProduct.stock_quantity) || 0,
-          min_stock: Number(newProduct.min_stock) || 0,
-          updated_at: new Date().toISOString()
-        }]);
-
-      if (error) throw error;
+          min_stock: Number(newProduct.min_stock) || 0
+        })
+      });
+      if (!response.ok) throw new Error('Falha ao criar produto');
       
       setIsNewProductModalOpen(false);
       setNewProduct({
@@ -249,15 +238,11 @@ export default function ProductsManager() {
   };
 
   const handleDeleteProduct = async () => {
-    if (!isConfigured || !productToDelete) return;
+    if (!productToDelete) return;
 
     try {
-      const { error } = await supabase
-        .from('products')
-        .delete()
-        .eq('id', productToDelete);
-
-      if (error) throw error;
+      const response = await fetch(`${API_URL}/produtos/${productToDelete}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Falha ao remover produto');
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
       fetchData();
@@ -268,12 +253,13 @@ export default function ProductsManager() {
 
   const handleUpdateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isConfigured || !editingProduct || !editingProduct.name || !editingProduct.price) return;
+    if (!editingProduct || !editingProduct.name || !editingProduct.price) return;
 
     try {
-      const { error } = await supabase
-        .from('products')
-        .update({
+      const response = await fetch(`${API_URL}/produtos/${editingProduct.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           code: Number(editingProduct.code),
           name: editingProduct.name,
           price: Number(editingProduct.price),
@@ -289,12 +275,10 @@ export default function ProductsManager() {
           is_service: editingProduct.is_service,
           default_quantity: editingProduct.default_quantity,
           stock_quantity: Number(editingProduct.stock_quantity) || 0,
-          min_stock: Number(editingProduct.min_stock) || 0,
-          updated_at: new Date().toISOString()
+          min_stock: Number(editingProduct.min_stock) || 0
         })
-        .eq('id', editingProduct.id);
-
-      if (error) throw error;
+      });
+      if (!response.ok) throw new Error('Falha ao atualizar produto');
       
       setIsEditProductModalOpen(false);
       setEditingProduct(null);
