@@ -53,7 +53,17 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { isConfigured } from '@/lib/supabase';
-import type { CartItem, Customer, PaymentEntry, PaymentMethod, Product, User as PosUser } from '@/app/pos/types';
+import { getPosApiBase } from '@/lib/apiBase';
+import type {
+  CartItem,
+  CompanyProfile,
+  Customer,
+  PaymentEntry,
+  PaymentMethod,
+  PaymentMethodOption,
+  Product,
+  User as PosUser,
+} from '@/app/pos/types';
 import { Header } from '@/app/pos/components/Header';
 import { ProductList } from '@/app/pos/components/ProductList';
 import { Cart } from '@/app/pos/components/Cart';
@@ -61,6 +71,7 @@ import { PaymentModal } from '@/app/pos/components/PaymentModal';
 import { CustomerModal } from '@/app/pos/components/CustomerModal';
 import { ReceiptPreview } from '@/app/pos/components/ReceiptPreview';
 import { AdminPanel } from '@/app/pos/components/AdminPanel';
+import { QuotationModal, type QuotationRow } from '@/app/pos/components/QuotationModal';
 import { useCart } from '@/hooks/useCart';
 import { useProducts } from '@/hooks/useProducts';
 import { useAuth } from '@/hooks/useAuth';
@@ -70,17 +81,67 @@ import {
   fetchCustomers as posFetchCustomers,
   fetchProducts as posFetchProducts,
   fetchUsers as posFetchUsers,
+  fetchPaymentMethods as posFetchPaymentMethods,
+  fetchCompanyProfile,
+  fetchDocumentItems,
+  fetchDocuments,
   saveCustomer,
   syncNextVDNumber as posSyncNextVDNumber,
 } from '@/lib/services/posService';
+import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
+
+const FALLBACK_PAYMENT_METHODS: PaymentMethodOption[] = [
+  {
+    id: 'cash',
+    name: 'DINHEIRO',
+    code: 'cash',
+    shortcut: null,
+    position: 1,
+    enabled: true,
+    quickPayment: true,
+    requiredCustomer: false,
+    allowChange: true,
+    markAsPaid: true,
+    printReceipt: true,
+    openCashDrawer: true,
+  },
+  {
+    id: 'card',
+    name: 'CARTAO',
+    code: 'card',
+    shortcut: null,
+    position: 2,
+    enabled: true,
+    quickPayment: true,
+    requiredCustomer: false,
+    allowChange: false,
+    markAsPaid: true,
+    printReceipt: true,
+    openCashDrawer: false,
+  },
+  {
+    id: 'pix',
+    name: 'PIX',
+    code: 'pix',
+    shortcut: null,
+    position: 3,
+    enabled: true,
+    quickPayment: true,
+    requiredCustomer: false,
+    allowChange: false,
+    markAsPaid: true,
+    printReceipt: true,
+    openCashDrawer: false,
+  },
+];
 
 const normalizeUnknownError = (error: any) => {
   if (error instanceof Error) {
     return {
       message: error.message || 'Erro desconhecido',
       details: (error as any).details || 'Sem detalhes adicionais',
-      hint: (error as any).hint || 'Sem sugestÃµes',
-      code: (error as any).code || 'Sem cÃ³digo de erro',
+      hint: (error as any).hint || 'Sem sugestões',
+      code: (error as any).code || 'Sem código de erro',
       raw: error,
     };
   }
@@ -89,7 +150,7 @@ const normalizeUnknownError = (error: any) => {
     return {
       message: `Evento inesperado: ${error.type || 'desconhecido'}`,
       details: 'O navegador retornou um evento em vez de um erro estruturado.',
-      hint: 'Verifique a ligaÃ§Ã£o com a internet ou tente novamente.',
+      hint: 'Verifique a ligação com a internet ou tente novamente.',
       code: 'BROWSER_EVENT',
       raw: error,
     };
@@ -99,7 +160,7 @@ const normalizeUnknownError = (error: any) => {
     return {
       message: error,
       details: 'Sem detalhes adicionais',
-      hint: 'Sem sugestÃµes',
+      hint: 'Sem sugestões',
       code: 'STRING_ERROR',
       raw: error,
     };
@@ -108,8 +169,8 @@ const normalizeUnknownError = (error: any) => {
   return {
     message: error?.message || error?.error_description || error?.error || 'Erro desconhecido',
     details: error?.details || 'Sem detalhes adicionais',
-    hint: error?.hint || 'Sem sugestÃµes',
-    code: error?.code || 'Sem cÃ³digo de erro',
+    hint: error?.hint || 'Sem sugestões',
+    code: error?.code || 'Sem código de erro',
     raw: error,
   };
 };
@@ -142,8 +203,28 @@ const handleSupabaseError = (error: any, operation: string) => {
 
 const getDocumentYear = (date = new Date()) => date.getFullYear();
 
-const formatDocumentNumber = (sequence: number, date = new Date()) =>
-  `${getDocumentYear(date)}/${String(sequence).padStart(4, '0')}`;
+const formatDocumentNumber = (
+  sequence: number,
+  date = new Date(),
+  docType: 'VD' | 'TK' | 'FP' | 'FT' = 'VD'
+) => `${docType}/${getDocumentYear(date)}/${String(sequence).padStart(4, '0')}`;
+
+type QuotationItemRow = {
+  id: string;
+  order_id: string;
+  product_id?: string | null;
+  product_name?: string | null;
+  quantity?: number | null;
+  price?: number | null;
+  discount_amount?: number | null;
+};
+
+const normalizeQuotationToken = (value: string | null | undefined) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
 
 
 function LoginScreen({ 
@@ -331,12 +412,14 @@ export default function POSPage() {
   // Payment Modal State
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+  const [isReceiptPrintEnabled, setIsReceiptPrintEnabled] = useState(true);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [receivedAmount, setReceivedAmount] = useState<string>('');
   const [payments, setPayments] = useState<PaymentEntry[]>([]);
   const [isMultiplePayment, setIsMultiplePayment] = useState(false);
   const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('cash');
   const [multiplePaymentAmount, setMultiplePaymentAmount] = useState('');
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
 
   // Discount Modal State
   const [isDiscountModalOpen, setIsDiscountModalOpen] = useState(false);
@@ -381,10 +464,17 @@ export default function POSPage() {
   } = auth;
   const [nextVDNumber, setNextVDNumber] = useState(1);
   const [currentReceiptNumber, setCurrentReceiptNumber] = useState<string | null>(null);
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [salesMode, setSalesMode] = useState<'customer' | 'table'>('customer');
-  const [docType, setDocType] = useState<'VD' | 'TK' | 'FP'>('VD');
-  const [tableOrders, setTableOrders] = useState<{[key: string]: { cart: CartItem[], globalDiscount: {type: 'value' | 'percentage', amount: number} | null, selectedCustomer: Customer | null, docType: 'VD' | 'TK' | 'FP' }}>({});
+  const [docType, setDocType] = useState<'VD' | 'TK' | 'FP' | 'FT'>('VD');
+  const [finalizedDocType, setFinalizedDocType] = useState<'VD' | 'TK' | 'FP' | 'FT'>('VD');
+  const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
+  const [quotationRows, setQuotationRows] = useState<QuotationRow[]>([]);
+  const [quotationItemsByOrderId, setQuotationItemsByOrderId] = useState<Record<string, QuotationItemRow[]>>({});
+  const [isQuotationLoading, setIsQuotationLoading] = useState(false);
+  const [loadedQuotationSource, setLoadedQuotationSource] = useState<{ sourceId: string; sourceType: 'order' | 'sale' } | null>(null);
+  const [tableOrders, setTableOrders] = useState<{[key: string]: { cart: CartItem[], globalDiscount: {type: 'value' | 'percentage', amount: number} | null, selectedCustomer: Customer | null, docType: 'VD' | 'TK' | 'FP' | 'FT' }}>({});
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [isTableModalOpen, setIsTableModalOpen] = useState(false);
   const [isCashierModalOpen, setIsCashierModalOpen] = useState(false);
@@ -401,6 +491,8 @@ export default function POSPage() {
     return `${day}/${month}/${year}`;
   });
   const familiesScrollRef = useRef<HTMLDivElement | null>(null);
+  const scannerBufferRef = useRef('');
+  const scannerResetTimerRef = useRef<number | null>(null);
   const familiesMomentumFrameRef = useRef<number | null>(null);
   const familiesDragStateRef = useRef({
     isDragging: false,
@@ -581,6 +673,32 @@ export default function POSPage() {
   const formatReceiptAmount = (value: number) => {
     return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}MT`;
   };
+  const isCashPaymentMethod = useCallback(
+    (methodCode: PaymentMethod | null) => {
+      if (!methodCode) return false;
+      const method = paymentMethods.find((item) => item.code === methodCode);
+      if (!method) return String(methodCode).toLowerCase() === 'cash';
+      return method.allowChange || method.code === 'cash';
+    },
+    [paymentMethods]
+  );
+  const paymentLabel = useCallback(
+    (methodCode: PaymentMethod | null) => {
+      if (!methodCode) return 'N/A';
+      const method = paymentMethods.find((item) => item.code === methodCode);
+      return method?.name ?? String(methodCode);
+    },
+    [paymentMethods]
+  );
+  const paymentMethodMarksAsPaid = useCallback(
+    (methodCode: PaymentMethod | null) => {
+      if (!methodCode) return true;
+      const method = paymentMethods.find((item) => item.code === methodCode);
+      if (!method) return true;
+      return method.markAsPaid !== false;
+    },
+    [paymentMethods]
+  );
   const escapeHtml = (value: string) =>
     value
       .replace(/&/g, '&amp;')
@@ -596,35 +714,35 @@ export default function POSPage() {
     const now = new Date();
     const orderCode = currentReceiptNumber || formatDocumentNumber(nextVDNumber, now);
     const customerLabel = selectedCustomer ? selectedCustomer.name : 'Consumidor Final';
-    const documentLabel = isSaleFinalized ? docType : 'Cons. Doc';
+    const documentLabel = isSaleFinalized ? finalizedDocType : 'Cons. Doc';
     const totalPaid = !isSaleFinalized
       ? 0
       : !isMultiplePayment
-        ? (paymentMethod === 'cash' ? parseFloat(receivedAmount || `${total}`) : total)
+        ? (isCashPaymentMethod(paymentMethod) ? parseFloat(receivedAmount || `${total}`) : total)
         : payments.reduce((acc, p) => acc + p.amount, 0);
     const paymentRows = !isSaleFinalized
       ? ''
       : !isMultiplePayment
         ? `
           <div class="print-row payment-row">
-            <span>${escapeHtml(paymentMethod === 'cash' ? 'Dinheiro' : paymentMethod === 'card' ? 'Cartao' : 'M-Pesa')}</span>
+            <span>${escapeHtml(paymentLabel(paymentMethod))}</span>
             <span>${formatReceiptAmount(total)}</span>
           </div>
         `
         : payments.map((p) => `
           <div class="print-row payment-row">
-            <span>${escapeHtml(p.method === 'cash' ? 'Dinheiro' : p.method === 'card' ? 'Cartao' : 'M-Pesa')}</span>
+            <span>${escapeHtml(paymentLabel(p.method))}</span>
             <span>${formatReceiptAmount(p.amount)}</span>
           </div>
         `).join('');
 
-    const hasChange = ((!isMultiplePayment && paymentMethod === 'cash' && receivedAmount !== '') ||
+    const hasChange = ((!isMultiplePayment && isCashPaymentMethod(paymentMethod) && receivedAmount !== '') ||
       (isMultiplePayment && payments.reduce((acc, p) => acc + p.amount, 0) > total));
 
     const shouldShowPaidRow = !isSaleFinalized
       ? false
       : !isMultiplePayment
-        ? paymentMethod === 'cash' && receivedAmount !== '' && parseFloat(receivedAmount || '0') > total
+        ? isCashPaymentMethod(paymentMethod) && receivedAmount !== '' && parseFloat(receivedAmount || '0') > total
         : payments.reduce((acc, p) => acc + p.amount, 0) > total;
 
     const changeAmount = !isMultiplePayment
@@ -640,13 +758,31 @@ export default function POSPage() {
       </div>
     `).join('');
 
+    const hasDiscount = totalDiscount > 0.0001;
+    const discountNet = Math.max(0, originalSubtotal - subtotal);
+    const discountRowHtml = hasDiscount
+      ? `
+          <div class="print-row discount-row">
+            <span>Desconto:</span>
+            <span>-${formatReceiptAmount(discountNet)}</span>
+          </div>
+        `
+      : '';
+
+    const receiptHead = buildReceiptHeader(companyProfile);
+    const logoSrc = safeReceiptLogoSrc(receiptHead.logoDataUrl);
+    const headerTitleHtml = logoSrc
+      ? `<div class="print-logo-wrap"><img src="${logoSrc}" alt="" class="print-logo" /></div>`
+      : `<div class="logo">${escapeHtml(receiptHead.title)}</div>`;
+    const headerLinesHtml = receiptHead.lines
+      .map((line) => `<div>${escapeHtml(line)}</div>`)
+      .join('');
+
     return `
       <div class="print-receipt ${isSaleFinalized ? 'payment-receipt' : 'consult-receipt'}">
         <div class="print-header">
-          <div class="logo">Your Logo</div>
-          <div>Av. da Marginal - Maputo</div>
-          <div>Tel: +258 87 2002 144</div>
-          <div>NUIT: 401 000 000</div>
+          ${headerTitleHtml}
+          ${headerLinesHtml}
           <div class="customer">Cliente: ${escapeHtml(customerLabel)}</div>
         </div>
 
@@ -673,8 +809,9 @@ export default function POSPage() {
         <div class="print-totals">
           <div class="print-row">
             <span>Subtotal:</span>
-            <span>${formatReceiptAmount(subtotal)}</span>
+            <span>${formatReceiptAmount(originalSubtotal)}</span>
           </div>
+          ${discountRowHtml}
           <div class="print-row">
             <span>IVA (16%):</span>
             <span>${formatReceiptAmount(tax)}</span>
@@ -689,7 +826,7 @@ export default function POSPage() {
         ${isSaleFinalized ? `
           <div class="print-block">
             <div class="print-row print-pay-header">
-              <span>Metodo de Pagamento</span>
+              <span>Método de Pagamento</span>
               <span>Valor</span>
             </div>
             <div class="print-divider"></div>
@@ -713,7 +850,7 @@ export default function POSPage() {
         <div class="print-footer">
           <div>IVA Incluso</div>
           <div>Processada por Computador</div>
-          <div>Obrigado pela preferencia!</div>
+          <div>Obrigado pela preferência!</div>
           <div class="foot-note">Sistema desenvolvido por: Nicolau Nino</div>
         </div>
       </div>
@@ -765,19 +902,30 @@ export default function POSPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [productsData, customersData] = await Promise.all([
+        const [productsData, customersData, companyData] = await Promise.all([
           posFetchProducts(),
-          posFetchCustomers()
+          posFetchCustomers(),
+          fetchCompanyProfile().catch(() => null),
         ]);
+        const paymentMethodsData = await posFetchPaymentMethods().catch(() => FALLBACK_PAYMENT_METHODS);
   
         console.log('🔥 PRODUTOS DO BACKEND:', productsData);
   
         setProducts(productsData || []);
         setCustomers(customersData || []);
+        setCompanyProfile(companyData);
+        const normalizedMethods = Array.isArray(paymentMethodsData) ? paymentMethodsData : [];
+        setPaymentMethods(normalizedMethods);
+        const firstEnabledMethod = normalizedMethods.find((method) => method.enabled);
+        if (firstEnabledMethod?.code) {
+          setMultiplePaymentMethod(firstEnabledMethod.code);
+        }
       } catch (error) {
         console.error('Erro ao carregar dados:', error);
         setProducts([]);
         setCustomers([]);
+        setCompanyProfile(null);
+        setPaymentMethods(FALLBACK_PAYMENT_METHODS);
       }
     };
 
@@ -791,6 +939,16 @@ export default function POSPage() {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, [fetchUsers, setSelectedLoginUser]);
+
+  useEffect(() => {
+    const refreshCompany = () => {
+      void fetchCompanyProfile()
+        .then(setCompanyProfile)
+        .catch(() => setCompanyProfile(null));
+    };
+    window.addEventListener('company-profile-changed', refreshCompany);
+    return () => window.removeEventListener('company-profile-changed', refreshCompany);
+  }, []);
 
   // --- Handlers ---
   const addToCart = (product: Product) => {
@@ -821,6 +979,103 @@ export default function POSPage() {
 
     executeAddToCart(product);
   };
+
+  const submitSearchValue = useCallback((value: string) => {
+    const raw = value.trim();
+    if (!raw) return;
+
+    const normalized = raw.toLowerCase();
+    const exactBarcodeMatch = products.find(
+      (product) => String(product.barcode ?? '').trim().toLowerCase() === normalized
+    );
+    const exactCodeMatch = products.find(
+      (product) => String(product.code ?? '').trim().toLowerCase() === normalized
+    );
+    const fuzzyMatches = products.filter((product) => {
+      if (product.active === false) return false;
+      const productName = String(product.name ?? '').toLowerCase();
+      const productBarcode = String(product.barcode ?? '').toLowerCase();
+      const productCode = String(product.code ?? '').toLowerCase();
+      return (
+        productName.includes(normalized) ||
+        productBarcode.includes(normalized) ||
+        productCode.includes(normalized)
+      );
+    });
+    const fallbackVisibleSingle = fuzzyMatches.length === 1 ? fuzzyMatches[0] : null;
+    const selectedProduct = exactBarcodeMatch ?? exactCodeMatch ?? fallbackVisibleSingle;
+
+    if (!selectedProduct) {
+      showToast('Produto não encontrado para este código de barras.', 'error');
+      return;
+    }
+
+    addToCart(selectedProduct);
+    setSearchQuery('');
+  }, [addToCart, products, searchQuery, showToast]);
+
+  const handleSearchSubmit = useCallback(() => {
+    submitSearchValue(searchQuery);
+  }, [searchQuery, submitSearchValue]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const isTypingElement = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        target.isContentEditable
+      );
+    };
+
+    const clearScannerBuffer = () => {
+      scannerBufferRef.current = '';
+      if (scannerResetTimerRef.current !== null) {
+        window.clearTimeout(scannerResetTimerRef.current);
+        scannerResetTimerRef.current = null;
+      }
+    };
+
+    const armResetTimer = () => {
+      if (scannerResetTimerRef.current !== null) {
+        window.clearTimeout(scannerResetTimerRef.current);
+      }
+      scannerResetTimerRef.current = window.setTimeout(() => {
+        scannerBufferRef.current = '';
+        scannerResetTimerRef.current = null;
+      }, 120);
+    };
+
+    const onGlobalScannerKeydown = (event: KeyboardEvent) => {
+      if (isTypingElement(event.target)) return;
+      if (event.ctrlKey || event.altKey || event.metaKey) return;
+
+      if (event.key === 'Enter') {
+        const scanned = scannerBufferRef.current.trim();
+        if (scanned) {
+          event.preventDefault();
+          submitSearchValue(scanned);
+          clearScannerBuffer();
+        }
+        return;
+      }
+
+      if (event.key.length === 1) {
+        scannerBufferRef.current += event.key;
+        armResetTimer();
+      }
+    };
+
+    window.addEventListener('keydown', onGlobalScannerKeydown);
+    return () => {
+      window.removeEventListener('keydown', onGlobalScannerKeydown);
+      clearScannerBuffer();
+    };
+  }, [isLoggedIn, submitSearchValue]);
 
   const executeAddToCart = (product: Product) => {
     // Optimistic reservation in UI-only state.
@@ -940,6 +1195,8 @@ export default function POSPage() {
     setSelectedCustomer(null);
     setCurrentReceiptNumber(null);
     setDocType('VD');
+    setFinalizedDocType('VD');
+    setLoadedQuotationSource(null);
     if (salesMode === 'table' && selectedTableId) {
       setTableOrders(prev => {
         const next = { ...prev };
@@ -1007,22 +1264,33 @@ export default function POSPage() {
     if (!isConfigured) {
       const offlineSequence = isVDDocument ? nextVDNumber : null;
       const offlineDocumentNumber = isVDDocument && offlineSequence ? formatDocumentNumber(offlineSequence, saleDate) : null;
-      alert('ConfiguraÃ§Ã£o do Supabase ausente ou invÃ¡lida. O pedido nÃ£o serÃ¡ salvo no banco de dados, mas o recibo serÃ¡ gerado.');
-      setCurrentReceiptNumber(offlineDocumentNumber);
-      setIsReceiptModalOpen(true);
-      setIsSaleFinalized(true);
+      alert('Configuração do Supabase ausente ou inválida. O pedido não será salvo no banco de dados, mas o recibo será gerado.');
+      if (isReceiptPrintEnabled) {
+        setCurrentReceiptNumber(offlineDocumentNumber);
+        setIsReceiptModalOpen(true);
+        setIsSaleFinalized(true);
+      }
       if (isVDDocument && offlineSequence) {
         const updatedNext = offlineSequence + 1;
         setNextVDNumber(updatedNext);
       }
       setIsPaymentModalOpen(false);
+      if (!isReceiptPrintEnabled) {
+        clearCart(true);
+        setCustomerName('');
+        setTableNumber('');
+        setIsSaleFinalized(false);
+      }
       return;
     }
 
-    const finalPayments = isMultiplePayment ? payments : (paymentMethod ? [{ method: paymentMethod, amount: paymentMethod === 'cash' && receivedAmount !== '' ? parseFloat(receivedAmount) : total }] : []);
+    const finalPayments = isMultiplePayment ? payments : (paymentMethod ? [{ method: paymentMethod, amount: isCashPaymentMethod(paymentMethod) && receivedAmount !== '' ? parseFloat(receivedAmount) : total }] : []);
+    const isPaidSale = finalPayments.every((entry) => paymentMethodMarksAsPaid(entry.method));
+    const paymentStatus = isPaidSale ? 'completed' : 'pending';
+    const saleDocType: 'VD' | 'TK' | 'FP' | 'FT' = docType === 'FP' ? 'FP' : isPaidSale ? docType : 'FT';
     const amount = isMultiplePayment 
       ? payments.reduce((acc, p) => acc + p.amount, 0) 
-      : (paymentMethod === 'cash' 
+      : (isCashPaymentMethod(paymentMethod)
           ? (receivedAmount === '' ? total : parseFloat(receivedAmount)) 
           : total);
     const change = amount > total ? (amount - total) : 0;
@@ -1032,9 +1300,12 @@ export default function POSPage() {
       const result = await createOrder({
         cart,
         globalDiscount,
-        selectedCustomerId: selectedCustomer?.id || null,
+        selectedCustomerId: selectedCustomer?.cloud_id || null,
+        selectedCustomerName: selectedCustomer?.name || customerName || null,
+        selectedUserId: currentUser?.id || null,
+        selectedUserName: currentUser?.name || null,
         selectedTableId: selectedTableId || null,
-        docType,
+        docType: saleDocType,
         total,
         subtotal,
         tax,
@@ -1043,15 +1314,38 @@ export default function POSPage() {
         paymentMethod,
         receivedAmount,
         payments,
+        paymentStatus,
         saleTimestamp,
         saleDate,
       });
 
-      // Open receipt modal for manual printing
-      setCurrentReceiptNumber(result.usedDocumentNumber);
-      setIsReceiptModalOpen(true);
-      setIsSaleFinalized(true);
-      if (isVDDocument && result.usedSequence) {
+      if (loadedQuotationSource) {
+        try {
+          const approvalRes = await fetch(`${getPosApiBase()}/cotacoes/aprovar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceId: loadedQuotationSource.sourceId,
+              sourceType: loadedQuotationSource.sourceType,
+              approvedDocType: String(result.usedDocType || saleDocType).toUpperCase(),
+              approvedDocumentNumber: String(result.usedDocumentNumber ?? ''),
+            }),
+          });
+          if (!approvalRes.ok) throw new Error(`Falha ao aprovar cotação (${approvalRes.status})`);
+          setLoadedQuotationSource(null);
+        } catch {
+          showToast('Venda concluída, mas não foi possível atualizar o status da cotação.', 'info');
+        }
+      }
+
+      if (isReceiptPrintEnabled) {
+        // Open receipt modal for manual printing
+        setFinalizedDocType(saleDocType);
+        setCurrentReceiptNumber(result.usedDocumentNumber);
+        setIsReceiptModalOpen(true);
+        setIsSaleFinalized(true);
+      }
+      if (String(result.usedDocType || saleDocType).toUpperCase() === 'VD' && result.usedSequence) {
         const updatedNext = result.usedSequence + 1;
         setNextVDNumber(updatedNext);
       }
@@ -1065,6 +1359,12 @@ export default function POSPage() {
       }
 
       setIsPaymentModalOpen(false);
+      if (!isReceiptPrintEnabled) {
+        clearCart(true);
+        setCustomerName('');
+        setTableNumber('');
+        setIsSaleFinalized(false);
+      }
     } catch (error: any) {
       const err = handleSupabaseError(error, 'handleFinalizePayment');
       alert(`Erro ao salvar o pedido: ${err.message}` + "`n`n" + `O recibo será exibido para impressão.`);
@@ -1097,10 +1397,13 @@ export default function POSPage() {
         // If refresh fails, the optimistic release above is still enough to keep UI consistent.
       }
 
-      // Still allow viewing receipt even if saving fails
-      setCurrentReceiptNumber(null);
-      setIsReceiptModalOpen(true);
-      setIsSaleFinalized(true);
+      if (isReceiptPrintEnabled) {
+        // Still allow viewing receipt even if saving fails
+        setFinalizedDocType(saleDocType);
+        setCurrentReceiptNumber(null);
+        setIsReceiptModalOpen(true);
+        setIsSaleFinalized(true);
+      }
       try {
         const nextSequence = await posSyncNextVDNumber(new Date());
         setNextVDNumber(nextSequence);
@@ -1148,7 +1451,7 @@ export default function POSPage() {
         if (selectedCustomer?.id === customerToDelete) setSelectedCustomer(null);
         setCustomers(updatedCustomers);
         setCustomerToDelete(null);
-        showToast('Cliente excluÃ­do com sucesso!', 'success');
+        showToast('Cliente excluído com sucesso!', 'success');
       } catch (error) {
         handleSupabaseError(error, 'confirmDeleteCustomer');
         alert('Erro ao excluir cliente.');
@@ -1172,6 +1475,161 @@ export default function POSPage() {
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) || 
     c.phone.includes(customerSearch)
   );
+
+  const isQuotationDocument = (row: QuotationRow) => {
+    const docType = normalizeQuotationToken(row.doc_type);
+    if (!docType) return false;
+    return docType === 'fp' || docType.includes('proforma') || docType.includes('cotacao');
+  };
+
+  const loadQuotations = async () => {
+    setIsQuotationLoading(true);
+    try {
+      const [rawDocuments, rawItems] = await Promise.all([fetchDocuments(), fetchDocumentItems()]);
+      const documents = (Array.isArray(rawDocuments) ? rawDocuments : []) as QuotationRow[];
+      const items = (Array.isArray(rawItems) ? rawItems : []) as QuotationItemRow[];
+
+      const quotations = documents
+        .filter((row) => {
+          if (!isQuotationDocument(row)) return false;
+          const statusToken = normalizeQuotationToken(row.status);
+          return statusToken !== 'approved' && statusToken !== 'aprovado';
+        })
+        .sort((a, b) => {
+          const aTime = Date.parse(String(a.created_at ?? '')) || 0;
+          const bTime = Date.parse(String(b.created_at ?? '')) || 0;
+          return bTime - aTime;
+        });
+
+      const grouped: Record<string, QuotationItemRow[]> = {};
+      for (const item of items) {
+        const key = String(item.order_id ?? '').trim();
+        if (!key) continue;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(item);
+        const saleKey = `venda:${key}`;
+        if (!grouped[saleKey]) grouped[saleKey] = [];
+        grouped[saleKey].push(item);
+      }
+
+      setQuotationRows(quotations);
+      setQuotationItemsByOrderId(grouped);
+    } catch (error) {
+      handleSupabaseError(error, 'loadQuotations');
+      showToast('Não foi possível carregar as cotações.', 'error');
+      setQuotationRows([]);
+      setQuotationItemsByOrderId({});
+    } finally {
+      setIsQuotationLoading(false);
+    }
+  };
+
+  const handleLoadQuotation = (quotation: QuotationRow) => {
+    const orderId = String(quotation.id);
+    const sourceItems = quotationItemsByOrderId[orderId] ?? [];
+    if (sourceItems.length === 0) {
+      showToast('Esta cotação não possui itens.', 'error');
+      return;
+    }
+
+    const nextCartMap = new Map<string, CartItem>();
+    for (const [index, item] of sourceItems.entries()) {
+      const itemProductId = String(item.product_id ?? '').trim();
+      const itemName = String(item.product_name ?? '').trim() || `Item ${index + 1}`;
+      const matchedProduct =
+        products.find((product) => String(product.id) === itemProductId) ??
+        products.find((product) => product.name.trim().toLowerCase() === itemName.toLowerCase()) ??
+        null;
+
+      const baseId = (matchedProduct?.id ?? itemProductId) || `cotacao-${orderId}-${index}`;
+      const unitPrice = Number(item.price ?? matchedProduct?.price ?? 0);
+      const quantity = Number(item.quantity ?? 0);
+      if (!Number.isFinite(quantity) || quantity <= 0) continue;
+
+      const cartItem: CartItem = {
+        ...(matchedProduct ?? {
+          id: baseId,
+          name: itemName,
+          price: Number.isFinite(unitPrice) ? unitPrice : 0,
+          category: 'Cotação',
+        }),
+        id: baseId,
+        name: itemName,
+        price: Number.isFinite(unitPrice) ? unitPrice : 0,
+        quantity,
+      };
+
+      const existing = nextCartMap.get(baseId);
+      if (existing) {
+        nextCartMap.set(baseId, { ...existing, quantity: existing.quantity + quantity });
+      } else {
+        nextCartMap.set(baseId, cartItem);
+      }
+    }
+
+    const nextCart = Array.from(nextCartMap.values());
+    if (nextCart.length === 0) {
+      showToast('Não há itens válidos nesta cotação.', 'error');
+      return;
+    }
+
+    const restockMap = new Map<string, number>();
+    for (const item of cart) {
+      if (item.is_service) continue;
+      restockMap.set(item.id, (restockMap.get(item.id) ?? 0) + item.quantity);
+    }
+
+    const reserveMap = new Map<string, number>();
+    for (const item of nextCart) {
+      if (item.is_service) continue;
+      reserveMap.set(item.id, (reserveMap.get(item.id) ?? 0) + item.quantity);
+    }
+
+    if (restockMap.size > 0 || reserveMap.size > 0) {
+      setProducts((prev) =>
+        prev.map((product) => {
+          const restock = restockMap.get(product.id) ?? 0;
+          const reserve = reserveMap.get(product.id) ?? 0;
+          if (restock === 0 && reserve === 0) return product;
+          return { ...product, stock_quantity: Number(product.stock_quantity ?? 0) + restock - reserve };
+        })
+      );
+    }
+
+    const customerId = String(quotation.customer_id ?? '').trim();
+    const customerLabel = String(quotation.client_name ?? '').trim();
+    const customerFromQuotation =
+      customers.find((customer) => customerId && String(customer.id) === customerId) ??
+      customers.find((customer) => customerId && String(customer.cloud_id ?? '') === customerId) ??
+      customers.find((customer) => customerLabel && customer.name.trim().toLowerCase() === customerLabel.toLowerCase()) ??
+      null;
+
+    setCart(nextCart);
+    setSelectedCartItemId(null);
+    setSelectedCustomer(customerFromQuotation);
+    setCustomerName(customerFromQuotation?.name ?? customerLabel);
+    setGlobalDiscount(null);
+    setDocType('VD');
+    setFinalizedDocType('VD');
+    setIsSaleFinalized(false);
+    setCurrentReceiptNumber(null);
+    setPaymentMethod(null);
+    setReceivedAmount('');
+    setPayments([]);
+    setIsMultiplePayment(false);
+    setMultiplePaymentAmount('');
+    setLoadedQuotationSource({
+      sourceId: orderId,
+      sourceType: orderId.startsWith('venda:') ? 'sale' : 'order',
+    });
+    setIsQuotationModalOpen(false);
+    showToast('Cotação carregada para o carrinho.', 'success');
+  };
+
+  const handleOpenQuotationModal = () => {
+    setIsQuotationModalOpen(true);
+    void loadQuotations();
+  };
 
   const applyDiscount = () => {
     const amount = parseFloat(discountAmount);
@@ -1243,209 +1701,274 @@ export default function POSPage() {
   const handleReceiptPrint = () => {
     const printMarkup = buildPrintReceiptMarkup();
     const estimatedHeightMm = Math.max(
-      120,
-      82 + (cart.length * 8) + (isSaleFinalized ? (payments.length > 0 ? payments.length * 6 : 12) + 22 : 0)
+      34,
+      66 + (cart.length * 9) + (isSaleFinalized ? (payments.length > 0 ? payments.length * 7 : 14) + 20 : 0)
     );
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-                        <html>
-                          <head>
-                            <meta charset="utf-8" />
-                            <title>Recibo POS</title>
-                            <style id="page-size-style">
-                              @page {
-                                size: 72mm ${estimatedHeightMm}mm;
-                                margin: 0;
-                              }
-                            </style>
-                            <style>
-                              html, body {
-                                width: 72mm;
-                                height: auto;
-                                margin: 0;
-                                padding: 0;
-                                background: white;
-                                overflow: hidden;
-                              }
-                              body {
-                                font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
-                                color: black;
-                                background: white;
-                                width: 72mm;
-                                padding: 0;
-                                box-sizing: border-box;
-                                -webkit-print-color-adjust: exact;
-                                print-color-adjust: exact;
-                              }
-                              * {
-                                box-sizing: border-box;
-                              }
-                              .print-receipt {
-                                width: 66mm;
-                                margin: 0;
-                                padding: 3mm 3mm 4mm;
-                              }
-                              .print-header {
-                                text-align: center;
-                                font-size: 10px;
-                                font-weight: 800;
-                                line-height: 1.4;
-                              }
-                              .logo {
-                                font-size: 23px;
-                                font-weight: 900;
-                                letter-spacing: 0.4px;
-                                margin-bottom: 8px;
-                              }
-                              .customer {
-                                margin-top: 12px;
-                              }
-                              .print-block {
-                                padding-top: 6px;
-                                margin-top: 10px;
-                              }
-                              .print-meta,
-                              .print-row,
-                              .print-columns {
-                                display: flex;
-                                justify-content: space-between;
-                                gap: 6px;
-                              }
-                              .print-meta {
-                                font-size: 9px;
-                                font-weight: 700;
-                              }
-                              .print-meta span:last-child {
-                                text-align: right;
-                              }
-                              .print-doc {
-                                margin-top: 6px;
-                                font-size: 12px;
-                                font-weight: 900;
-                              }
-                              .print-columns {
-                                font-size: 9px;
-                                font-weight: 800;
-                                margin-bottom: 3px;
-                              }
-                              .qty {
-                                width: 8mm;
-                                flex: 0 0 8mm;
-                              }
-                              .desc {
-                                flex: 1 1 auto;
-                                min-width: 0;
-                              }
-                              .unit {
-                                width: 14mm;
-                                flex: 0 0 14mm;
-                                text-align: right;
-                              }
-                              .line-total {
-                                width: 16mm;
-                                flex: 0 0 16mm;
-                                text-align: right;
-                              }
-                              .print-divider {
-                                border-top: 1px dashed #000;
-                                margin: 4px 0;
-                              }
-                              .payment-divider {
-                                margin-top: 6px;
-                              }
-                              .print-items {
-                                padding-top: 1px;
-                              }
-                              .print-item-row {
-                                display: grid;
-                                grid-template-columns: 8mm minmax(0, 1fr) 14mm 16mm;
-                                gap: 6px;
-                                align-items: start;
-                                font-size: 9px;
-                                font-weight: 800;
-                                padding: 2px 0;
-                              }
-                              .print-totals {
-                                margin-top: 10px;
-                                font-size: 10px;
-                                font-weight: 800;
-                              }
-                              .print-totals .print-row {
-                                margin-top: 3px;
-                              }
-                              .total-row {
-                                margin-top: 6px;
-                                padding-top: 6px;
-                                font-size: 15px;
-                                font-weight: 900;
-                              }
-                              .print-pay-header {
-                                font-size: 9px;
-                                font-weight: 800;
-                                margin-bottom: 3px;
-                              }
-                              .payment-row {
-                                font-size: 9px;
-                                margin-top: 4px;
-                                font-weight: 800;
-                              }
-                              .print-change {
-                                margin-top: 4px;
-                                padding-top: 4px;
-                                font-size: 9px;
-                                font-weight: 800;
-                              }
-                              .print-footer {
-                                border-top: 1px dashed #000;
-                                margin-top: 10px;
-                                padding-top: 10px;
-                                text-align: center;
-                                font-size: 10px;
-                                font-weight: 800;
-                                line-height: 1.5;
-                              }
-                              .foot-note {
-                                margin-top: 10px;
-                                font-size: 9px;
-                                font-style: italic;
-                                font-weight: 900;
-                              }
-                            </style>
-                          </head>
-                          <body>
-                            ${printMarkup}
-                            <script>
-                              (function () {
-                                const receipt = document.querySelector('.print-receipt');
-                                const styleTag = document.getElementById('page-size-style');
-                                const runPrint = function () {
-                                  if (receipt && styleTag) {
-                                    const receiptHeightPx = receipt.scrollHeight;
-                                    const receiptHeightMm = Math.max(70, Math.ceil((receiptHeightPx * 25.4) / 96) + 4);
-                                    styleTag.textContent = '@page { size: 72mm ' + receiptHeightMm + 'mm; margin: 0; }';
-                                  }
-                                  requestAnimationFrame(function () {
-                                    requestAnimationFrame(function () {
-                                      window.print();
-                                      window.close();
-                                    });
-                                  });
-                                };
-                                if (document.fonts && document.fonts.ready) {
-                                  document.fonts.ready.then(runPrint);
-                                } else {
-                                  runPrint();
-                                }
-                              })();
-                            </script>
-                          </body>
-                        </html>
-                      `);
-      printWindow.document.close();
-    } else {
-      alert('Por favor, permita popups para imprimir o recibo.');
-    }
+
+    const printHtml = `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title></title>
+    <style id="page-size-style">
+      @page {
+        size: 72mm ${estimatedHeightMm}mm;
+        margin: 0;
+      }
+    </style>
+    <style>
+      html, body {
+        width: 72mm;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: white;
+      }
+      @media print {
+        html, body {
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
+        }
+        @page {
+          margin: 0 !important;
+        }
+      }
+      body {
+        font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
+        color: black;
+        background: white;
+        width: 72mm;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      .print-receipt {
+        width: 100%;
+        max-width: 72mm;
+        margin: 0 auto;
+        padding: 0.5mm 2mm;
+      }
+      .print-header {
+        text-align: center;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.35;
+      }
+      .logo {
+        font-size: 26px;
+        font-weight: 900;
+        letter-spacing: 0.4px;
+        margin-bottom: 4px;
+      }
+      .print-logo-wrap {
+        margin-bottom: 4px;
+        display: flex;
+        justify-content: center;
+      }
+      .print-logo {
+        max-height: 18mm;
+        max-width: 100%;
+        object-fit: contain;
+        display: block;
+        /* Igual .receipt-thermal-logo — contraste alto gerava faixa preta sob o texto */
+        filter: grayscale(1) contrast(1.2);
+        -webkit-filter: grayscale(1) contrast(1.2);
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .customer {
+        margin-top: 6px;
+      }
+      .print-block {
+        padding-top: 4px;
+        margin-top: 6px;
+      }
+      .print-meta,
+      .print-row,
+      .print-columns {
+        display: flex;
+        justify-content: space-between;
+        gap: 6px;
+      }
+      .print-meta {
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .print-meta span:last-child {
+        text-align: right;
+      }
+      .print-doc {
+        margin-top: 6px;
+        font-size: 13px;
+        font-weight: 900;
+      }
+      .print-columns {
+        font-size: 10px;
+        font-weight: 800;
+        margin-bottom: 3px;
+      }
+      .qty {
+        width: 9mm;
+        flex: 0 0 9mm;
+      }
+      .desc {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .unit {
+        width: 15mm;
+        flex: 0 0 15mm;
+        text-align: right;
+      }
+      .line-total {
+        width: 17mm;
+        flex: 0 0 17mm;
+        text-align: right;
+      }
+      .print-divider {
+        border-top: 1px dashed #000;
+        margin: 4px 0;
+      }
+      .payment-divider {
+        margin-top: 6px;
+      }
+      .print-items {
+        padding-top: 1px;
+      }
+      .print-item-row {
+        display: grid;
+        grid-template-columns: 9mm minmax(0, 1fr) 15mm 17mm;
+        gap: 5px;
+        align-items: start;
+        font-size: 10px;
+        font-weight: 800;
+        padding: 2px 0;
+      }
+      .print-totals {
+        margin-top: 8px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .print-totals .print-row {
+        margin-top: 3px;
+      }
+      .print-totals .discount-row span:last-child {
+        font-weight: 900;
+      }
+      .total-row {
+        margin-top: 6px;
+        padding-top: 6px;
+        font-size: 17px;
+        font-weight: 900;
+      }
+      .print-pay-header {
+        font-size: 10px;
+        font-weight: 800;
+        margin-bottom: 3px;
+      }
+      .payment-row {
+        font-size: 10px;
+        margin-top: 4px;
+        font-weight: 800;
+      }
+      .print-change {
+        margin-top: 4px;
+        padding-top: 4px;
+        font-size: 10px;
+        font-weight: 800;
+      }
+      .print-footer {
+        border-top: 1px dashed #000;
+        margin-top: 6px;
+        padding-top: 6px;
+        padding-bottom: 0;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.45;
+      }
+      .foot-note {
+        margin-top: 4px;
+        margin-bottom: 0;
+        font-size: 10px;
+        font-style: italic;
+        font-weight: 900;
+      }
+    </style>
+  </head>
+  <body>${printMarkup}</body>
+</html>
+`;
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute(
+      'style',
+      'position:fixed;right:0;bottom:0;width:0;height:0;border:0;margin:0;padding:0;opacity:0;pointer-events:none;'
+    );
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
+
+    const removeIframe = () => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onLoad = () => {
+      const doc = iframe.contentDocument;
+      const win = iframe.contentWindow;
+      if (!doc || !win) {
+        removeIframe();
+        return;
+      }
+
+      const runPrint = () => {
+        const receipt = doc.querySelector('.print-receipt');
+        const styleTag = doc.getElementById('page-size-style');
+        if (receipt && styleTag) {
+          const px = Math.max(receipt.scrollHeight, receipt.offsetHeight);
+          const mm = Math.max(28, Math.ceil((px * 25.4) / 96));
+          styleTag.textContent = `@page { size: 72mm ${mm}mm; margin: 0 !important; }`;
+        }
+        void doc.body?.offsetHeight;
+
+        const fallbackRemove = window.setTimeout(removeIframe, 120000);
+        const done = () => {
+          window.clearTimeout(fallbackRemove);
+          window.setTimeout(removeIframe, 150);
+        };
+        win.addEventListener('afterprint', done, { once: true });
+
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            win.print();
+          });
+        });
+      };
+
+      if (doc.fonts?.ready) {
+        doc.fonts.ready.then(runPrint).catch(runPrint);
+      } else {
+        runPrint();
+      }
+    };
+
+    iframe.addEventListener('load', onLoad, { once: true });
+    iframe.srcdoc = printHtml;
   };
 
   if (!isLoggedIn || !isAuthRestored) {
@@ -1467,7 +1990,7 @@ export default function POSPage() {
     <div className="flex flex-col h-screen overflow-hidden bg-[#121212] text-zinc-300 font-sans selection:bg-emerald-500/30">
       {!isConfigured && (
         <div className="bg-rose-600 text-white text-[10px] font-bold py-1 px-4 text-center animate-pulse z-[9999]">
-          CONFIGURAÃ‡ÃƒO DO SUPABASE AUSENTE OU INVÃLIDA: Adicione NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY nas DefiniÃ§Ãµes (Settings).
+          CONFIGURAÇÃO DO SUPABASE AUSENTE OU INVÁLIDA: Adicione NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY nas Definições (Settings).
         </div>
       )}
       
@@ -1479,15 +2002,19 @@ export default function POSPage() {
         isCashierModalOpen={isCashierModalOpen}
         onOpenCustomer={() => setIsCustomerModalOpen(true)}
         onOpenDiscount={() => setIsDiscountModalOpen(true)}
+        onOpenQuotation={handleOpenQuotationModal}
         onOpenTable={openTableModal}
         onOpenCashier={() => setIsCashierModalOpen(true)}
         onOpenAdminSidebar={() => setIsAdminSidebarOpen(true)}
+        userName={currentUser?.name ?? null}
+        onLogout={logout}
       />
 
       <main className="flex flex-1 overflow-hidden">
         <ProductList
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          onSearchSubmit={handleSearchSubmit}
           productFamilies={productFamilies}
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
@@ -1512,7 +2039,8 @@ export default function POSPage() {
           docType={docType}
           onCycleDocType={() => {
             const types: ('VD' | 'TK' | 'FP')[] = ['VD', 'TK', 'FP'];
-            const nextIndex = (types.indexOf(docType) + 1) % types.length;
+            const currentDocType = docType === 'FT' ? 'VD' : docType;
+            const nextIndex = (types.indexOf(currentDocType) + 1) % types.length;
             setDocType(types[nextIndex]);
           }}
           selectedCustomer={selectedCustomer}
@@ -1547,7 +2075,7 @@ export default function POSPage() {
           total={total}
           onCancelOrder={() => {
             if (cart.length === 0) {
-              showToast('NÃ£o existe nada no carrinho de compra', 'error');
+              showToast('Não existe nada no carrinho de compra', 'error');
             } else {
               setIsCancelModalOpen(true);
             }
@@ -1638,6 +2166,17 @@ export default function POSPage() {
         customerToDelete={customerToDelete}
         onCancelDelete={() => setCustomerToDelete(null)}
         onConfirmDelete={confirmDeleteCustomer}
+      />
+
+      <QuotationModal
+        isOpen={isQuotationModalOpen}
+        onClose={() => setIsQuotationModalOpen(false)}
+        quotations={quotationRows}
+        isLoading={isQuotationLoading}
+        onReload={() => {
+          void loadQuotations();
+        }}
+        onLoadQuotation={handleLoadQuotation}
       />
 
       {/* --- Discount Modal --- */}
@@ -1885,6 +2424,7 @@ export default function POSPage() {
         tax={tax}
         totalDiscount={totalDiscount}
         total={total}
+        paymentMethods={paymentMethods}
         isMultiplePayment={isMultiplePayment}
         onToggleMultiplePayment={() => {
           setIsMultiplePayment(!isMultiplePayment);
@@ -1903,19 +2443,23 @@ export default function POSPage() {
         multiplePaymentAmount={multiplePaymentAmount}
         setMultiplePaymentAmount={setMultiplePaymentAmount}
         onFinalize={handleFinalizePayment}
+        isReceiptPrintEnabled={isReceiptPrintEnabled}
+        onToggleReceiptPrint={() => setIsReceiptPrintEnabled((prev) => !prev)}
         formatPrice={formatPrice}
+        docType={docType}
       />
 
       <ReceiptPreview
         isOpen={isReceiptModalOpen}
         isSaleFinalized={isSaleFinalized}
-        docType={docType}
+        docType={isSaleFinalized ? finalizedDocType : docType}
         nextVDNumber={nextVDNumber}
         currentReceiptNumber={currentReceiptNumber}
         selectedCustomer={selectedCustomer}
         currentUserName={currentUser?.name || null}
         cart={cart}
-        subtotal={subtotal}
+        originalSubtotal={originalSubtotal}
+        discountNet={Math.max(0, originalSubtotal - subtotal)}
         tax={tax}
         total={total}
         isMultiplePayment={isMultiplePayment}
@@ -1923,6 +2467,9 @@ export default function POSPage() {
         receivedAmount={receivedAmount}
         payments={payments}
         formatDocumentNumber={formatDocumentNumber}
+        paymentLabel={paymentLabel}
+        isCashPaymentMethod={isCashPaymentMethod}
+        companyProfile={companyProfile}
         onPrimaryAction={handleReceiptPrimaryAction}
         onPrint={handleReceiptPrint}
       />
@@ -2009,7 +2556,7 @@ export default function POSPage() {
                   <div className="p-2 bg-emerald-500/10 rounded text-emerald-500">
                     <Utensils size={24} />
                   </div>
-                  <h2 className="text-xl font-bold text-white capitalize tracking-tight">SeleÃ§Ã£o de Mesa</h2>
+                  <h2 className="text-xl font-bold text-white capitalize tracking-tight">Seleção de Mesa</h2>
                 </div>
                 <button 
                   onClick={() => setIsTableModalOpen(false)}
@@ -2088,7 +2635,7 @@ export default function POSPage() {
             >
               <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-[#1a1a1a]">
                 <div className="flex items-center gap-3">
-                  <h2 className="text-lg font-bold text-white capitalize tracking-tight">OperaÃ§Ãµes de Caixa: Caixa 1</h2>
+                  <h2 className="text-lg font-bold text-white capitalize tracking-tight">Operações de Caixa: Caixa 1</h2>
                 </div>
                 <div className="flex items-center gap-2">
                   <button 
@@ -2242,7 +2789,7 @@ export default function POSPage() {
                 <button 
                   className="flex-1 h-14 rounded border border-zinc-800 bg-[#121212] text-white font-medium text-sm leading-tight capitalize transition-all hover:border-zinc-700 hover:bg-zinc-800/70"
                 >
-                  Registar relÃ³gio de ponto
+                  Registar relógio de ponto
                 </button>
                 <button 
                   className="flex-1 h-14 rounded border border-zinc-800 bg-[#121212] text-white font-medium text-sm leading-tight capitalize transition-all hover:border-zinc-700 hover:bg-zinc-800/70"
@@ -2252,7 +2799,7 @@ export default function POSPage() {
                 <button 
                   className="flex-1 h-14 rounded border border-zinc-800 bg-[#121212] text-white font-medium text-sm leading-tight capitalize transition-all hover:border-zinc-700 hover:bg-zinc-800/70"
                 >
-                  TransferÃªncia de turno
+                  Transferência de turno
                 </button>
               </div>
 
@@ -2266,7 +2813,7 @@ export default function POSPage() {
                     className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-base text-white focus:outline-none focus:border-red-500"
                   >
                     <option value="Impressora do evento">Impressora do evento</option>
-                    <option value="Impressora tÃ©rmica">Impressora tÃ©rmica</option>
+                    <option value="Impressora térmica">Impressora térmica</option>
                   </select>
                 </div>
                 <div className="flex flex-col gap-1">

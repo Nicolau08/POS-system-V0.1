@@ -42,7 +42,7 @@ export function useAuth(users: User[]) {
 
   const login = useCallback(() => {
     const foundUser = users.find((u) => u.id === selectedLoginUser?.id);
-    if (foundUser && loginPassword === foundUser.password) {
+    if (foundUser && foundUser.active !== false && loginPassword === foundUser.password) {
       setCurrentUser(foundUser);
       setIsLoggedIn(true);
       setLoginError(false);

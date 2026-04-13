@@ -63,27 +63,27 @@ export function AdminPanel({
               <div className="px-2 space-y-1">
                 <SidebarItem icon={<Wrench size={18} />} label="Gerenciamento" onClick={onGoToManagement} />
                 <div className="h-px bg-zinc-800/50 mx-4 my-2" />
-                <SidebarItem icon={<History size={18} />} label="Ver histÃ³rico de vendas" />
+                <SidebarItem icon={<History size={18} />} label="Ver histórico de vendas" />
                 <SidebarItem icon={<Layers size={18} />} label="Ver vendas abertas" />
-                <SidebarItem icon={<Download size={18} />} label="Entrada / SaÃ­da de Dinheiro" />
+                <SidebarItem icon={<Download size={18} />} label="Entrada / Saída de Dinheiro" />
                 <SidebarItem icon={<FileText size={18} />} label="Credit payments" />
                 <SidebarItem icon={<Activity size={18} />} label="Fim do dia" />
               </div>
 
               <div className="px-6 mt-6 mb-2">
-                <span className="text-xs font-medium capitalize text-zinc-600">UsuÃ¡rio</span>
+                <span className="text-xs font-medium capitalize text-zinc-600">Usuário</span>
                 <div className="h-px bg-zinc-800/50 flex-1 ml-2 inline-block align-middle w-24" />
               </div>
 
               <div className="px-2 space-y-1">
-                <SidebarItem icon={<UserCircle size={18} />} label="Info do UsuÃ¡rio" />
+                <SidebarItem icon={<UserCircle size={18} />} label="Info do Usuário" />
                 <SidebarItem icon={<LogOut size={18} />} label="Logout" onClick={onLogout} />
               </div>
 
               <div className="h-px bg-zinc-800/50 mx-6 my-4" />
 
               <div className="px-2">
-                <SidebarItem icon={<MessageSquare size={18} />} label="ComentÃ¡rios" />
+                <SidebarItem icon={<MessageSquare size={18} />} label="Comentários" />
               </div>
 
               <div className="mt-8 text-center">

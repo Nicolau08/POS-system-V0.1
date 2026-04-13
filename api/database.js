@@ -1,9 +1,77 @@
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
+import path from 'path';
+import { fileURLToPath } from 'url';
+import sqlite3Import from 'sqlite3';
+import { uuidv4 } from './cloudIdUtils.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const sqlite3 = sqlite3Import.verbose();
 
 const dbPath = path.join(__dirname, 'pos.db');
 const db = new sqlite3.Database(dbPath);
 db.configure('busyTimeout', 5000);
+
+/** Repõe regras predefinidas quando a tabela está vazia (ex.: base antiga sem permission_rules). */
+export function runPermissionRulesSeedIfEmpty(callback) {
+  db.get(`SELECT COUNT(*) AS total FROM permission_rules`, (err, row) => {
+    if (err) return callback(err);
+    if ((row?.total ?? 0) > 0) return callback(null);
+
+    const now = new Date().toISOString();
+    const DEFAULT_RULES = [
+      { key: 'gerenciamento.acesso', required_level: 0 },
+      { key: 'painel.painel_controle', required_level: 0 },
+      { key: 'gerenciamento.configuracoes', required_level: 0 },
+      { key: 'gerenciamento.fechamento_diario', required_level: 0 },
+      { key: 'gerenciamento.perfil_usuario', required_level: 0 },
+      { key: 'gerenciamento.design_floor_plans', required_level: 0 },
+      { key: 'painel.documentos', required_level: 0 },
+      { key: 'painel.produtos', required_level: 0 },
+      { key: 'painel.estoque', required_level: 0 },
+      { key: 'painel.relatorios', required_level: 0 },
+      { key: 'painel.clientes_fornecedores', required_level: 0 },
+      { key: 'painel.promocoes_acoes', required_level: 0 },
+      { key: 'painel.usuarios_seguranca', required_level: 0 },
+      { key: 'painel.meios_pagamento', required_level: 0 },
+      { key: 'painel.paises', required_level: 0 },
+      { key: 'painel.taxas_impostos', required_level: 0 },
+      { key: 'painel.minha_empresa', required_level: 0 },
+      { key: 'estoque.inventario_rapido', required_level: 0 },
+      { key: 'estoque.ver_preco_custo', required_level: 0 },
+      { key: 'vendas.ver_pedidos_em_aberto', required_level: 0 },
+      { key: 'vendas.cancelar_pedido', required_level: 0 },
+      { key: 'vendas.cancelar_item', required_level: 0 },
+      { key: 'vendas.bloquear_venda', required_level: 0 },
+      { key: 'vendas.desbloquear_venda', required_level: 0 },
+      { key: 'vendas.dividir_pedido', required_level: 0 },
+      { key: 'vendas.aplicar_desconto', required_level: 0 },
+      { key: 'vendas.apagar_documento', required_level: 0 },
+      { key: 'vendas.devolucao', required_level: 0 },
+      { key: 'vendas.override_taxes', required_level: 0 },
+      { key: 'vendas.ver_historico_vendas', required_level: 0 },
+      { key: 'vendas.reimprimir_recibo', required_level: 0 },
+      { key: 'vendas.credit_payments', required_level: 0 },
+      { key: 'vendas.abrir_caixa', required_level: 0 },
+      { key: 'vendas.abrir_gaveta_dinheiro', required_level: 0 },
+      { key: 'vendas.venda_estoque_zero', required_level: 0 },
+    ];
+
+    let completed = 0;
+    const total = DEFAULT_RULES.length;
+    for (const rule of DEFAULT_RULES) {
+      db.run(
+        `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES (?, ?, ?)`,
+        [rule.key, rule.required_level, now],
+        () => {
+          completed += 1;
+          if (completed === total) {
+            console.log(`[seed] permission_rules seeded (${DEFAULT_RULES.length})`);
+            callback(null);
+          }
+        }
+      );
+    }
+  });
+}
 
 db.serialize(() => {
   const safeRun = (sql, errorLabel) => {
@@ -25,7 +93,17 @@ db.serialize(() => {
     CREATE TABLE IF NOT EXISTS vendas (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       total REAL NOT NULL,
-      data TEXT NOT NULL
+      data TEXT NOT NULL,
+      doc_type TEXT NOT NULL DEFAULT 'VD',
+      doc_sequence INTEGER,
+      status TEXT,
+      customer_id TEXT,
+      customer_name TEXT,
+      payment_method TEXT,
+      user_id TEXT,
+      user_name TEXT,
+      approved_document_type TEXT,
+      approved_document_number TEXT
     )
   `);
 
@@ -45,12 +123,64 @@ db.serialize(() => {
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      surname TEXT,
+      email TEXT,
       role TEXT NOT NULL,
       pin TEXT NOT NULL,
+      access_level INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
       cloud_id TEXT UNIQUE,
       updated_at TEXT
     )
   `);
+
+  db.run(
+    `
+    CREATE TABLE IF NOT EXISTS permission_rules (
+      key TEXT PRIMARY KEY,
+      required_level INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `,
+    (permErr) => {
+      if (permErr) {
+        console.error('[database] Falha ao criar permission_rules:', permErr.message);
+      }
+    }
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS company_profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT,
+      tax_id TEXT,
+      street TEXT,
+      building_number TEXT,
+      additional_street TEXT,
+      plot_identification TEXT,
+      district TEXT,
+      cep TEXT,
+      city TEXT,
+      state TEXT,
+      country TEXT,
+      phone TEXT,
+      email TEXT,
+      bank_account_number TEXT,
+      bank_details TEXT,
+      logo_data_url TEXT,
+      void_reasons TEXT,
+      updated_at TEXT
+    )
+  `);
+
+  db.run(
+    `INSERT OR IGNORE INTO company_profile (id, updated_at) VALUES (1, datetime('now'))`,
+    (cpErr) => {
+      if (cpErr) {
+        console.error('[database] Falha ao inicializar company_profile:', cpErr.message);
+      }
+    }
+  );
 
   db.run(`
     CREATE TABLE IF NOT EXISTS categories (
@@ -113,6 +243,8 @@ db.serialize(() => {
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       customer_id TEXT,
+      user_id TEXT,
+      user_name TEXT,
       table_number TEXT,
       total REAL NOT NULL DEFAULT 0,
       subtotal REAL NOT NULL DEFAULT 0,
@@ -124,6 +256,9 @@ db.serialize(() => {
       status TEXT,
       local_sale_id TEXT,
       doc_type TEXT,
+      doc_prefix TEXT,
+      doc_year INTEGER,
+      doc_sequence INTEGER,
       document_number TEXT,
       created_at TEXT,
       updated_at TEXT
@@ -140,12 +275,33 @@ db.serialize(() => {
       price REAL NOT NULL DEFAULT 0,
       discount_amount REAL DEFAULT 0,
       created_at TEXT,
-      updated_at TEXT
+      updated_at TEXT,
+      cloud_id TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS payment_methods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      code TEXT NOT NULL UNIQUE,
+      shortcut TEXT,
+      position INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      quick_payment INTEGER NOT NULL DEFAULT 1,
+      required_customer INTEGER NOT NULL DEFAULT 0,
+      allow_change INTEGER NOT NULL DEFAULT 0,
+      mark_as_paid INTEGER NOT NULL DEFAULT 1,
+      print_receipt INTEGER NOT NULL DEFAULT 1,
+      open_cash_drawer INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
   safeRun(`CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)`, 'Erro ao criar idx_orders_customer_id:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)`, 'Erro ao criar idx_order_items_order_id:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_vendas_user_id ON vendas(user_id)`, 'Erro ao criar idx_vendas_user_id:');
 
   safeRun(
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movements_local_ref
@@ -273,6 +429,111 @@ db.serialize(() => {
       console.error('Erro ao adicionar coluna cloud_id em users:', err.message);
     }
   });
+  db.run(`ALTER TABLE users ADD COLUMN surname TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna surname em users:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE users ADD COLUMN email TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna email em users:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE users ADD COLUMN access_level INTEGER DEFAULT 0`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna access_level em users:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna active em users:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN customer_id TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna customer_id em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN customer_name TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna customer_name em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN payment_method TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna payment_method em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN user_id TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna user_id em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN user_name TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna user_name em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN doc_type TEXT DEFAULT 'VD'`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna doc_type em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN doc_sequence INTEGER`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna doc_sequence em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN status TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna status em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN approved_document_type TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna approved_document_type em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE vendas ADD COLUMN approved_document_number TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna approved_document_number em vendas:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN user_id TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna user_id em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN user_name TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna user_name em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN doc_prefix TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna doc_prefix em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN doc_year INTEGER`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna doc_year em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN doc_sequence INTEGER`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna doc_sequence em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN approved_document_type TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna approved_document_type em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN approved_document_number TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna approved_document_number em orders:', err.message);
+    }
+  });
   db.run(`ALTER TABLE categories ADD COLUMN updated_at TEXT`, (err) => {
     if (err && !String(err.message || '').includes('duplicate column name')) {
       console.error('Erro ao adicionar coluna updated_at em categories:', err.message);
@@ -288,6 +549,21 @@ db.serialize(() => {
       console.error('Erro ao adicionar coluna updated_at em users:', err.message);
     }
   });
+
+  db.run(`ALTER TABLE order_items ADD COLUMN cloud_id TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna cloud_id em order_items:', err.message);
+    }
+  });
+
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_order_items_cloud_id ON order_items(cloud_id)`,
+    'Erro ao criar idx_order_items_cloud_id:'
+  );
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_payment_methods_enabled ON payment_methods(enabled)`, 'Erro ao criar idx_payment_methods_enabled:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_payment_methods_position ON payment_methods(position)`, 'Erro ao criar idx_payment_methods_position:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_vendas_doc_type_seq ON vendas(doc_type, doc_sequence)`, 'Erro ao criar idx_vendas_doc_type_seq:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_orders_doc_prefix_year_seq ON orders(doc_prefix, doc_year, doc_sequence)`, 'Erro ao criar idx_orders_doc_prefix_year_seq:');
 
   // Retry index creation after ALTER statements for legacy databases.
   safeRun(`CREATE INDEX IF NOT EXISTS idx_products_cloud_id ON products(cloud_id)`, 'Erro ao criar idx_products_cloud_id:');
@@ -394,6 +670,46 @@ db.serialize(() => {
     }
   );
 
+  db.all(
+    `SELECT id, cloud_id FROM products WHERE cloud_id IS NULL OR TRIM(COALESCE(cloud_id, '')) = ''`,
+    [],
+    (backfillErr, rows) => {
+      if (backfillErr) {
+        console.error('Erro ao listar produtos para cloud_id:', backfillErr.message);
+        return;
+      }
+      for (const row of rows ?? []) {
+        const nextId = uuidv4();
+        db.run(`UPDATE products SET cloud_id = ? WHERE id = ?`, [nextId, row.id], (runErr) => {
+          if (runErr) console.error(`Erro ao definir cloud_id para produto ${row.id}:`, runErr.message);
+        });
+      }
+      if ((rows ?? []).length > 0) {
+        console.log(`[migrate] cloud_id atribuido a ${rows.length} produto(s) sem UUID.`);
+      }
+    }
+  );
+
+  db.all(
+    `SELECT id FROM clientes WHERE cloud_id IS NULL OR TRIM(COALESCE(cloud_id, '')) = ''`,
+    [],
+    (backfillErr, rows) => {
+      if (backfillErr) {
+        console.error('Erro ao listar clientes para cloud_id:', backfillErr.message);
+        return;
+      }
+      for (const row of rows ?? []) {
+        const nextId = uuidv4();
+        db.run(`UPDATE clientes SET cloud_id = ? WHERE id = ?`, [nextId, row.id], (runErr) => {
+          if (runErr) console.error(`Erro ao definir cloud_id para cliente ${row.id}:`, runErr.message);
+        });
+      }
+      if ((rows ?? []).length > 0) {
+        console.log(`[migrate] cloud_id atribuido a ${rows.length} cliente(s) sem UUID.`);
+      }
+    }
+  );
+
   db.get(`SELECT COUNT(*) AS total FROM users`, (err, row) => {
     if (err) {
       console.error('Erro ao verificar usuarios iniciais:', err.message);
@@ -402,9 +718,15 @@ db.serialize(() => {
 
     if ((row?.total ?? 0) === 0) {
       db.run(
-        `INSERT INTO users (id, name, role, pin) VALUES (?, ?, ?, ?)`,
-        ['admin-1', 'Administrador', 'admin', '1234']
+        `INSERT INTO users (id, name, surname, email, role, pin, access_level, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ['admin-1', 'Administrador', null, null, 'admin', '1234', 9, 1]
       );
+    }
+  });
+
+  runPermissionRulesSeedIfEmpty((permSeedErr) => {
+    if (permSeedErr) {
+      console.error('Erro ao verificar permission_rules iniciais:', permSeedErr.message);
     }
   });
 
@@ -439,9 +761,10 @@ db.serialize(() => {
 
           db.run(
             `INSERT INTO products
-              (code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-             VALUES (?, ?, (SELECT id FROM categories WHERE name = ? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
+             VALUES (?, ?, ?, (SELECT id FROM categories WHERE name = ? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+              uuidv4(),
               1,
               'Coca-Cola',
               'Bebidas',
@@ -469,9 +792,10 @@ db.serialize(() => {
 
               db.run(
                 `INSERT INTO products
-                  (code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-                 VALUES (?, ?, (SELECT id FROM categories WHERE name = ? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
+                 VALUES (?, ?, ?, (SELECT id FROM categories WHERE name = ? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
+                  uuidv4(),
                   2,
                   'Água',
                   'Bebidas',
@@ -503,6 +827,30 @@ db.serialize(() => {
       );
     }
   });
+
+  db.get(`SELECT COUNT(*) AS total FROM payment_methods`, (err, row) => {
+    if (err) {
+      console.error('Erro ao verificar meios de pagamento iniciais:', err.message);
+      return;
+    }
+
+    if ((row?.total ?? 0) === 0) {
+      const now = new Date().toISOString();
+      const seedRows = [
+        ['DINHEIRO', 'cash', '', 1, 1, 1, 0, 1, 1, 1, 1, now, now],
+        ['CARTAO', 'card', '', 2, 1, 1, 0, 0, 1, 1, 0, now, now],
+        ['PIX', 'pix', '', 3, 1, 1, 0, 0, 1, 1, 0, now, now],
+      ];
+      for (const seed of seedRows) {
+        db.run(
+          `INSERT OR IGNORE INTO payment_methods
+            (name, code, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          seed
+        );
+      }
+    }
+  });
 });
 
-module.exports = db;
+export default db;

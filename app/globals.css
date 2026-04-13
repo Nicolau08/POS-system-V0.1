@@ -39,6 +39,17 @@ body {
   color: #ffffff;
 }
 
+/**
+ * Logo no recibo: térmica = preto. Só grayscale + contraste leve —
+ * contrast/brightness extremos viram cinzas de anti-alias/sombra em blocos pretos.
+ */
+.receipt-thermal-logo {
+  filter: grayscale(1) contrast(1.2);
+  -webkit-filter: grayscale(1) contrast(1.2);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
 @media print {
   body * {
     visibility: hidden;
@@ -55,6 +66,12 @@ body {
     padding: 0;
     background: white;
     color: black;
+  }
+  #receipt-print-area img.receipt-thermal-logo {
+    filter: grayscale(1) contrast(1.2);
+    -webkit-filter: grayscale(1) contrast(1.2);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .no-print {
     display: none !important;

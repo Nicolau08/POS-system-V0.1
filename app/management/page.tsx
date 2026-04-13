@@ -28,10 +28,17 @@ import {
   ChevronLast,
   Loader2
 } from 'lucide-react';
-import { supabase, isConfigured } from '@/lib/supabase';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
 import ReportsManager from './components/ReportsManager';
+import { getPosApiBase } from '@/lib/apiBase';
+import SyncStatusPanel from './components/SyncStatusPanel';
+import CustomersSuppliersManager from './components/CustomersSuppliersManager';
+import PaymentMethodsManager from './components/PaymentMethodsManager';
+import UsersSecurityManager from './components/UsersSecurityManager';
+import MyCompanyManager from './components/MyCompanyManager';
+import DocumentsManager from './components/DocumentsManager';
+import GerenciamentoManager from './components/GerenciamentoManager';
 
 // Dynamically import Recharts to avoid SSR issues
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -48,16 +55,33 @@ const initialMonthlySalesData = Array.from({ length: 12 }, (_, i) => ({
   name: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][i],
   sales: 0
 }));
+const monthlyBarColors = [
+  '#3B82F6', // Jan
+  '#06B6D4', // Fev
+  '#14B8A6', // Mar
+  '#22C55E', // Abr
+  '#84CC16', // Mai
+  '#EAB308', // Jun
+  '#F59E0B', // Jul
+  '#F97316', // Ago
+  '#EF4444', // Set
+  '#EC4899', // Out
+  '#A855F7', // Nov
+  '#6366F1', // Dez
+];
+const DOCS_VIEW_STATE_STORAGE_KEY = 'management:documents-view-state';
 
 export default function ManagementPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [sidebarSelectedTab, setSidebarSelectedTab] = useState('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const [isResizing, setIsResizing] = useState(false);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [permissionRules, setPermissionRules] = useState<Record<string, number> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
   const [currentDate, setCurrentDate] = useState('');
@@ -116,7 +140,6 @@ export default function ManagementPage() {
   const [bestMonthValue, setBestMonthValue] = useState(0);
   const [topProducts, setTopProducts] = useState<{name: string, sales: number, price: number}[]>([]);
   const [topGroups, setTopGroups] = useState<{name: string, sales: number}[]>([]);
-  const [salesByHour, setSalesByHour] = useState<{hour: string, sales: number}[]>([]);
   const [topCustomers, setTopCustomers] = useState<{name: string, total: number}[]>([]);
 
   const restoreAuthState = React.useCallback(() => {
@@ -140,132 +163,29 @@ export default function ManagementPage() {
   }, []);
 
   const fetchDashboardData = React.useCallback(async () => {
-    if (!isConfigured) {
-      console.warn('Supabase não configurado. Painel de gestão desativado.');
-      setIsLoading(false);
-      return;
-    }
     setIsLoading(true);
     try {
-      // 1. Fetch Orders for the current year
-      const currentYear = new Date().getFullYear();
-      const startOfYear = `${currentYear}-01-01T00:00:00Z`;
-      const endOfYear = `${currentYear}-12-31T23:59:59Z`;
+      const apiBase = getPosApiBase();
+      const yearNow = new Date().getFullYear();
+      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}`);
+      if (!summaryRes.ok) throw new Error('Falha ao carregar dashboard-summary');
 
-      const { data: orders, error: ordersError } = await supabase
-        .from('orders')
-        .select('*')
-        .gte('created_at', startOfYear)
-        .lte('created_at', endOfYear)
-        .eq('status', 'completed');
+      const summary = await summaryRes.json();
 
-      if (ordersError) throw ordersError;
+      const monthly = Array.isArray(summary?.monthlySalesData)
+        ? summary.monthlySalesData
+        : initialMonthlySalesData;
+      const topProductsData = Array.isArray(summary?.topProducts) ? summary.topProducts : [];
+      const topCustomersData = Array.isArray(summary?.topCustomers) ? summary.topCustomers : [];
+      const topGroupsData = Array.isArray(summary?.topGroups) ? summary.topGroups : [];
 
-      if (orders && orders.length > 0) {
-        // Calculate Total Sales
-        const total = orders.reduce((acc, order) => acc + (order.total || 0), 0);
-        setTotalSales(total);
-
-        // Calculate Monthly Sales
-        const monthly = initialMonthlySalesData.map(item => ({ ...item }));
-        orders.forEach(order => {
-          const date = new Date(order.created_at);
-          const monthIndex = date.getMonth();
-          monthly[monthIndex].sales += (order.total || 0);
-        });
-        setMonthlySalesData(monthly);
-
-        // Find Best Month
-        let best = { name: '---', value: 0 };
-        monthly.forEach(m => {
-          if (m.sales > best.value) {
-            best = { name: m.name, value: m.sales };
-          }
-        });
-        setBestMonth(best.name);
-        setBestMonthValue(best.value);
-
-        // Calculate Sales By Hour
-        const hourlyMap: {[key: string]: number} = {};
-        orders.forEach(order => {
-          const date = new Date(order.created_at);
-          const hour = date.getHours().toString().padStart(2, '0') + ':00';
-          hourlyMap[hour] = (hourlyMap[hour] || 0) + (order.total || 0);
-        });
-        const hourly = Object.entries(hourlyMap)
-          .map(([hour, sales]) => ({ hour, sales }))
-          .sort((a, b) => a.hour.localeCompare(b.hour));
-        setSalesByHour(hourly);
-      }
-
-      // 2. Fetch Top Products and Categories
-      const { data: items, error: itemsError } = await supabase
-        .from('order_items')
-        .select('product_name, quantity, price, product_id');
-
-      if (itemsError) throw itemsError;
-
-      if (items && items.length > 0) {
-        // Fetch products to get categories
-        const productIds = Array.from(new Set(items.map(item => item.product_id).filter(Boolean)));
-        const { data: products, error: productsError } = await supabase
-          .from('products')
-          .select('id, categories(name)')
-          .in('id', productIds);
-        
-        const categoryMap: {[key: string]: string} = {};
-        if (products) {
-          products.forEach((p: any) => {
-            categoryMap[p.id] = p.categories?.name || 'Sem Categoria';
-          });
-        }
-
-        const productMap: {[key: string]: {sales: number, price: number}} = {};
-        const groupMap: {[key: string]: number} = {};
-
-        items.forEach(item => {
-          if (!productMap[item.product_name]) {
-            productMap[item.product_name] = { sales: 0, price: item.price };
-          }
-          productMap[item.product_name].sales += (item.quantity || 0);
-
-          const catName = categoryMap[item.product_id] || 'Sem Categoria';
-          groupMap[catName] = (groupMap[catName] || 0) + (item.quantity || 0);
-        });
-
-        const top = Object.entries(productMap)
-          .map(([name, data]) => ({ name, sales: data.sales, price: data.price }))
-          .sort((a, b) => b.sales - a.sales)
-          .slice(0, 5);
-        setTopProducts(top);
-
-        const groups = Object.entries(groupMap)
-          .map(([name, sales]) => ({ name, sales }))
-          .sort((a, b) => b.sales - a.sales)
-          .slice(0, 5);
-        setTopGroups(groups);
-      }
-
-      // 3. Fetch Top Customers
-      const { data: customersData, error: customersError } = await supabase
-        .from('orders')
-        .select('total, customers(name)')
-        .not('customer_id', 'is', null);
-
-      if (customersError) throw customersError;
-
-      if (customersData && customersData.length > 0) {
-        const customerMap: {[key: string]: number} = {};
-        customersData.forEach((order: any) => {
-          const name = order.customers?.name || 'Cliente Desconhecido';
-          customerMap[name] = (customerMap[name] || 0) + (order.total || 0);
-        });
-        const topCust = Object.entries(customerMap)
-          .map(([name, total]) => ({ name, total }))
-          .sort((a, b) => b.total - a.total)
-          .slice(0, 5);
-        setTopCustomers(topCust);
-      }
+      setTotalSales(Number(summary?.totalSales ?? 0));
+      setMonthlySalesData(monthly);
+      setBestMonth(String(summary?.bestMonth ?? '---'));
+      setBestMonthValue(Number(summary?.bestMonthValue ?? 0));
+      setTopProducts(topProductsData);
+      setTopCustomers(topCustomersData);
+      setTopGroups(topGroupsData);
 
     } catch (err: any) {
       const errorMessage = err.message || (typeof err === 'string' ? err : 'Unknown error');
@@ -276,6 +196,13 @@ export default function ManagementPage() {
         code: err.code || 'No code',
         fullError: err
       });
+      setTotalSales(0);
+      setMonthlySalesData(initialMonthlySalesData);
+      setBestMonth('---');
+      setBestMonthValue(0);
+      setTopProducts([]);
+      setTopGroups([]);
+      setTopCustomers([]);
     } finally {
       setIsLoading(false);
     }
@@ -292,6 +219,35 @@ export default function ManagementPage() {
 
     router.replace('/');
   }, [fetchDashboardData, restoreAuthState, router]);
+
+  // Loads permission rules so we can hide modules based on access level.
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setPermissionRules(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${getPosApiBase()}/permission-rules`);
+        if (!res.ok) throw new Error('Falha ao carregar permission-rules');
+        const data: any[] = (await res.json()) ?? [];
+        const normalized: Record<string, number> = {};
+        for (const row of data) {
+          if (!row?.key) continue;
+          normalized[String(row.key)] = Number(row.required_level ?? row.requiredLevel ?? 0);
+        }
+        if (!cancelled) setPermissionRules(normalized);
+      } catch (e) {
+        if (!cancelled) setPermissionRules(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn]);
 
   useEffect(() => {
     const syncSession = () => {
@@ -340,6 +296,7 @@ export default function ManagementPage() {
 
   // Memoize components to prevent unnecessary re-renders
   const sidebarItems = useMemo(() => [
+    { id: 'gerenciamento', icon: <Settings size={18} />, label: 'Gerenciamento' },
     { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
     { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
     { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
@@ -354,11 +311,82 @@ export default function ManagementPage() {
     { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
   ], []);
 
+  const accessLevel = Number(currentUser?.accessLevel ?? currentUser?.access_level ?? 0);
+
+  const sidebarPermissionKeyById = useMemo(
+    () => ({
+      gerenciamento: 'gerenciamento.acesso',
+      dashboard: 'painel.painel_controle',
+      docs: 'painel.documentos',
+      products: 'painel.produtos',
+      inventory: 'painel.estoque',
+      reports: 'painel.relatorios',
+      customers: 'painel.clientes_fornecedores',
+      promos: 'painel.promocoes_acoes',
+      security: 'painel.usuarios_seguranca',
+      payments: 'painel.meios_pagamento',
+      countries: 'painel.paises',
+      taxes: 'painel.taxas_impostos',
+      company: 'painel.minha_empresa',
+    }),
+    []
+  );
+
+  const sidebarItemsToRender = useMemo(() => {
+    if (!permissionRules) return sidebarItems;
+    return sidebarItems.filter((item) => {
+      const permissionKey = sidebarPermissionKeyById[item.id as keyof typeof sidebarPermissionKeyById];
+      if (!permissionKey) return true;
+      const requiredLevel = Number(permissionRules[permissionKey] ?? 0);
+      return accessLevel >= requiredLevel;
+    });
+  }, [accessLevel, permissionRules, sidebarPermissionKeyById, sidebarItems]);
+
+  useEffect(() => {
+    if (!permissionRules) return;
+    if (!sidebarItemsToRender.some((item) => item.id === activeTab)) {
+      setActiveTab(sidebarItemsToRender[0]?.id ?? 'dashboard');
+    }
+    if (!sidebarItemsToRender.some((item) => item.id === sidebarSelectedTab)) {
+      setSidebarSelectedTab(sidebarItemsToRender[0]?.id ?? 'dashboard');
+    }
+  }, [activeTab, permissionRules, sidebarItemsToRender, sidebarSelectedTab]);
+
+  useEffect(() => {
+    const onNavigateTab = (event: Event) => {
+      const customEvent = event as CustomEvent<{ tabId?: string; preserveSidebarSelection?: boolean }>;
+      const tabId = String(customEvent?.detail?.tabId ?? '').trim();
+      if (!tabId) return;
+      setActiveTab(tabId);
+      if (!customEvent?.detail?.preserveSidebarSelection) {
+        setSidebarSelectedTab(tabId);
+      }
+    };
+    window.addEventListener('management:navigate-tab', onNavigateTab as EventListener);
+    return () => {
+      window.removeEventListener('management:navigate-tab', onNavigateTab as EventListener);
+    };
+  }, []);
+
   const currentModuleLabel = useMemo(() => {
-    return sidebarItems.find((item) => item.id === activeTab)?.label ?? 'Painel de Controle';
-  }, [activeTab, sidebarItems]);
+    return sidebarItemsToRender.find((item) => item.id === activeTab)?.label ?? 'Painel de Controle';
+  }, [activeTab, sidebarItemsToRender]);
+
+  const currentMonthSummary = useMemo(() => {
+    const monthIndex = new Date().getMonth();
+    const monthData = monthlySalesData[monthIndex];
+    return {
+      name: monthData?.name ?? '---',
+      sales: Number(monthData?.sales ?? 0),
+    };
+  }, [monthlySalesData]);
 
   const handleBack = () => {
+    try {
+      window.localStorage.removeItem(DOCS_VIEW_STATE_STORAGE_KEY);
+    } catch {
+      // ignore storage cleanup issues
+    }
     router.push('/');
   };
 
@@ -367,7 +395,7 @@ export default function ManagementPage() {
       <div className="flex h-screen items-center justify-center bg-[#1a1a1a] text-zinc-400">
         <div className="flex items-center gap-3 text-sm">
           <Loader2 size={18} className="animate-spin text-blue-500" />
-          Restaurando sessao...
+          Restaurando sessão...
         </div>
       </div>
     );
@@ -386,11 +414,6 @@ export default function ManagementPage() {
 
   return (
     <div className="flex flex-col h-screen bg-[#1a1a1a] text-zinc-300 font-sans overflow-hidden select-none">
-      {!isConfigured && (
-        <div className="bg-rose-600 text-white text-[10px] font-bold py-1 px-4 text-center animate-pulse z-[9999]">
-          CONFIGURAÇÃO DO SUPABASE AUSENTE OU INVÁLIDA: Adicione NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY nas Definições (Settings).
-        </div>
-      )}
       <header className="h-10 shrink-0 bg-[#141414] border-b border-zinc-800/30 flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <span className="text-sm font-medium text-zinc-300">{`Gerenciamento - ${currentModuleLabel}`}</span>
@@ -410,24 +433,27 @@ export default function ManagementPage() {
           style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
         >
           <div className="flex-1 pt-0 pb-2 overflow-y-auto custom-scrollbar">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors relative group ${
-                  activeTab === item.id 
-                    ? 'bg-zinc-800/50 text-white shadow-lg shadow-black/20' 
-                    : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <div className="flex-shrink-0">{item.icon}</div>
-                {!isSidebarCollapsed && <span className="text-xs font-medium truncate capitalize leading-none">{item.label}</span>}
-                {isSidebarCollapsed && (
-                  <div className="absolute left-full ml-2 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
-                    {item.label}
-                  </div>
-                )}
-              </button>
+            {sidebarItemsToRender.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    setSidebarSelectedTab(item.id);
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors relative group ${
+                    sidebarSelectedTab === item.id
+                      ? 'bg-zinc-800/50 text-white'
+                      : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <div className="flex-shrink-0">{item.icon}</div>
+                  {!isSidebarCollapsed && <span className="text-xs font-medium truncate capitalize leading-none">{item.label}</span>}
+                  {isSidebarCollapsed && (
+                    <div className="absolute left-full ml-2 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
+                      {item.label}
+                    </div>
+                  )}
+                </button>
             ))}
           </div>
 
@@ -463,12 +489,12 @@ export default function ManagementPage() {
               {isLoading ? (
                 <div className="h-full flex flex-col items-center justify-center gap-4">
                   <Loader2 size={48} className="text-blue-500 animate-spin" />
-                  <p className="text-zinc-500 font-medium">Carregando dados do Supabase...</p>
+                  <p className="text-zinc-500 font-medium">Carregando dados locais...</p>
                 </div>
               ) : (
                 <>
                   {/* Monthly Sales Chart Section */}
-                  <section className="bg-[#141414] border border-zinc-800/30 rounded shadow-sm">
+                  <section className="bg-[#141414] border border-zinc-800/30 rounded">
                     <div className="flex">
                       <div className="flex-1 p-4 border-r border-zinc-800/30">
                         <div className="flex items-center justify-between mb-4">
@@ -507,9 +533,9 @@ export default function ManagementPage() {
                                 contentStyle={{ backgroundColor: '#111', border: '1px solid #333', fontSize: '10px' }}
                                 formatter={(value: any) => [formatPrice(value), 'Vendas']}
                               />
-                              <Bar dataKey="sales" fill="#0099ff" radius={[2, 2, 0, 0]}>
+                              <Bar dataKey="sales" fill={monthlyBarColors[0]} radius={[2, 2, 0, 0]}>
                                 {monthlySalesData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill="#0099ff" />
+                                  <Cell key={`cell-${index}`} fill={monthlyBarColors[index % monthlyBarColors.length]} />
                                 ))}
                               </Bar>
                             </BarChart>
@@ -525,15 +551,16 @@ export default function ManagementPage() {
                       
                       <div className="w-48 p-4 flex flex-col justify-between bg-[#111]">
                         <div>
-                          <p className="text-[11px] font-medium text-zinc-500 capitalize tracking-wider">Total de Vendas</p>
-                          <h3 className="text-4xl font-bold text-white mt-1">{formatPrice(totalSales)}</h3>
+                          <p className="text-[11px] font-medium text-zinc-500 capitalize tracking-wider">Mês corrente</p>
+                          <p className="text-xs font-bold text-zinc-300 mt-1">{currentMonthSummary.name}</p>
+                          <h3 className="text-4xl font-bold text-white mt-1">{formatPrice(currentMonthSummary.sales)}</h3>
                         </div>
                         <div className="space-y-2">
                           <div>
-                            <p className="text-[10px] text-zinc-500">Mês de melhor desempenho:</p>
-                            <p className="text-xs font-bold text-zinc-300">{bestMonth}</p>
+                            <p className="text-[10px] text-zinc-500">União dos meses:</p>
+                            <p className="text-xs font-bold text-zinc-300">Total acumulado</p>
                           </div>
-                          <h4 className="text-xl font-bold text-zinc-400">{formatPrice(bestMonthValue)}</h4>
+                          <h4 className="text-xl font-bold text-zinc-400">{formatPrice(totalSales)}</h4>
                         </div>
                       </div>
                     </div>
@@ -547,6 +574,8 @@ export default function ManagementPage() {
 
                   {/* Widgets Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <SyncStatusPanel />
+
                     <DashboardWidget title="Principais produtos">
                       {topProducts.length > 0 ? (
                         <div className="w-full space-y-2">
@@ -560,55 +589,13 @@ export default function ManagementPage() {
                       ) : null}
                     </DashboardWidget>
                     
-                    <DashboardWidget title="Vendas por hora">
-                      {salesByHour.length > 0 ? (
-                        <div className="w-full space-y-2">
-                          {salesByHour.map((h, i) => (
-                            <div key={i} className="flex justify-between text-xs">
-                              <span className="text-zinc-400">{h.hour}</span>
-                              <span className="text-zinc-200 font-bold">{formatPrice(h.sales)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </DashboardWidget>
-
-                    <div className="bg-[#141414] border border-zinc-800/30 rounded p-4 flex flex-col items-center justify-center min-h-[250px]">
-                      <p className="text-xs font-medium text-zinc-500 capitalize mb-4">Total de Vendas (Total)</p>
-                      <span className="text-[100px] font-bold text-white leading-none">{formatPrice(totalSales)}</span>
-                    </div>
-
-                    <DashboardWidget title="Principais grupos de produtos" subtitle="Grupos de produtos mais vendidos no período selecionado">
-                      {topGroups.length > 0 ? (
-                        <div className="w-full space-y-2">
-                          {topGroups.map((g, i) => (
-                            <div key={i} className="flex justify-between text-xs">
-                              <span className="text-zinc-400">{g.name}</span>
-                              <span className="text-zinc-200 font-bold">{g.sales} un.</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </DashboardWidget>
-                    
-                    <DashboardWidget title="Principais clientes" subtitle="Clientes líderes no período selecionado (5 principais)" isLarge={true}>
+                    <DashboardWidget title="Principais clientes">
                       {topCustomers.length > 0 ? (
-                        <div className="w-full space-y-3 mt-4">
-                          {topCustomers.map((c, i) => (
-                            <div key={i} className="flex items-center gap-4">
-                              <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 text-xs font-bold">
-                                {i + 1}
-                              </div>
-                              <div className="flex-1">
-                                <p className="text-xs font-bold text-zinc-200">{c.name}</p>
-                                <div className="w-full bg-zinc-800 h-1.5 rounded-full mt-1 overflow-hidden">
-                                  <div 
-                                    className="bg-blue-500 h-full rounded-full" 
-                                    style={{ width: `${(c.total / totalSales) * 100}%` }}
-                                  />
-                                </div>
-                              </div>
-                              <span className="text-xs font-bold text-zinc-400">{formatPrice(c.total)}</span>
+                        <div className="w-full space-y-2">
+                          {topCustomers.map((customer, i) => (
+                            <div key={i} className="flex justify-between text-xs">
+                              <span className="text-zinc-400">{customer.name}</span>
+                              <span className="text-zinc-200 font-bold">{formatPrice(customer.total)}</span>
                             </div>
                           ))}
                         </div>
@@ -621,10 +608,25 @@ export default function ManagementPage() {
           )}
 
           {activeTab === 'products' && <ProductsManager />}
+          {activeTab === 'docs' && <DocumentsManager />}
           {activeTab === 'inventory' && <InventoryManager />}
           {activeTab === 'reports' && <ReportsManager />}
+          {activeTab === 'customers' && <CustomersSuppliersManager />}
+          {activeTab === 'payments' && <PaymentMethodsManager />}
+          {activeTab === 'security' && <UsersSecurityManager />}
+          {activeTab === 'company' && <MyCompanyManager />}
+          {activeTab === 'gerenciamento' && <GerenciamentoManager />}
           
-          {activeTab !== 'dashboard' && activeTab !== 'products' && activeTab !== 'inventory' && activeTab !== 'reports' && (
+          {activeTab !== 'dashboard' &&
+            activeTab !== 'products' &&
+            activeTab !== 'docs' &&
+            activeTab !== 'inventory' &&
+            activeTab !== 'reports' &&
+            activeTab !== 'customers' &&
+            activeTab !== 'payments' &&
+            activeTab !== 'security' &&
+            activeTab !== 'company' &&
+            activeTab !== 'gerenciamento' && (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-600 italic">
               <Package size={48} className="mb-4 opacity-20" />
               <p>Módulo {activeTab} em desenvolvimento</p>
@@ -656,7 +658,7 @@ export default function ManagementPage() {
 
 function DashboardWidget({ title, subtitle, isLarge, children }: { title: string, subtitle?: string, isLarge?: boolean, children?: React.ReactNode }) {
   return (
-    <div className={`bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] shadow-lg hover:border-zinc-700 transition-colors ${isLarge ? 'md:col-span-2' : ''}`}>
+    <div className={`bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-zinc-700 transition-colors ${isLarge ? 'md:col-span-2' : ''}`}>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h4 className="text-xs font-bold text-zinc-300 capitalize tracking-wider">{title}</h4>

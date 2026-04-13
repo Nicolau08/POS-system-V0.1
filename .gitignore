@@ -7,3 +7,6 @@ dev-output.txt
 *.tsbuildinfo
 .env*
 !.env.example
+api/*.db
+api/*.db-shm
+api/*.db-wal

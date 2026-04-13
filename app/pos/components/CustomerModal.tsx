@@ -68,7 +68,7 @@ export function CustomerModal({
                   </div>
                   <div>
                     <h2 className="text-xl font-bold text-white tracking-tight">
-                      {isAddingCustomer ? (editingCustomer ? 'Editar Cliente' : 'Novo Cliente') : 'GestÃ£o de Clientes'}
+                      {isAddingCustomer ? (editingCustomer ? 'Editar Cliente' : 'Novo Cliente') : 'Gestão de Clientes'}
                     </h2>
                     <p className="text-xs text-zinc-500 font-medium capitalize">
                       {isAddingCustomer ? 'Preencha os dados abaixo' : 'Selecionar ou cadastrar cliente'}
@@ -91,7 +91,7 @@ export function CustomerModal({
                           value={newCustomer.name ?? ''}
                           onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })}
                           className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                          placeholder="Ex: JoÃ£o Silva"
+                          placeholder="Ex: João Silva"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -231,7 +231,7 @@ export function CustomerModal({
                     <div className="text-sm font-bold text-white">{selectedCustomer.name}</div>
                   </div>
                   <button onClick={() => setSelectedCustomer(null)} className="text-xs font-bold text-rose-500 hover:text-rose-400 transition-colors">
-                    Remover SeleÃ§Ã£o
+                    Remover Seleção
                   </button>
                 </div>
               )}

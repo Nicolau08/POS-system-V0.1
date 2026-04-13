@@ -36,7 +36,7 @@ export function Cart({
 }: {
   selectedCartItemId: string | null;
   onDeleteSelected: () => void;
-  docType: 'VD' | 'TK' | 'FP';
+  docType: 'VD' | 'TK' | 'FP' | 'FT';
   onCycleDocType: () => void;
   selectedCustomer: Customer | null;
   customerName: string;
@@ -61,6 +61,13 @@ export function Cart({
   onOpenPayment: () => void;
   onOpenBillPreview: () => void;
 }) {
+  const docTypeButtonClass =
+    docType === 'FP'
+      ? 'bg-amber-600 hover:bg-amber-500'
+      : docType === 'TK'
+        ? 'bg-sky-600 hover:bg-sky-500'
+        : 'bg-emerald-600 hover:bg-emerald-500';
+
   return (
     <div className="w-[350px] flex flex-col border-l border-zinc-800 bg-[#151515]">
       <div className="h-14 p-2 border-b border-zinc-800 flex items-center gap-2 bg-[#1a1a1a]">
@@ -81,7 +88,7 @@ export function Cart({
         <div className="flex-[2] flex items-center bg-zinc-800 rounded h-10 relative overflow-hidden">
           <button
             onClick={onCycleDocType}
-            className="h-full px-3 bg-emerald-600 text-white font-bold text-xs flex items-center justify-center min-w-[45px] hover:bg-emerald-500 transition-colors border-r border-zinc-700/50"
+            className={`h-full px-3 text-white font-bold text-xs flex items-center justify-center min-w-[45px] transition-colors border-r border-zinc-700/50 ${docTypeButtonClass}`}
             title="Tipo de Documento"
           >
             {docType}

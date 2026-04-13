@@ -2,9 +2,6 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   typescript: {
     ignoreBuildErrors: false,
   },
@@ -23,21 +20,17 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   transpilePackages: ['motion'],
 
-  webpack: (config, { dev }) => {
-    if (dev && process.env.DISABLE_HMR === 'true') {
-      config.watchOptions = {
-        ignored: /.*/,
-      };
-    }
-    return config;
-  },
+  turbopack: {},
 
-  // 🔥 ADICIONA ISSO AQUI
   async rewrites() {
     return [
       {
+        source: '/pos-backend/:path*',
+        destination: 'http://127.0.0.1:3001/:path*',
+      },
+      {
         source: '/sync/:path*',
-        destination: 'http://localhost:3001/sync/:path*',
+        destination: 'http://127.0.0.1:3001/sync/:path*',
       },
     ];
   },

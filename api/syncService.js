@@ -1,12 +1,15 @@
-const dns = require('dns').promises;
-const { URL } = require('url');
-const crypto = require('crypto');
-const { createClient } = require('@supabase/supabase-js');
-const { all, get, run } = require('./dbUtils');
-const { logSyncError } = require('./syncLogger');
-const path = require('path');
-require('dotenv').config({
-  path: path.resolve(__dirname, '../.env')
+import { URL, fileURLToPath } from 'url';
+import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
+import path from 'path';
+import dotenv from 'dotenv';
+import { all, get, run } from './dbUtils.js';
+import { isUuidString, requireProductCloudId } from './cloudIdUtils.js';
+import { logSyncError } from './syncLogger.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({
+  path: path.resolve(__dirname, '../.env'),
 });
 console.log('[SYNC ENV CHECK]', {
   url: process.env.SUPABASE_URL,
@@ -40,6 +43,28 @@ let timer = null;
 let isRunning = false;
 let isPullRunning = false;
 let isFullResetRunning = false;
+let lastConnectivityState = null;
+let lastConnectivityCheckAt = 0;
+let lastConnectivityResult = false;
+
+function isNetworkOfflineError(error) {
+  const code = String(error?.code ?? error?.cause?.code ?? '').toUpperCase();
+  const message = String(error?.message ?? '').toLowerCase();
+  const causeMessage = String(error?.cause?.message ?? '').toLowerCase();
+  return (
+    code === 'ENOTFOUND' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ETIMEDOUT' ||
+    message.includes('enotfound') ||
+    message.includes('econnrefused') ||
+    message.includes('fetch failed') ||
+    message.includes('networkerror') ||
+    message.includes('internet_check_timeout') ||
+    causeMessage.includes('enotfound') ||
+    causeMessage.includes('econnrefused') ||
+    causeMessage.includes('fetch failed')
+  );
+}
 
 function getBackoffMs(retries) {
   const safeRetries = Math.max(0, Number(retries) || 0);
@@ -67,6 +92,7 @@ function createPullSummary() {
     skipped: 0,
     conflicts: 0,
     stock_inserted: 0,
+    stock_reconciled: 0,
     skippedEntities: [],
     skipped: false,
     reason: null,
@@ -74,8 +100,58 @@ function createPullSummary() {
 }
 
 async function isInternetAvailable() {
-    return true;
+  const now = Date.now();
+  if (now - lastConnectivityCheckAt < 2000) {
+    return lastConnectivityResult;
   }
+
+  const timeoutMs = 3000;
+  const baseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://www.google.com';
+  let probeUrl = 'https://www.google.com';
+  try {
+    const parsed = new URL(baseUrl);
+    probeUrl = parsed.origin;
+  } catch {
+    probeUrl = 'https://www.google.com';
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(new Error('internet_check_timeout')), timeoutMs);
+    try {
+      // Any HTTP response means network is reachable.
+      await fetch(probeUrl, {
+        method: 'HEAD',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    lastConnectivityResult = true;
+    lastConnectivityCheckAt = Date.now();
+    return true;
+  } catch (error) {
+    if (!isNetworkOfflineError(error)) {
+      console.warn('[sync][connectivity] probe failed with non-network error', {
+        message: String(error?.message ?? error),
+      });
+    }
+    lastConnectivityResult = false;
+    lastConnectivityCheckAt = Date.now();
+    return false;
+  }
+}
+
+function logConnectivityTransition(isOnline, context = {}) {
+  if (lastConnectivityState === isOnline) return;
+  lastConnectivityState = isOnline;
+  if (!isOnline) {
+    console.warn('[sync][connectivity] offline - pausing sync cycles', context);
+  } else {
+    console.log('[sync][connectivity] online - resuming sync cycles', context);
+  }
+}
 
 function normalizeTimestamp(value) {
   if (!value) return null;
@@ -94,6 +170,29 @@ function isRemoteNewer(remoteTs, localTs) {
 
 function toSafeString(value) {
   return value != null ? String(value) : null;
+}
+
+function isUUID(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || '').trim()
+  );
+}
+
+async function resolveCustomerUUID(id) {
+  if (!id) return null;
+  const normalized = String(id).trim();
+  if (isUUID(normalized)) return normalized;
+  const row = await get(`SELECT cloud_id FROM clientes WHERE id = ? LIMIT 1`, [Number(normalized)]);
+  const cloudId = row?.cloud_id ? String(row.cloud_id).trim() : null;
+  return cloudId && isUUID(cloudId) ? cloudId : null;
+}
+
+async function ensureCustomerSynced(selectedCustomerId) {
+  const customerUUID = await resolveCustomerUUID(selectedCustomerId);
+  if (!customerUUID && selectedCustomerId) {
+    console.warn('[SYNC WARNING] Invalid customer mapping', { selectedCustomerId });
+  }
+  return customerUUID;
 }
 
 async function getLastSyncAt(syncId) {
@@ -186,6 +285,21 @@ async function mapCategoryIdFromCloud(cloudCategoryId) {
   return local?.id ?? null;
 }
 
+async function mapCategoryCloudIdFromLocal(localCategoryId) {
+  const localIdNumber = Number(localCategoryId);
+  if (!Number.isFinite(localIdNumber)) return null;
+  const row = await get(`SELECT cloud_id FROM categories WHERE id = ? LIMIT 1`, [localIdNumber]);
+  const cloudId = row?.cloud_id ? String(row.cloud_id).trim() : '';
+  return cloudId || null;
+}
+
+async function resolveProductCloudId(localProductId) {
+  const row = await get(`SELECT cloud_id FROM products WHERE id = ? LIMIT 1`, [Number(localProductId)]);
+  const cid = row?.cloud_id;
+  if (!cid || !isUuidString(String(cid))) return null;
+  return String(cid).trim();
+}
+
 async function syncCategoriesFromCloud(summary) {
   const syncId = 'cloud:categories';
   const lastSyncAt = await getLastSyncAt(syncId);
@@ -243,16 +357,15 @@ async function syncProductsFromCloud(summary) {
   let maxTs = lastSyncAt;
 
   for (const row of rows) {
-    const localId = Number(row.local_id);
-    if (Number.isFinite(localId)) {
-      await run(`UPDATE products SET stock_quantity = ? WHERE id = ?`, [Number(row.stock_quantity ?? 0), localId]);
-    }
-
     const remoteTs = normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString();
     if (isRemoteNewer(remoteTs, maxTs)) maxTs = remoteTs;
     const categoryLocalId = await mapCategoryIdFromCloud(row.category_id);
-    const existing = await get(`SELECT id, updated_at FROM products WHERE cloud_id = ? LIMIT 1`, [String(row.id)]);
+    const existing = await get(`SELECT id, updated_at, image FROM products WHERE cloud_id = ? LIMIT 1`, [String(row.id)]);
     summary.processed += 1;
+
+    const remoteImageRaw = row.image ?? row.image_url ?? null;
+    const normalizedRemoteImage = typeof remoteImageRaw === 'string' ? remoteImageRaw.trim() : remoteImageRaw;
+    const mappedImage = normalizedRemoteImage || existing?.image || null;
 
     const mapped = {
       cloud_id: String(row.id),
@@ -273,7 +386,7 @@ async function syncProductsFromCloud(summary) {
       stock_quantity: Number(row.stock_quantity ?? 0),
       min_stock: Number(row.min_stock ?? 0),
       color: row.color ?? null,
-      image: row.image ?? row.image_url ?? null,
+      image: mappedImage,
       created_at: normalizeTimestamp(row.created_at) || remoteTs,
       updated_at: remoteTs,
     };
@@ -351,6 +464,33 @@ async function syncProductsFromCloud(summary) {
     await setLastSyncAt(syncId, maxTs);
     await logSyncOperation('pull-products', { count: rows.length, last_sync_at: maxTs }, 'products synced from cloud');
   }
+
+  // Reconcile stock snapshot from cloud for all mapped products.
+  // This handles cases where stock_quantity changed remotely without bumping updated_at.
+  const stockRows = await fetchAllRows('products', 'id,stock_quantity,updated_at,created_at', 'updated_at');
+  for (const row of stockRows ?? []) {
+    const local = await get(`SELECT id, stock_quantity FROM products WHERE cloud_id = ? LIMIT 1`, [String(row.id)]);
+    if (!local?.id) continue;
+    const remoteStock = Number(row.stock_quantity ?? 0);
+    const localStock = Number(local.stock_quantity ?? 0);
+    if (remoteStock === localStock) continue;
+
+    const ts = normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString();
+    await run(
+      `UPDATE products
+       SET stock_quantity = ?, updated_at = ?
+       WHERE id = ?`,
+      [remoteStock, ts, Number(local.id)]
+    );
+    summary.stock_reconciled += 1;
+    summary.updated += 1;
+    console.log('[sync][products] reconciled stock from cloud', {
+      cloud_id: String(row.id),
+      local_id: Number(local.id),
+      from: localStock,
+      to: remoteStock,
+    });
+  }
 }
 
 async function syncCustomersFromCloud(summary) {
@@ -402,17 +542,28 @@ async function syncUsersFromCloud(summary) {
   }
   const syncId = 'cloud:users';
   const lastSyncAt = await getLastSyncAt(syncId);
-  let { data: rows, error } = await supabase
-    .from('users')
-    .select('id,name,role,pin,password,updated_at,created_at')
-    .gt('updated_at', lastSyncAt)
-    .order('updated_at', { ascending: true });
-  if (error && String(error.code || '') === '42703') {
+  const isInitialPull = lastSyncAt === '1970-01-01T00:00:00.000Z';
+  let rows = [];
+  let error = null;
+
+  if (isInitialPull) {
     ({ data: rows, error } = await supabase
       .from('users')
-      .select('id,name,role,pin,password,created_at')
-      .gt('created_at', lastSyncAt)
+      .select('*')
       .order('created_at', { ascending: true }));
+  } else {
+    ({ data: rows, error } = await supabase
+      .from('users')
+      .select('*')
+      .or(`updated_at.gt.${lastSyncAt},updated_at.is.null`)
+      .order('updated_at', { ascending: true, nullsFirst: true }));
+    if (error && String(error.code || '') === '42703') {
+      ({ data: rows, error } = await supabase
+        .from('users')
+        .select('*')
+        .or(`created_at.gt.${lastSyncAt},created_at.is.null`)
+        .order('created_at', { ascending: true, nullsFirst: true }));
+    }
   }
   if (error) {
     summary.skippedEntities.push('users');
@@ -420,14 +571,13 @@ async function syncUsersFromCloud(summary) {
     return;
   }
 
+  console.log(`[sync][users] fetched ${Number((rows ?? []).length)} user(s) from Supabase (initial=${isInitialPull})`);
+
   let maxTs = lastSyncAt;
   for (const row of rows ?? []) {
     const remoteTs = normalizeTimestamp(row.updated_at ?? row.created_at) || new Date().toISOString();
     if (isRemoteNewer(remoteTs, maxTs)) maxTs = remoteTs;
-    const existing = await get(`SELECT id, cloud_id, pin, updated_at FROM users WHERE cloud_id = ? OR id = ? LIMIT 1`, [
-      String(row.id),
-      String(row.id),
-    ]);
+    const existing = await get(`SELECT id, cloud_id, pin, updated_at FROM users WHERE cloud_id = ? LIMIT 1`, [String(row.id)]);
     summary.processed += 1;
     const incomingPin = row.pin ?? row.password ?? null;
 
@@ -447,6 +597,7 @@ async function syncUsersFromCloud(summary) {
         [String(row.id), row.name ?? 'User', row.role ?? 'cashier', String(incomingPin), String(row.id), remoteTs]
       );
       summary.inserted += 1;
+      console.log(`[sync][users] inserted cloud_id=${String(row.id)}`);
       continue;
     }
 
@@ -471,12 +622,285 @@ async function syncUsersFromCloud(summary) {
       [row.name ?? 'User', row.role ?? 'cashier', nextPin, String(row.id), remoteTs, existing.id]
     );
     summary.updated += 1;
+    console.log(`[sync][users] updated cloud_id=${String(row.id)} local_id=${existing.id}`);
+  }
+
+  // Handle deletions from cloud: remove local users that no longer exist remotely.
+  try {
+    const { data: remoteIdRows, error: remoteIdError } = await supabase.from('users').select('id');
+    if (remoteIdError) {
+      throw remoteIdError;
+    }
+
+    const remoteIds = new Set((remoteIdRows ?? []).map((item) => String(item.id)));
+    const localUsers = await all(
+      `SELECT id, cloud_id, updated_at FROM users
+       WHERE cloud_id IS NOT NULL AND TRIM(cloud_id) <> ''`
+    );
+    const localIdsToDelete = (localUsers ?? [])
+      .filter((item) => {
+        if (remoteIds.has(String(item.cloud_id))) return false;
+        // During the initial pull, we treat the cloud as the source of truth.
+        if (isInitialPull) return true;
+        // Avoid deleting local users that were created/updated after the last successful pull.
+        // This prevents deleting "pending" local users that haven't been pushed yet.
+        if (!item.updated_at) return false;
+        return String(item.updated_at) <= String(lastSyncAt);
+      })
+      .map((item) => item.id);
+
+    for (const localId of localIdsToDelete) {
+      await run(`DELETE FROM users WHERE id = ?`, [localId]);
+    }
+
+    if (localIdsToDelete.length > 0) {
+      console.log(`[sync][users] removed ${localIdsToDelete.length} local user(s) deleted in cloud`);
+      summary.updated += localIdsToDelete.length;
+      await logSyncOperation(
+        'pull-users-delete',
+        { removed_local_ids: localIdsToDelete, count: localIdsToDelete.length },
+        'local users removed because they no longer exist in cloud'
+      );
+    }
+  } catch (deleteSyncError) {
+    await logSyncOperation(
+      'pull-users-delete-skip',
+      { reason: String(deleteSyncError?.message || deleteSyncError) },
+      'failed to reconcile deleted users from cloud'
+    );
   }
 
   if ((rows ?? []).length > 0) {
     await setLastSyncAt(syncId, maxTs);
     await logSyncOperation('pull-users', { count: rows.length, last_sync_at: maxTs }, 'users synced from cloud');
   }
+}
+
+async function syncUsersToCloud(summary) {
+  const supabase = getSupabase();
+  if (!supabase) {
+    summary.skipped = true;
+    summary.reason = 'missing_supabase';
+    return summary;
+  }
+
+  const online = await isInternetAvailable();
+  if (!online) {
+    summary.skipped = true;
+    summary.reason = 'offline';
+    return summary;
+  }
+
+  const now = new Date().toISOString();
+
+  const localUsers = await all(
+    `SELECT rowid AS rid, id, name, role, pin, cloud_id, updated_at
+     FROM users`
+  );
+  const users = Array.isArray(localUsers) ? localUsers : [];
+  if (users.length === 0) return summary;
+
+  // Dedupe local users to prevent generating/pushing multiple cloud users
+  // with identical credentials (commonly happens when local ids are invalid).
+  const dedupeMap = new Map(); // key -> kept rid
+  const ridsToDelete = [];
+  for (const u of users) {
+    const nameKey = String(u?.name ?? '').trim().toLowerCase();
+    const roleKey = String(u?.role ?? '').trim().toLowerCase();
+    const pinKey = String(u?.pin ?? '').trim();
+    const key = `${nameKey}::${roleKey}::${pinKey}`;
+    const rid = Number(u?.rid);
+    if (!Number.isFinite(rid)) continue;
+    if (!dedupeMap.has(key)) {
+      dedupeMap.set(key, rid);
+    } else {
+      ridsToDelete.push(rid);
+    }
+  }
+
+  if (ridsToDelete.length > 0) {
+    const placeholders = ridsToDelete.map(() => '?').join(', ');
+    await run(`DELETE FROM users WHERE rowid IN (${placeholders})`, ridsToDelete);
+    summary.processed += ridsToDelete.length;
+    // Remove deleted entries from the working set.
+    const keepRids = new Set(dedupeMap.values());
+    for (let i = users.length - 1; i >= 0; i -= 1) {
+      if (!keepRids.has(Number(users[i]?.rid))) users.splice(i, 1);
+    }
+    summary.skipped = false;
+  }
+
+  // Ensure every local user has a valid cloud_id (uuid) so the Supabase `users.id` (uuid) can be upserted.
+  for (const u of users) {
+    const localCloudId = (u?.cloud_id ?? '').toString().trim();
+    if (!localCloudId || !isUUID(localCloudId)) {
+      const nextCloudId = crypto.randomUUID();
+      await run(
+        `UPDATE users
+         SET cloud_id = ?, updated_at = ?
+         WHERE rowid = ?`,
+        [nextCloudId, now, Number(u.rid)]
+      );
+      u.cloud_id = nextCloudId;
+    }
+  }
+
+  const cloudIds = [...new Set(users.map((u) => String(u.cloud_id).trim()).filter(Boolean))];
+  const { data: remoteRows, error: remoteError } = await supabase
+    .from('users')
+    .select('id,updated_at')
+    .in('id', cloudIds);
+
+  if (remoteError) throw remoteError;
+
+  const remoteById = new Map((remoteRows ?? []).map((r) => [String(r.id), r]));
+
+  // Only upsert when missing remotely or when local is newer than remote.
+  const toUpsert = [];
+  for (const u of users) {
+    const cloudId = String(u.cloud_id).trim();
+    if (!cloudId) continue;
+
+    const remote = remoteById.get(cloudId);
+    const localUpdatedAt = u.updated_at ?? now;
+    const shouldSkip = remote && isRemoteNewer(remote.updated_at, localUpdatedAt);
+
+    if (shouldSkip) continue;
+
+    toUpsert.push({
+      id: cloudId,
+      cloud_id: cloudId,
+      name: u.name ?? 'User',
+      role: u.role ?? 'cashier',
+      // Supabase schema in your project seems to use `password` (not `pin`).
+      password: u.pin ?? '',
+      updated_at: now,
+    });
+  }
+
+  for (const item of toUpsert) {
+    summary.processed += 1;
+    try {
+      const { error: upsertError } = await supabase.from('users').upsert(item, { onConflict: 'id' });
+      if (upsertError) {
+        summary.failed += 1;
+        await logSyncOperation(
+          'push-users-failed',
+          { cloud_user_id: item.id },
+          upsertError.message
+        );
+      } else {
+        summary.success += 1;
+      }
+    } catch (error) {
+      summary.failed += 1;
+      await logSyncOperation(
+        'push-users-exception',
+        { cloud_user_id: item.id },
+        String(error?.message ?? error)
+      );
+    }
+  }
+
+  // Reconcile deletions from local -> cloud:
+  // delete remote users that are not present in the local cloud_id set.
+  try {
+    const localDesiredIds = new Set(cloudIds.map((id) => String(id)));
+    if (localDesiredIds.size > 0) {
+      const { data: remoteIdRows, error: remoteIdError } = await supabase.from('users').select('id');
+      if (remoteIdError) throw remoteIdError;
+
+      const remoteIds = (remoteIdRows ?? []).map((r) => String(r.id));
+      const toDelete = remoteIds.filter((id) => !localDesiredIds.has(id));
+
+      if (toDelete.length > 0) {
+        // Supabase accepts `in()` lists, but keep chunks reasonable.
+        const chunkSize = 500;
+        for (let i = 0; i < toDelete.length; i += chunkSize) {
+          const chunk = toDelete.slice(i, i + chunkSize);
+          const { error: delError } = await supabase.from('users').delete().in('id', chunk);
+          if (delError) throw delError;
+        }
+
+        summary.processed += toDelete.length;
+        await logSyncOperation(
+          'push-users-delete-missing-local',
+          { deleted: toDelete.length },
+          'removed remote users missing from local cloud_id set'
+        );
+      }
+    }
+  } catch (deleteMissingLocalError) {
+    await logSyncOperation(
+      'push-users-delete-missing-local-skip',
+      { reason: String(deleteMissingLocalError?.message ?? deleteMissingLocalError) },
+      'failed to reconcile remote users missing locally'
+    );
+  }
+
+  // Cleanup: remove remote users by name whose id is not in the desired set.
+  // This prevents duplicates caused by previous sync runs with invalid local identifiers.
+  try {
+    const localNameRoleSet = new Set(
+      (users ?? []).map((u) => `${String(u.name ?? '').trim()}::${String(u.role ?? '').trim()}`).filter((k) => !k.startsWith('::'))
+    );
+    const localDesiredIds = new Set(cloudIds.map((id) => String(id)));
+
+    if (localNameRoleSet.size > 0) {
+      const { data: remoteAllRows, error: remoteAllError } = await supabase
+        .from('users')
+        .select('id,name,role');
+      if (remoteAllError) throw remoteAllError;
+
+      const toDelete = (remoteAllRows ?? []).filter((r) => {
+        const k = `${String(r.name ?? '').trim()}::${String(r.role ?? '').trim()}`;
+        if (!localNameRoleSet.has(k)) return false;
+        return !localDesiredIds.has(String(r.id));
+      });
+
+      for (const r of toDelete) {
+        const { error: delError } = await supabase.from('users').delete().eq('id', r.id);
+        if (delError) throw delError;
+        summary.processed += 1;
+      }
+
+      if (toDelete.length > 0) {
+        await logSyncOperation(
+          'push-users-cleanup',
+          { deleted: toDelete.length },
+          'removed remote duplicate users not present in local cloud_id set'
+        );
+      }
+    }
+  } catch (cleanupError) {
+    await logSyncOperation(
+      'push-users-cleanup-skip',
+      { reason: String(cleanupError?.message ?? cleanupError) },
+      'failed to cleanup remote duplicate users'
+    );
+  }
+
+  return summary;
+}
+
+async function refreshLocalProductStockFromCloud(cloudProductId, localProductId, fallbackTs) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  const { data, error } = await supabase
+    .from('products')
+    .select('stock_quantity, updated_at, created_at')
+    .eq('id', String(cloudProductId))
+    .maybeSingle();
+  if (error || !data) return;
+  const stock = Number(data.stock_quantity ?? 0);
+  const nextTs = normalizeTimestamp(data.updated_at || data.created_at) || fallbackTs || new Date().toISOString();
+  console.log('[SYNC STOCK ← CLOUD]', 'localProductId=', localProductId, 'cloudProductId=', cloudProductId, 'stock=', stock);
+  await run(
+    `UPDATE products
+     SET stock_quantity = ?, updated_at = ?
+     WHERE id = ?`,
+    [stock, nextTs, Number(localProductId)]
+  );
 }
 
 async function syncStockMovementsFromCloud(summary) {
@@ -512,6 +936,7 @@ async function syncStockMovementsFromCloud(summary) {
       [String(row.id), Number(localProduct.id), row.type, Number(row.quantity ?? 0), row.reference_id, createdTs, createdTs]
     );
     if (result.changes > 0) {
+      await refreshLocalProductStockFromCloud(row.product_id, localProduct.id, createdTs);
       summary.stock_inserted += 1;
       summary.inserted += 1;
     } else {
@@ -542,6 +967,7 @@ async function processPullSyncCycle() {
 
   try {
     const online = await isInternetAvailable();
+    logConnectivityTransition(online, { cycle: 'pull' });
     console.log('[DEBUG PULL STATUS]', {
       online,
       hasSupabase: !!supabase
@@ -552,18 +978,11 @@ async function processPullSyncCycle() {
       return summary;
     }
 
-    await run('BEGIN IMMEDIATE TRANSACTION');
-    try {
-      await syncCategoriesFromCloud(summary);
-      await syncProductsFromCloud(summary);
-      await syncCustomersFromCloud(summary);
-      await syncUsersFromCloud(summary);
-      await syncStockMovementsFromCloud(summary);
-      await run('COMMIT');
-    } catch (innerError) {
-      await run('ROLLBACK');
-      throw innerError;
-    }
+    await syncCategoriesFromCloud(summary);
+    await syncProductsFromCloud(summary);
+    await syncCustomersFromCloud(summary);
+    await syncUsersFromCloud(summary);
+    await syncStockMovementsFromCloud(summary);
   } catch (error) {
     await logSyncError({
       type: 'pull-cycle',
@@ -580,7 +999,23 @@ async function processPullSyncCycle() {
 }
 
 async function processFullSyncCycle() {
-  const [push, pull] = await Promise.all([processSyncQueueCycle(), processPullSyncCycle()]);
+  // Pull first so deletions from Supabase are applied to local SQLite
+  // before we push local state back to Supabase in the same cycle.
+  const pull = await processPullSyncCycle();
+
+  const pushSummary = createSummary();
+  const usersPush = await syncUsersToCloud(pushSummary);
+  const queuePush = await processSyncQueueCycle();
+
+  const push = {
+    processed: Number(usersPush?.processed ?? 0) + Number(queuePush?.processed ?? 0),
+    success: Number(usersPush?.success ?? 0) + Number(queuePush?.success ?? 0),
+    failed: Number(usersPush?.failed ?? 0) + Number(queuePush?.failed ?? 0),
+    dead: Number(usersPush?.dead ?? 0) + Number(queuePush?.dead ?? 0),
+    skipped: Boolean(usersPush?.skipped || queuePush?.skipped),
+    reason: usersPush?.reason ?? queuePush?.reason ?? null,
+  };
+
   return { push, pull };
 }
 
@@ -633,6 +1068,22 @@ async function fullSyncFromCloud() {
       ),
     ]);
 
+    const localImageByCloudId = new Map();
+    if (await tableExists('products')) {
+      const localImages = await all(
+        `SELECT cloud_id, image
+         FROM products
+         WHERE cloud_id IS NOT NULL
+           AND TRIM(COALESCE(image, '')) <> ''`
+      );
+      for (const row of localImages ?? []) {
+        const cloudId = String(row?.cloud_id ?? '').trim();
+        const image = typeof row?.image === 'string' ? row.image : null;
+        if (!cloudId || !image) continue;
+        localImageByCloudId.set(cloudId, image);
+      }
+    }
+
     await run('BEGIN IMMEDIATE TRANSACTION');
     try {
       const clearOrder = ['stock_movements', 'order_items', 'orders', 'products', 'categories', 'customers', 'clientes', 'users'];
@@ -668,12 +1119,16 @@ async function fullSyncFromCloud() {
       const productMap = new Map();
       for (const row of products) {
         const categoryLocalId = row.category_id ? categoryMap.get(String(row.category_id)) ?? null : null;
+        const cloudId = String(row.id);
+        const remoteImage = row.image ?? row.image_url ?? null;
+        const normalizedRemoteImage = typeof remoteImage === 'string' ? remoteImage.trim() : remoteImage;
+        const imageValue = normalizedRemoteImage || localImageByCloudId.get(cloudId) || null;
         const result = await run(
           `INSERT OR REPLACE INTO products
             (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            String(row.id),
+            cloudId,
             row.code == null ? null : Number(row.code),
             row.name,
             categoryLocalId,
@@ -691,7 +1146,7 @@ async function fullSyncFromCloud() {
             Number(row.stock_quantity ?? 0),
             Number(row.min_stock ?? 0),
             row.color ?? null,
-            row.image ?? row.image_url ?? null,
+            imageValue,
             normalizeTimestamp(row.created_at) || new Date().toISOString(),
             normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString(),
           ]
@@ -789,12 +1244,13 @@ async function fullSyncFromCloud() {
 
       if (await tableExists('order_items')) {
         for (const row of orderItems) {
+          const lineId = String(row.id);
           await run(
             `INSERT OR REPLACE INTO order_items
-              (id, order_id, product_id, product_name, quantity, price, discount_amount, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (id, order_id, product_id, product_name, quantity, price, discount_amount, created_at, updated_at, cloud_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              String(row.id),
+              lineId,
               String(row.order_id),
               row.product_id ? String(row.product_id) : null,
               row.product_name ?? 'Produto',
@@ -803,6 +1259,7 @@ async function fullSyncFromCloud() {
               Number(row.discount_amount ?? 0),
               normalizeTimestamp(row.created_at) || new Date().toISOString(),
               normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString(),
+              lineId,
             ]
           );
         }
@@ -866,6 +1323,30 @@ function isDuplicateSaleError(error) {
   );
 }
 
+function buildExpectedQtyByProduct(items = []) {
+  const map = new Map();
+  for (const item of items) {
+    const productId = String(item?.product_id ?? '').trim();
+    if (!productId) continue;
+    const qty = Number(item?.quantity ?? 0);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    map.set(productId, Number(map.get(productId) ?? 0) + qty);
+  }
+  return map;
+}
+
+function stockDecrementApplied(beforeRows = [], afterRows = [], expectedQtyByProduct = new Map()) {
+  const beforeById = new Map((beforeRows ?? []).map((row) => [String(row.id), Number(row.stock_quantity ?? 0)]));
+  const afterById = new Map((afterRows ?? []).map((row) => [String(row.id), Number(row.stock_quantity ?? 0)]));
+  for (const [productId, expectedQty] of expectedQtyByProduct.entries()) {
+    const before = Number(beforeById.get(productId) ?? NaN);
+    const after = Number(afterById.get(productId) ?? NaN);
+    if (!Number.isFinite(before) || !Number.isFinite(after)) return false;
+    if (before - after + 0.00001 < expectedQty) return false;
+  }
+  return true;
+}
+
 function validatePayload(type, payload) {
   if (!payload || typeof payload !== 'object') {
     return { valid: false, reason: 'Payload ausente ou invalido' };
@@ -879,16 +1360,17 @@ function validatePayload(type, payload) {
   }
 
   if (type === 'product') {
-    if (payload.deleted && payload.id != null) return { valid: true };
+    if (payload.deleted) {
+      if (!payload.cloud_id || !isUuidString(String(payload.cloud_id))) {
+        return { valid: false, reason: 'Product delete requer cloud_id UUID valido' };
+      }
+      return { valid: true };
+    }
+    if (!payload.cloud_id || !isUuidString(String(payload.cloud_id))) {
+      return { valid: false, reason: 'Product requer cloud_id UUID valido para sync' };
+    }
     if (payload.id == null || !payload.name || !Number.isFinite(Number(payload.price))) {
       return { valid: false, reason: 'Product requer id, name e price validos' };
-    }
-    return { valid: true };
-  }
-
-  if (type === 'stock') {
-    if (!Number.isFinite(Number(payload.productId)) || !Number.isFinite(Number(payload.quantity))) {
-      return { valid: false, reason: 'Stock requer productId e quantity validos' };
     }
     return { valid: true };
   }
@@ -912,34 +1394,187 @@ function parseQueuePayload(row) {
   }
 }
 
-function toOrderPayload(sale) {
+async function toOrderPayload(sale) {
+  const paymentMethod = sale.payment_method ?? sale.paymentMethod ?? null;
+  const receivedAmount = sale.received_amount ?? sale.receivedAmount ?? null;
+  const changeAmount = sale.change_amount ?? sale.change ?? 0;
+  const discount = sale.discount ?? sale.totalDiscount ?? 0;
+  const customerUUID = await resolveCustomerUUID(sale.selectedCustomerId);
+
+  if (sale.selectedCustomerId && !customerUUID) {
+    console.warn('[SYNC WARNING] Invalid customer_id, setting to null:', sale.selectedCustomerId);
+  }
+
+  const normalizedStatus = String(sale.paymentStatus ?? sale.status ?? 'completed').trim().toLowerCase();
+  const mappedStatus =
+    normalizedStatus === 'pending' || normalizedStatus === 'cancelled' ? normalizedStatus : 'completed';
+
   return {
-    local_sale_id: String(sale.local_sale_id),
+    local_sale_id: String(sale.local_sale_id ?? sale.id),
     total: Number(sale.total ?? 0),
     subtotal: Number(sale.subtotal ?? sale.total ?? 0),
     tax: Number(sale.tax ?? 0),
-    discount: Number(sale.totalDiscount ?? 0),
-    customer_id: toSafeString(sale.selectedCustomerId),
+    discount: Number(discount),
+    customer_id: customerUUID,
     table_number: toSafeString(sale.selectedTableId),
     doc_type: sale.docType,
     document_number: sale.usedDocumentNumber ?? null,
-    payment_method: sale.paymentMethod,
-    received_amount: sale.receivedAmount || null,
-    change_amount: 0,
-    status: 'completed',
+    payment_method: paymentMethod,
+    received_amount: receivedAmount,
+    change_amount: Number(changeAmount ?? 0),
+    status: mappedStatus,
     created_at: sale.saleTimestamp,
   };
 }
 
-async function toOrderItemsPayload(sale) {
+async function resolveCloudProductIdForSaleItem(supabase, item, candidateCloudId) {
+  const normalizedCloudId =
+    candidateCloudId && isUuidString(String(candidateCloudId)) ? String(candidateCloudId).trim() : null;
+
+  if (normalizedCloudId) {
+    const { data, error } = await supabase.from('products').select('id').eq('id', normalizedCloudId).maybeSingle();
+    if (error) throw error;
+    if (data?.id) return String(data.id);
+  }
+
+  const localId = Number(item?.id);
+  if (Number.isFinite(localId)) {
+    const { data: byLocalId, error: byLocalIdError } = await supabase
+      .from('products')
+      .select('id')
+      .or(`local_id.eq.${localId},local_id.eq.${String(localId)}`)
+      .maybeSingle();
+    if (byLocalIdError) throw byLocalIdError;
+    if (byLocalId?.id && isUuidString(String(byLocalId.id))) {
+      await run(`UPDATE products SET cloud_id = ? WHERE id = ?`, [String(byLocalId.id), localId]);
+      return String(byLocalId.id);
+    }
+  }
+
+  const productName = String(item?.name ?? '').trim();
+  if (productName) {
+    const normalizeName = (value) =>
+      String(value ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+
+    const { data: byNameRows, error: byNameError } = await supabase
+      .from('products')
+      .select('id,name')
+      .ilike('name', productName);
+    if (byNameError) throw byNameError;
+
+    const targetName = normalizeName(productName);
+    const byName =
+      (Array.isArray(byNameRows) ? byNameRows : []).find(
+        (row) => normalizeName(row?.name) === targetName && isUuidString(String(row?.id))
+      ) ??
+      (Array.isArray(byNameRows) ? byNameRows : []).find((row) => isUuidString(String(row?.id))) ??
+      null;
+
+    if (byName?.id) {
+      if (Number.isFinite(localId)) {
+        await run(`UPDATE products SET cloud_id = ? WHERE id = ?`, [String(byName.id), localId]);
+      }
+      return String(byName.id);
+    }
+  }
+
+  if (Number.isFinite(localId)) {
+    const localProduct = await get(
+      `SELECT id, cloud_id, name, price, stock_quantity, min_stock, active
+       FROM products
+       WHERE id = ?
+       LIMIT 1`,
+      [localId]
+    );
+    if (localProduct?.id) {
+      const ensuredCloudId =
+        localProduct.cloud_id && isUuidString(String(localProduct.cloud_id))
+          ? String(localProduct.cloud_id).trim()
+          : crypto.randomUUID();
+
+      const mapped = {
+        id: ensuredCloudId,
+        name: String(localProduct.name ?? ''),
+        price: Number(localProduct.price ?? 0),
+        stock_quantity: Number(localProduct.stock_quantity ?? 0),
+        min_stock: Number(localProduct.min_stock ?? 0),
+        active: Number(localProduct.active ?? 1) !== 0,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: upsertError } = await supabase.from('products').upsert(mapped, { onConflict: 'id' });
+      if (upsertError) throw upsertError;
+      await run(`UPDATE products SET cloud_id = ? WHERE id = ?`, [ensuredCloudId, localId]);
+      return ensuredCloudId;
+    }
+  }
+
+  return null;
+}
+
+async function toOrderItemsPayload(sale, supabase) {
   const cart = Array.isArray(sale.cart) ? sale.cart : [];
-  return cart.map((item) => ({
-    product_id: toSafeString(item?.id),
-    product_name: item?.name ?? 'Produto',
-    quantity: Number(item?.quantity ?? 0),
-    price: Number(item?.price ?? 0),
-    discount_amount: Number(item?.discount ?? 0),
-  }));
+  const items = [];
+  for (const item of cart) {
+    const qty = Number(item?.quantity ?? 0);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      console.error('[SALE BLOCKED] invalid item:', {
+        item,
+        reason: 'invalid quantity',
+      });
+      throw new Error('Sale sync blocked: invalid item');
+    }
+
+    let cloudId =
+      item?.cloud_id && isUuidString(String(item.cloud_id)) ? String(item.cloud_id).trim() : null;
+    const localId = Number(item?.id);
+    if (!cloudId && Number.isFinite(localId)) {
+      cloudId = await resolveProductCloudId(localId);
+    }
+    cloudId = await resolveCloudProductIdForSaleItem(supabase, item, cloudId);
+    if (!cloudId) {
+      console.error('[SALE BLOCKED] invalid item:', {
+        item,
+        reason: 'invalid product_id',
+      });
+      throw new Error('Sale sync blocked: invalid item');
+    }
+    if (!isUuidString(cloudId)) {
+      console.error('[SALE BLOCKED] invalid item:', {
+        item,
+        reason: 'invalid product_id',
+      });
+      throw new Error('Sale sync blocked: invalid item');
+    }
+
+    const productName = String(item?.name ?? '').trim();
+    if (!productName) {
+      console.error('[SALE BLOCKED] invalid item:', {
+        item,
+        reason: 'empty name',
+      });
+      throw new Error('Sale sync blocked: invalid item');
+    }
+
+    items.push({
+      product_id: cloudId,
+      product_name: productName,
+      quantity: qty,
+      price: Number(item?.price ?? 0),
+      discount_amount: Number(item?.discount ?? 0),
+    });
+  }
+  if (items.length === 0) {
+    console.error('[SALE BLOCKED] invalid item:', {
+      item: null,
+      reason: 'invalid quantity',
+    });
+    throw new Error('Sale sync blocked: invalid item');
+  }
+  return items;
 }
 
 async function syncSaleAtomically(payload) {
@@ -961,17 +1596,83 @@ async function syncSaleAtomically(payload) {
   if (existingError) throw existingError;
   if (existingOrder?.id) return;
 
-  const payloadToSend = toOrderPayload(payload);
-  const itemsToSend = await toOrderItemsPayload(payload);
-
-  const { error: rpcError } = await supabase.rpc('create_order_with_items', {
-    order_data: payloadToSend,
-    items: itemsToSend,
+  console.log('[SYNC] Sale payload:', payload);
+  const ensuredCustomerId = payload.selectedCustomerId ? await ensureCustomerSynced(payload.selectedCustomerId) : null;
+  const order_data = await toOrderPayload({
+    ...payload,
+    selectedCustomerId: ensuredCustomerId,
   });
+  const items = await toOrderItemsPayload(payload, supabase);
+  const productIds = [...new Set(items.map((item) => String(item.product_id).trim()).filter(Boolean))];
+  const expectedQtyByProduct = buildExpectedQtyByProduct(items);
+  const { data: beforeStocks, error: beforeError } = await supabase
+    .from('products')
+    .select('id,stock_quantity')
+    .in('id', productIds);
+  if (beforeError) throw beforeError;
+
+  console.log('[SALE SYNC] sending:', {
+    order_data,
+    items,
+    itemCount: items.length,
+  });
+
+  const start = Date.now();
+  const { data: result, error: rpcError } = await supabase.rpc('create_order_with_items', {
+    order_data,
+    items,
+  });
+  const duration = Date.now() - start;
+  console.log('[SALE SYNC TIME]', `${duration}ms`);
+
+  console.log('[SALE SYNC RESULT]', {
+    data: result,
+    error: rpcError,
+    success: !rpcError,
+  });
+
+  if (!rpcError && (result == null || (Array.isArray(result) && result.length === 0))) {
+    console.warn('[SALE WARNING] RPC returned no data', {
+      order_data,
+      items,
+    });
+  }
 
   if (rpcError) {
     if (isDuplicateSaleError(rpcError)) return;
     throw rpcError;
+  }
+
+  const { data: afterStocks, error: afterError } = await supabase
+    .from('products')
+    .select('id,stock_quantity')
+    .in('id', productIds);
+  if (afterError) throw afterError;
+
+  if (stockDecrementApplied(beforeStocks ?? [], afterStocks ?? [], expectedQtyByProduct)) {
+    return;
+  }
+
+  console.warn('[SALE WARNING] stock not decremented by RPC, applying fallback update', {
+    local_sale_id: localSaleId,
+    productCount: productIds.length,
+  });
+
+  const currentById = new Map((afterStocks ?? []).map((row) => [String(row.id), Number(row.stock_quantity ?? 0)]));
+  for (const [productId, qty] of expectedQtyByProduct.entries()) {
+    const currentQty = Number(currentById.get(productId) ?? NaN);
+    if (!Number.isFinite(currentQty)) {
+      throw new Error(`Sale sync fallback failed: product not found in cloud (${productId})`);
+    }
+    const nextQty = Math.max(0, currentQty - Number(qty));
+    const { error: updateError } = await supabase
+      .from('products')
+      .update({
+        stock_quantity: nextQty,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', productId);
+    if (updateError) throw updateError;
   }
 }
 
@@ -980,19 +1681,37 @@ async function syncProduct(payload) {
   if (!supabase) {
     throw new Error('Supabase client unavailable');
   }
-  if (payload.deleted && payload.id) {
-    const { error: deleteError } = await supabase.from('products').delete().eq('id', Number(payload.id));
+  if (payload.deleted) {
+    const cloudId = requireProductCloudId(payload.cloud_id, 'product delete');
+    const { error: deleteError } = await supabase.from('products').delete().eq('id', cloudId);
     if (deleteError) throw deleteError;
     return;
   }
 
+  const cloudId = requireProductCloudId(payload.cloud_id, 'product upsert');
+  const categoryCloudId = await mapCategoryCloudIdFromLocal(payload.category_id);
+
   const mapped = {
-    id: payload.id ? Number(payload.id) : undefined,
+    id: cloudId,
+    local_id: payload.id != null ? Number(payload.id) : null,
+    code: payload.code == null ? null : Number(payload.code),
     name: payload.name,
+    category_id: categoryCloudId,
+    barcode: payload.barcode ?? null,
+    cost: Number(payload.cost ?? 0),
     price: Number(payload.price ?? 0),
+    tax: Number(payload.tax ?? 0),
+    final_price: Number(payload.final_price ?? payload.price ?? 0),
     stock_quantity: Number(payload.stock_quantity ?? 0),
     min_stock: Number(payload.min_stock ?? 0),
     active: payload.active === false ? false : true,
+    unit: payload.unit ?? 'un',
+    description: payload.description ?? null,
+    age_restriction: payload.age_restriction == null ? null : Number(payload.age_restriction),
+    is_service: payload.is_service ? true : false,
+    default_quantity: payload.default_quantity === false ? false : true,
+    color: payload.color ?? null,
+    image: payload.image ?? null,
     updated_at: new Date().toISOString(),
   };
 
@@ -1000,67 +1719,23 @@ async function syncProduct(payload) {
   if (error) throw error;
 }
 
-async function syncStock(payload, row) {
-  const supabase = getSupabase();
-  if (!supabase) {
-    throw new Error('Supabase client unavailable');
-  }
-  const productId = Number(payload.productId);
-  const delta = Number(payload.quantity ?? 0);
-  if (!Number.isFinite(productId) || !Number.isFinite(delta)) {
-    throw new Error('Invalid stock payload');
-  }
-
-  const movementType =
-    payload.movementType === 'adjustment'
-      ? 'adjustment'
-      : delta >= 0
-        ? 'restock'
-        : 'adjustment';
-  const referenceId = String(payload.referenceId || row?.sync_ref || `stock:${row?.id ?? 'unknown'}`);
-
-  const { error } = await supabase.rpc('record_stock_movement', {
-    p_product_id: productId,
-    p_type: movementType,
-    p_quantity: delta,
-    p_reference_id: referenceId,
-  });
-
-  if (error) {
-    // Gradual migration compatibility: if RPC/table missing, fallback to legacy direct update.
-    if (String(error?.code ?? '') === '42883' || String(error?.code ?? '') === '42P01') {
-      const { data: current, error: currentError } = await supabase
-        .from('products')
-        .select('id, stock_quantity')
-        .eq('id', productId)
-        .single();
-      if (currentError) throw currentError;
-
-      const nextStock = Number(current.stock_quantity ?? 0) + delta;
-      const { error: updateError } = await supabase
-        .from('products')
-        .update({ stock_quantity: nextStock, updated_at: new Date().toISOString() })
-        .eq('id', productId);
-      if (updateError) throw updateError;
-      return;
-    }
-    throw error;
-  }
-}
-
 async function syncCustomer(payload) {
   const supabase = getSupabase();
   if (!supabase) {
     throw new Error('Supabase client unavailable');
   }
-  if (payload.deleted && payload.id) {
-    const { error: deleteError } = await supabase.from('customers').delete().eq('id', Number(payload.id));
+  const cloudId = payload?.cloud_id ? String(payload.cloud_id).trim() : '';
+  if (!isUUID(cloudId)) {
+    throw new Error('Invalid customer cloud_id');
+  }
+  if (payload.deleted) {
+    const { error: deleteError } = await supabase.from('customers').delete().eq('id', cloudId);
     if (deleteError) throw deleteError;
     return;
   }
 
   const mapped = {
-    id: payload.id ? Number(payload.id) : undefined,
+    id: cloudId,
     name: payload.name,
     phone: payload.phone,
     email: payload.email ?? null,
@@ -1077,9 +1752,28 @@ async function processQueueItem(row) {
   let payload = null;
   try {
     payload = parseQueuePayload(row);
+    console.log('[QUEUE] processing:', {
+      id: row.id,
+      type: row.type,
+      payload,
+    });
+    if (row.type === 'stock') {
+      await run(
+        `UPDATE sync_queue
+         SET status = 'synced', updated_at = ?, synced_at = ?, lock_token = NULL, locked_at = NULL
+         WHERE id = ?`,
+        [new Date().toISOString(), new Date().toISOString(), row.id]
+      );
+      await logSyncOperation('stock-sync-disabled', payload, 'stock queue item ignored; sales now sync stock via create_order_with_items');
+      return 'success';
+    }
     if (row.type === 'sale' && !payload.local_sale_id) {
       payload.local_sale_id = `legacy-${row.id}`;
       await run(`UPDATE sync_queue SET data = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(payload), new Date().toISOString(), row.id]);
+    }
+    if (row.type === 'product' && payload && !payload.deleted && payload.id != null && !payload.cloud_id) {
+      const fromDb = await get(`SELECT cloud_id FROM products WHERE id = ? LIMIT 1`, [Number(payload.id)]);
+      if (fromDb?.cloud_id) payload.cloud_id = String(fromDb.cloud_id).trim();
     }
     const validation = validatePayload(row.type, payload);
     if (!validation.valid) {
@@ -1090,8 +1784,6 @@ async function processQueueItem(row) {
       await syncSaleAtomically(payload);
     } else if (row.type === 'product') {
       await syncProduct(payload);
-    } else if (row.type === 'stock') {
-      await syncStock(payload, row);
     } else if (row.type === 'customer') {
       await syncCustomer(payload);
     } else {
@@ -1104,8 +1796,26 @@ async function processQueueItem(row) {
        WHERE id = ?`,
       [new Date().toISOString(), new Date().toISOString(), row.id]
     );
+    console.log('[QUEUE] success:', {
+      id: row.id,
+      type: row.type,
+    });
     return 'success';
   } catch (error) {
+    console.error('[QUEUE] error:', {
+      id: row.id,
+      type: row.type,
+      error,
+    });
+    if (isNetworkOfflineError(error)) {
+      await run(
+        `UPDATE sync_queue
+         SET lock_token = NULL, locked_at = NULL, updated_at = ?
+         WHERE id = ?`,
+        [new Date().toISOString(), row.id]
+      );
+      return 'offline';
+    }
     const permanent = isPermanentError(error);
     const nextRetries = permanent ? MAX_RETRIES : Number(row.retries ?? 0) + 1;
     const isDead = nextRetries >= MAX_RETRIES;
@@ -1176,6 +1886,15 @@ async function processSyncQueueCycle() {
 
   try {
     const online = await isInternetAvailable();
+    const queueStats = await get(
+      `SELECT
+         SUM(CASE WHEN status IN ('pending', 'failed') THEN 1 ELSE 0 END) AS active,
+         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+       FROM sync_queue`
+    );
+    const activeQueue = Number(queueStats?.active ?? 0);
+    const failedQueue = Number(queueStats?.failed ?? 0);
+    logConnectivityTransition(online, { cycle: 'queue', activeQueue, failedQueue });
     console.log('[DEBUG QUEUE STATUS]', {
       online,
       hasSupabase: !!supabase
@@ -1187,6 +1906,10 @@ async function processSyncQueueCycle() {
     }
 
     if (!online) {
+      console.log('[sync][queue] skipped: offline', {
+        queue_size: activeQueue,
+        failed_attempts: failedQueue,
+      });
       summary.skipped = true;
       summary.reason = 'offline';
       return summary;
@@ -1205,6 +1928,10 @@ async function processSyncQueueCycle() {
     );
 
     if (rows.length === 0) {
+      console.log('[sync][queue] no items to sync', {
+        queue_size: activeQueue,
+        failed_attempts: failedQueue,
+      });
       return {
         ...summary,
         skipped: false,
@@ -1212,8 +1939,11 @@ async function processSyncQueueCycle() {
       };
     }
 
+    let offlineDetected = false;
+
     const worker = async () => {
       while (rows.length > 0) {
+        if (offlineDetected) return;
         const next = rows.shift();
         if (!next) return;
 
@@ -1224,6 +1954,15 @@ async function processSyncQueueCycle() {
         const claimedRow = await fetchClaimedItem(next.id, lockToken);
         if (!claimedRow) continue;
         const result = await processQueueItem(claimedRow);
+        if (result === 'offline') {
+          offlineDetected = true;
+          logConnectivityTransition(false, { cycle: 'queue', reason: 'network_error_during_item' });
+          console.log('[sync][queue] skipped: offline during processing', {
+            queue_size: activeQueue,
+            failed_attempts: failedQueue,
+          });
+          return;
+        }
         summary.processed += 1;
         if (result === 'success') summary.success += 1;
         else if (result === 'dead') summary.dead += 1;
@@ -1237,7 +1976,18 @@ async function processSyncQueueCycle() {
       workers.push(worker());
     }
     await Promise.all(workers);
+    if (offlineDetected) {
+      summary.skipped = true;
+      summary.reason = 'offline';
+      return summary;
+    }
   } catch (error) {
+    if (isNetworkOfflineError(error)) {
+      logConnectivityTransition(false, { cycle: 'queue', reason: 'network_error_in_cycle' });
+      summary.skipped = true;
+      summary.reason = 'offline';
+      return summary;
+    }
     await logSyncError({
       type: 'queue-cycle',
       payload: null,
@@ -1279,7 +2029,7 @@ function stopSyncService() {
   timer = null;
 }
 
-module.exports = {
+export {
   startSyncService,
   stopSyncService,
   processSyncQueueCycle,

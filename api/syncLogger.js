@@ -1,4 +1,4 @@
-const { run } = require('./dbUtils');
+import { run } from './dbUtils.js';
 
 async function logSyncError({ queueId = null, type = 'unknown', payload = null, error }) {
   const safeStringify = (value) => {
@@ -60,6 +60,4 @@ async function logSyncError({ queueId = null, type = 'unknown', payload = null, 
   });
 }
 
-module.exports = {
-  logSyncError,
-};
+export { logSyncError };
