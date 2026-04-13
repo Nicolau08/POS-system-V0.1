@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   RotateCcw, FolderPlus, Edit, Trash2, Plus, Edit3, Trash, 
   Printer, FileText, Hash, Sliders, ArrowDownUp, Download, 
@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-const API_URL = 'http://localhost:3001';
+import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
 
 interface Product {
   id: string;
@@ -29,6 +29,8 @@ interface Product {
   default_quantity?: boolean;
   stock_quantity: number;
   min_stock?: number;
+  color?: string;
+  image?: string;
   created_at: string;
   updated_at: string;
   categories?: {
@@ -126,6 +128,8 @@ export default function ProductsManager() {
   const [productToDelete, setProductToDelete] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [activeTab, setActiveTab] = useState('detalhes');
+  const newImageInputRef = useRef<HTMLInputElement | null>(null);
+  const editImageInputRef = useRef<HTMLInputElement | null>(null);
   const [newProduct, setNewProduct] = useState({
     code: '',
     name: '',
@@ -142,16 +146,20 @@ export default function ProductsManager() {
     is_service: false,
     default_quantity: true,
     stock_quantity: 0,
-    min_stock: 0
+    min_stock: 0,
+    image: ''
   });
 
   const fetchData = async () => {
     setLoading(true);
     try {
+      const directApiBase = getPosApiDirectBase();
       const [catRes, prodRes] = await Promise.all([
-        fetch(`${API_URL}/categorias`),
-        fetch(`${API_URL}/produtos`)
+        fetch(`${directApiBase}/categorias`),
+        fetch(`${directApiBase}/produtos`)
       ]);
+      if (!catRes.ok) throw new Error(`Falha ao carregar categorias (${catRes.status})`);
+      if (!prodRes.ok) throw new Error(`Falha ao carregar produtos (${prodRes.status})`);
       const catData = await catRes.json();
       const prodData = await prodRes.json();
       setCategories(catData || []);
@@ -169,7 +177,12 @@ export default function ProductsManager() {
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newProduct.name || !newProduct.price) return;
+    const productName = String(newProduct.name ?? '').trim();
+    const productPrice = Number(newProduct.price);
+    if (!productName || !Number.isFinite(productPrice)) {
+      showToast('Informe nome e preco valido para salvar o produto.', 'error');
+      return;
+    }
 
     try {
       let finalCode = Number(newProduct.code);
@@ -180,7 +193,8 @@ export default function ProductsManager() {
         finalCode = maxCode + 1;
       }
 
-      const response = await fetch(`${API_URL}/produtos`, {
+      const directApiBase = getPosApiDirectBase();
+      const response = await fetch(`${directApiBase}/produtos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -200,9 +214,12 @@ export default function ProductsManager() {
           default_quantity: newProduct.default_quantity,
           stock_quantity: Number(newProduct.stock_quantity) || 0,
           min_stock: Number(newProduct.min_stock) || 0
+          ,
+          image: newProduct.image || null
         })
       });
       if (!response.ok) throw new Error('Falha ao criar produto');
+      const createdResult = await response.json();
       
       setIsNewProductModalOpen(false);
       setNewProduct({
@@ -221,10 +238,17 @@ export default function ProductsManager() {
         is_service: false,
         default_quantity: true,
         stock_quantity: 0,
-        min_stock: 0
+        min_stock: 0,
+        image: ''
       });
+      // Evita que filtros antigos escondam o novo produto na grelha.
+      setSearchQuery('');
+      setSelectedCategory(newProduct.category_id || null);
       showToast('Produto criado com sucesso!');
-      fetchData();
+      await fetchData();
+      if (createdResult?.id != null) {
+        setSelectedProductId(String(createdResult.id));
+      }
     } catch (error: any) {
       console.error('Error creating product:', {
         message: error.message || 'Unknown error',
@@ -241,7 +265,7 @@ export default function ProductsManager() {
     if (!productToDelete) return;
 
     try {
-      const response = await fetch(`${API_URL}/produtos/${productToDelete}`, { method: 'DELETE' });
+      const response = await fetch(`${getPosApiBase()}/produtos/${productToDelete}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Falha ao remover produto');
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
@@ -253,10 +277,17 @@ export default function ProductsManager() {
 
   const handleUpdateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingProduct || !editingProduct.name || !editingProduct.price) return;
+    if (!editingProduct) return;
+    const productName = String(editingProduct.name ?? '').trim();
+    const productPrice = Number(editingProduct.price);
+    if (!productName || !Number.isFinite(productPrice)) {
+      showToast('Informe nome e preco valido para atualizar o produto.', 'error');
+      return;
+    }
 
     try {
-      const response = await fetch(`${API_URL}/produtos/${editingProduct.id}`, {
+      const directApiBase = getPosApiDirectBase();
+      const response = await fetch(`${directApiBase}/produtos/${editingProduct.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -275,15 +306,23 @@ export default function ProductsManager() {
           is_service: editingProduct.is_service,
           default_quantity: editingProduct.default_quantity,
           stock_quantity: Number(editingProduct.stock_quantity) || 0,
-          min_stock: Number(editingProduct.min_stock) || 0
+          min_stock: Number(editingProduct.min_stock) || 0,
+          image: editingProduct.image || null
         })
       });
       if (!response.ok) throw new Error('Falha ao atualizar produto');
+      const updatedResult = await response.json();
       
+      const editedCategoryId = editingProduct.category_id ? String(editingProduct.category_id) : null;
+      const editedProductId = String(editingProduct.id);
       setIsEditProductModalOpen(false);
       setEditingProduct(null);
+      // Evita "desaparecer" quando havia filtro antigo ativo.
+      setSearchQuery('');
+      setSelectedCategory(editedCategoryId);
       showToast('Produto atualizado com sucesso!');
-      fetchData();
+      await fetchData();
+      setSelectedProductId(String(updatedResult?.id ?? editedProductId));
     } catch (error: any) {
       console.error('Error updating product:', {
         message: error.message || 'Unknown error',
@@ -302,6 +341,37 @@ export default function ProductsManager() {
     const matchesCategory = !selectedCategory || p.category_id === selectedCategory;
     return matchesSearch && matchesCategory;
   });
+
+  const primaryTabs = [
+    { key: 'detalhes', label: 'Detalhes' },
+    { key: 'preco', label: 'Preço & impostos' },
+    { key: 'estoque', label: 'Controle de estoque' },
+  ] as const;
+  const secondaryTabs = [
+    { key: 'comentarios', label: 'Comentários' },
+    { key: 'imagem', label: 'Imagem & cor' },
+  ] as const;
+  const activeIsSecondary = secondaryTabs.some((tab) => tab.key === activeTab);
+  const topTabs = activeIsSecondary ? primaryTabs : secondaryTabs;
+  const bottomTabs = activeIsSecondary ? secondaryTabs : primaryTabs;
+
+  const handleNewImageSelected = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setNewProduct((prev) => ({ ...prev, image: String(reader.result ?? '') }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleEditImageSelected = (file: File | null) => {
+    if (!file || !editingProduct) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setEditingProduct((prev) => (prev ? { ...prev, image: String(reader.result ?? '') } : prev));
+    };
+    reader.readAsDataURL(file);
+  };
 
   return (
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
@@ -426,9 +496,9 @@ export default function ProductsManager() {
 
           {/* Table */}
           <div className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]">
-            <table className="min-w-full text-left border-collapse table-fixed">
+            <table className="min-w-full text-left text-xs border-collapse table-fixed">
               <thead className="sticky top-0 bg-[#141414] z-10">
-                <tr className="border-b border-zinc-800">
+                <tr className="text-zinc-400">
                   <ResizableHeader width={columnWidths.code} label="Cód. Prod." onResize={(e) => startResizingColumn(e, 'code')} />
                   <ResizableHeader width={columnWidths.name} label="Nome" onResize={(e) => startResizingColumn(e, 'name')} />
                   <ResizableHeader width={columnWidths.category} label="Grupo" onResize={(e) => startResizingColumn(e, 'category')} />
@@ -441,7 +511,7 @@ export default function ProductsManager() {
                   <ResizableHeader width={columnWidths.unit} label="Un." onResize={(e) => startResizingColumn(e, 'unit')} align="center" />
                   <ResizableHeader width={columnWidths.createdAt} label="Criado" onResize={(e) => startResizingColumn(e, 'createdAt')} />
                   <ResizableHeader width={columnWidths.updatedAt} label="Atualizado" onResize={(e) => startResizingColumn(e, 'updatedAt')} />
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center" style={{ width: columnWidths.actions }}>Ações</th>
+                  <th className="border-b border-zinc-700/80 px-4 py-2.5 text-center font-medium whitespace-nowrap" style={{ width: columnWidths.actions }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -469,27 +539,27 @@ export default function ProductsManager() {
                         setEditingProduct(p);
                         setIsEditProductModalOpen(true);
                       }}
-                      className={`border-b border-zinc-800/50 transition-colors cursor-pointer ${
+                      className={`border-b border-zinc-800/70 transition-colors cursor-pointer ${
                         selectedProductId === p.id ? 'bg-zinc-800/50' : i % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#141414]'
                       } hover:bg-zinc-800/30`}
                     >
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 truncate">{p.code || '---'}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-medium border-r border-zinc-800/50 truncate">{p.name}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 truncate">{p.categories?.name || 'Geral'}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-500 border-r border-zinc-800/50 truncate">{p.barcode || '---'}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-right truncate">{formatPrice(p.cost || 0)}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 text-right truncate">{formatPrice(p.price)}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-right truncate">{formatPrice(p.tax || 0)}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 text-right truncate">{formatPrice(p.final_price || p.price)}</td>
-                      <td className="px-4 py-1.5 text-xs border-r border-zinc-800/50 text-center">
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 whitespace-nowrap truncate">{p.code || '---'}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-medium border-r border-zinc-800/80 whitespace-nowrap truncate">{p.name}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 whitespace-nowrap truncate">{p.categories?.name || 'Geral'}</td>
+                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{p.barcode || '---'}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.cost || 0)}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.price)}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.tax || 0)}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.final_price || p.price)}</td>
+                      <td className="px-4 py-2.5 border-r border-zinc-800/80 text-center whitespace-nowrap">
                         <div className="flex justify-center">
                           {p.active ? <Check size={14} className="text-emerald-500" /> : <X size={14} className="text-rose-500" />}
                         </div>
                       </td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-center truncate">{p.unit || 'un'}</td>
-                      <td className="px-4 py-1.5 text-[10px] text-zinc-500 border-r border-zinc-800/50 truncate">{new Date(p.created_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-1.5 text-[10px] text-zinc-500 border-r border-zinc-800/50 truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-1.5 text-center">
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap truncate">{p.unit || 'un'}</td>
+                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{new Date(p.created_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-2">
                           <button 
                             onClick={(e) => {
@@ -538,62 +608,57 @@ export default function ProductsManager() {
             {/* Tabs */}
             <div className="flex flex-col">
               <div className="flex border-b border-zinc-800">
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('comentarios')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'comentarios' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Comentários
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('imagem')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'imagem' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Imagem & cor
-                </button>
+                {topTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
+                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {tab.label}
+                    {activeTab === tab.key && (
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                    )}
+                  </button>
+                ))}
               </div>
               <div className="flex border-b border-[#00a3e0]">
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('detalhes')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'detalhes' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Detalhes
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('preco')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'preco' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Preço & impostos
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('estoque')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'estoque' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Controle de estoque
-                </button>
+                {bottomTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
+                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {tab.label}
+                    {activeTab === tab.key && (
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
             
-            <form id="new-product-form" onSubmit={handleCreateProduct} className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-[#1a1a1a]">
+            <form id="new-product-form" onSubmit={handleCreateProduct} className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-[#1a1a1a]">
               {activeTab === 'detalhes' && (
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Nome</label>
+                <div className="space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Nome</label>
                     <input 
                       type="text" 
                       required
                       value={newProduct.name ?? ''}
                       onChange={(e) => setNewProduct({...newProduct, name: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-red-900/50 rounded px-3 py-1.5 text-sm text-white focus:border-red-500 outline-none transition-colors"
+                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Código</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Código</label>
                     <input 
                       type="text" 
                       value={newProduct.code ?? ''}
@@ -602,19 +667,19 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Código de barras</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Código de barras</label>
                     <input 
                       type="text" 
                       value={newProduct.barcode ?? ''}
                       onChange={(e) => setNewProduct({...newProduct, barcode: e.target.value})}
                       className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
                     />
-                    <button type="button" className="text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
+                    <button type="button" className="mt-1 text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Unidade de medida</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Unidade de medida</label>
                     <input 
                       type="text" 
                       value={newProduct.unit ?? ''}
@@ -623,8 +688,8 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Grupo</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Grupo</label>
                     <select 
                       value={newProduct.category_id ?? ''}
                       onChange={(e) => setNewProduct({...newProduct, category_id: e.target.value})}
@@ -672,21 +737,8 @@ export default function ProductsManager() {
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Restrição de idade</label>
-                    <div className="flex items-center gap-2">
-                      <input 
-                        type="number" 
-                        value={newProduct.age_restriction ?? ''}
-                        onChange={(e) => setNewProduct({...newProduct, age_restriction: e.target.value})}
-                        className="w-24 bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                      <span className="text-xs text-zinc-400">ano(s)</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Descrição</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Descrição</label>
                     <textarea 
                       value={newProduct.description ?? ''}
                       onChange={(e) => setNewProduct({...newProduct, description: e.target.value})}
@@ -785,8 +837,38 @@ export default function ProductsManager() {
               )}
 
               {activeTab === 'imagem' && (
-                <div className="py-10 text-center text-zinc-500 text-xs">
-                  Configurações de imagem e cor
+                <div className="space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-300">Imagem</label>
+                    <input
+                      ref={newImageInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleNewImageSelected(e.target.files?.[0] ?? null)}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => newImageInputRef.current?.click()}
+                        className="w-36 border border-zinc-600 text-zinc-200 hover:bg-zinc-800 px-4 py-2 text-sm transition-colors"
+                      >
+                        Procurar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewProduct((prev) => ({ ...prev, image: '' }))}
+                        className="w-36 border border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 px-4 py-2 text-sm transition-colors"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                    {newProduct.image && (
+                      <div className="pt-2">
+                        <img src={newProduct.image} alt="Preview" className="h-24 w-24 object-cover border border-zinc-700 rounded" />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </form>
@@ -827,62 +909,57 @@ export default function ProductsManager() {
             {/* Tabs */}
             <div className="flex flex-col">
               <div className="flex border-b border-zinc-800">
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('comentarios')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'comentarios' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Comentários
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('imagem')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'imagem' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Imagem & cor
-                </button>
+                {topTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
+                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {tab.label}
+                    {activeTab === tab.key && (
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                    )}
+                  </button>
+                ))}
               </div>
               <div className="flex border-b border-[#00a3e0]">
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('detalhes')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'detalhes' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Detalhes
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('preco')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'preco' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Preço & impostos
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setActiveTab('estoque')}
-                  className={`flex-1 py-2 text-[11px] font-medium text-center transition-colors ${activeTab === 'estoque' ? 'bg-[#00a3e0] text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-                >
-                  Controle de estoque
-                </button>
+                {bottomTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
+                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {tab.label}
+                    {activeTab === tab.key && (
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
             
-            <form id="edit-product-form" onSubmit={handleUpdateProduct} className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-[#1a1a1a]">
+            <form id="edit-product-form" onSubmit={handleUpdateProduct} className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-[#1a1a1a]">
               {activeTab === 'detalhes' && (
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Nome</label>
+                <div className="space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Nome</label>
                     <input 
                       type="text" 
                       required
                       value={editingProduct.name ?? ''}
                       onChange={(e) => setEditingProduct({...editingProduct, name: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-red-900/50 rounded px-3 py-1.5 text-sm text-white focus:border-red-500 outline-none transition-colors"
+                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Código</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Código</label>
                     <input 
                       type="text" 
                       value={editingProduct.code ?? ''}
@@ -891,19 +968,19 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Código de barras</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Código de barras</label>
                     <input 
                       type="text" 
                       value={editingProduct.barcode ?? ''}
                       onChange={(e) => setEditingProduct({...editingProduct, barcode: e.target.value})}
                       className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
                     />
-                    <button type="button" className="text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
+                    <button type="button" className="mt-1 text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Unidade de medida</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Unidade de medida</label>
                     <input 
                       type="text" 
                       value={editingProduct.unit ?? ''}
@@ -912,8 +989,8 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Grupo</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Grupo</label>
                     <select 
                       value={editingProduct.category_id ?? ''}
                       onChange={(e) => setEditingProduct({...editingProduct, category_id: e.target.value})}
@@ -961,21 +1038,8 @@ export default function ProductsManager() {
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Restrição de idade</label>
-                    <div className="flex items-center gap-2">
-                      <input 
-                        type="number" 
-                        value={editingProduct.age_restriction ?? ''}
-                        onChange={(e) => setEditingProduct({...editingProduct, age_restriction: Number(e.target.value)})}
-                        className="w-24 bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
-                      />
-                      <span className="text-xs text-zinc-400">ano(s)</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Descrição</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Descrição</label>
                     <textarea 
                       value={editingProduct.description ?? ''}
                       onChange={(e) => setEditingProduct({...editingProduct, description: e.target.value})}
@@ -1074,8 +1138,38 @@ export default function ProductsManager() {
               )}
 
               {activeTab === 'imagem' && (
-                <div className="py-10 text-center text-zinc-500 text-xs">
-                  Configurações de imagem e cor
+                <div className="space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-300">Imagem</label>
+                    <input
+                      ref={editImageInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleEditImageSelected(e.target.files?.[0] ?? null)}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => editImageInputRef.current?.click()}
+                        className="w-36 border border-zinc-600 text-zinc-200 hover:bg-zinc-800 px-4 py-2 text-sm transition-colors"
+                      >
+                        Procurar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingProduct({ ...editingProduct, image: '' })}
+                        className="w-36 border border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 px-4 py-2 text-sm transition-colors"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                    {editingProduct.image && (
+                      <div className="pt-2">
+                        <img src={editingProduct.image} alt="Preview" className="h-24 w-24 object-cover border border-zinc-700 rounded" />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </form>
@@ -1181,7 +1275,7 @@ function ToolbarButton({ icon, label, onClick, active }: { icon: React.ReactNode
 function ResizableHeader({ width, label, onResize, align = 'left' }: { width: number, label: string, onResize: (e: React.MouseEvent) => void, align?: 'left' | 'right' | 'center' }) {
   return (
     <th 
-      className={`px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize border-r border-zinc-800 relative group select-none ${
+      className={`border-b border-r border-zinc-700/80 px-4 py-2.5 font-medium whitespace-nowrap relative group select-none ${
         align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'
       }`}
       style={{ width }}

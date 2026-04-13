@@ -3,7 +3,8 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Printer } from 'lucide-react';
-import type { CartItem, Customer, PaymentEntry, PaymentMethod, User } from '@/app/pos/types';
+import type { CartItem, CompanyProfile, Customer, PaymentEntry, PaymentMethod } from '@/app/pos/types';
+import { buildReceiptHeader } from '@/lib/receiptCompanyHeader';
 
 export function ReceiptPreview({
   isOpen,
@@ -14,7 +15,8 @@ export function ReceiptPreview({
   selectedCustomer,
   currentUserName,
   cart,
-  subtotal,
+  originalSubtotal,
+  discountNet,
   tax,
   total,
   isMultiplePayment,
@@ -22,18 +24,24 @@ export function ReceiptPreview({
   receivedAmount,
   payments,
   formatDocumentNumber,
+  paymentLabel,
+  isCashPaymentMethod,
+  companyProfile,
   onPrimaryAction,
   onPrint,
 }: {
   isOpen: boolean;
   isSaleFinalized: boolean;
-  docType: 'VD' | 'TK' | 'FP';
+  docType: 'VD' | 'TK' | 'FP' | 'FT';
   nextVDNumber: number;
   currentReceiptNumber: string | null;
   selectedCustomer: Customer | null;
   currentUserName: string | null;
   cart: CartItem[];
-  subtotal: number;
+  /** Subtotal s/ IVA antes do desconto (igual a `subtotal` quando não há desconto). */
+  originalSubtotal: number;
+  /** Valor do desconto em MT na componente líquida (0 se não houver). */
+  discountNet: number;
   tax: number;
   total: number;
   isMultiplePayment: boolean;
@@ -41,9 +49,16 @@ export function ReceiptPreview({
   receivedAmount: string;
   payments: PaymentEntry[];
   formatDocumentNumber: (sequence: number, date?: Date) => string;
+  /** Nome amigável do método (API); evita fallback errado tipo M-Pesa para códigos não "cash". */
+  paymentLabel: (methodCode: PaymentMethod | null) => string;
+  /** Mesma regra que o pagamento com troco (ex.: allowChange / cash). */
+  isCashPaymentMethod: (methodCode: PaymentMethod | null) => boolean;
+  companyProfile: CompanyProfile | null;
   onPrimaryAction: () => void;
   onPrint: () => void;
 }) {
+  const header = buildReceiptHeader(companyProfile);
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -57,10 +72,23 @@ export function ReceiptPreview({
           >
             <div id="receipt-print-area" className="flex-1 overflow-y-auto p-6 space-y-4">
               <div className="text-center space-y-1">
-                <h1 className="text-3xl font-bold tracking-tighter mb-2">Your Logo</h1>
-                <p className="text-[11px] font-bold">Av. da Marginal - Maputo</p>
-                <p className="text-[11px] font-bold">Tel: +258 87 2002 144</p>
-                <p className="text-[11px] font-bold">NUIT: 401 000 000</p>
+                {header.logoDataUrl ? (
+                  <div className="mb-2 flex justify-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={header.logoDataUrl}
+                      alt={header.title}
+                      className="receipt-thermal-logo h-[30mm] max-w-[220px] object-contain"
+                    />
+                  </div>
+                ) : (
+                  <h1 className="text-2xl font-bold tracking-tighter mb-2 leading-tight">{header.title}</h1>
+                )}
+                {header.lines.map((line, idx) => (
+                  <p key={`${idx}-${line.slice(0, 40)}`} className="text-[11px] font-bold break-words">
+                    {line}
+                  </p>
+                ))}
                 <p className="text-[11px] font-bold mt-2">Cliente: {selectedCustomer ? selectedCustomer.name : 'Consumidor Final'}</p>
               </div>
 
@@ -98,8 +126,16 @@ export function ReceiptPreview({
               <div className="space-y-1 text-[11px] font-bold">
                 <div className="flex justify-between">
                   <span>Subtotal:</span>
-                  <span>{subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
+                  <span>{originalSubtotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
                 </div>
+                {discountNet > 0.0001 && (
+                  <div className="flex justify-between text-rose-700">
+                    <span>Desconto:</span>
+                    <span>
+                      -{discountNet.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>IVA (16%):</span>
                   <span>{tax.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
@@ -113,21 +149,19 @@ export function ReceiptPreview({
               {isSaleFinalized && (
                 <div className="border-t border-dashed border-black pt-2 space-y-1">
                   <div className="flex justify-between text-[10px] font-bold">
-                    <span>Metodo de Pagamento</span>
+                    <span>Método de Pagamento</span>
                     <span>Valor</span>
                   </div>
                   <div className="border-t border-dashed border-black pt-1 space-y-0.5">
                     {!isMultiplePayment ? (
                       <div className="flex justify-between text-[10px] font-bold">
-                        <span className="capitalize">
-                          {paymentMethod === 'cash' ? 'Dinheiro' : paymentMethod === 'card' ? 'Cartao' : 'M-Pesa'}
-                        </span>
+                        <span className="capitalize">{paymentLabel(paymentMethod)}</span>
                         <span>{total.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
                       </div>
                     ) : (
                       payments.map((p, i) => (
                         <div key={i} className="flex justify-between text-[10px] font-bold">
-                          <span className="capitalize">{p.method === 'cash' ? 'Dinheiro' : p.method === 'card' ? 'Cartao' : 'M-Pesa'}</span>
+                          <span className="capitalize">{paymentLabel(p.method)}</span>
                           <span>{p.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
                         </div>
                       ))
@@ -135,7 +169,9 @@ export function ReceiptPreview({
                   </div>
 
                   {/* Display Change (Troco) */}
-                  {((!isMultiplePayment && paymentMethod === 'cash' && receivedAmount !== '') ||
+                  {((!isMultiplePayment &&
+                    isCashPaymentMethod(paymentMethod) &&
+                    receivedAmount !== '') ||
                     (isMultiplePayment && payments.reduce((acc, p) => acc + p.amount, 0) > total)) && (
                     <div className="flex justify-between text-[11px] font-bold border-t border-dashed border-black pt-1 mt-1">
                       <span>Troco:</span>
@@ -153,20 +189,32 @@ export function ReceiptPreview({
               <div className="text-center pt-4 border-t border-dashed border-black space-y-1">
                 <p className="text-[11px] font-bold">IVA Incluso</p>
                 <p className="text-[11px] font-bold">Processada por Computador</p>
-                <p className="text-[11px] font-bold">Obrigado pela prefer?ncia!</p>
-                <p className="text-[10px] font-bold italic">Formato otimizado para impressora t?rmica de 80mm</p>
+                <p className="text-[11px] font-bold">Obrigado pela preferência!</p>
                 <p className="text-[10px] font-bold italic mt-2">Sistema desenvolvido por: Nicolau Nino</p>
               </div>
             </div>
 
-            <div className="p-4 bg-zinc-100 border-t border-zinc-200 flex gap-3 font-sans no-print">
-              <button onClick={onPrimaryAction} className="flex-1 h-12 bg-zinc-200 hover:bg-zinc-300 text-zinc-700 rounded font-bold transition-all">
-                {isSaleFinalized ? 'Nova Venda' : 'Fechar'}
-              </button>
-              <button onClick={onPrint} className="flex-1 h-12 bg-zinc-900 hover:bg-zinc-800 text-white rounded font-bold transition-all flex items-center justify-center gap-2">
-                <Printer size={18} />
-                Imprimir
-              </button>
+            <div className="p-4 bg-zinc-100 border-t border-zinc-200 flex flex-col gap-2 font-sans no-print">
+              <p className="text-[10px] text-zinc-500 leading-snug px-0.5">
+                Ao imprimir no Windows (Chrome/Edge): em &quot;Mais definições&quot; desative{' '}
+                <span className="font-semibold text-zinc-600">Cabeçalhos e rodapés</span> e use margens{' '}
+                <span className="font-semibold text-zinc-600">Nenhumas</span>, para sair só o recibo térmico
+                (sem data, título nem URL no papel).
+              </p>
+              <div className="flex gap-3">
+                <button onClick={onPrimaryAction} className="flex-1 h-12 bg-zinc-200 hover:bg-zinc-300 text-zinc-700 rounded font-bold transition-all">
+                  {isSaleFinalized ? 'Nova Venda' : 'Fechar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onPrint}
+                  title="Na janela de impressão: desative Cabeçalhos e rodapés; margens Nenhumas."
+                  className="flex-1 h-12 bg-zinc-900 hover:bg-zinc-800 text-white rounded font-bold transition-all flex items-center justify-center gap-2"
+                >
+                  <Printer size={18} />
+                  Imprimir
+                </button>
+              </div>
             </div>
           </motion.div>
         </div>

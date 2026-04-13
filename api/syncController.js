@@ -1,6 +1,6 @@
-const express = require('express');
-const { all, get } = require('./dbUtils');
-const { processFullSyncCycle, fullSyncFromCloud } = require('./syncService');
+import express from 'express';
+import { all, get } from './dbUtils.js';
+import { processFullSyncCycle, fullSyncFromCloud } from './syncService.js';
 
 const router = express.Router();
 
@@ -105,4 +105,4 @@ router.get('/logs', async (_req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

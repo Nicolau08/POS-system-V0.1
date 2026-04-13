@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Archive, CreditCard, Percent, User, Utensils } from 'lucide-react';
+import { Archive, CreditCard, FileText, LogOut, Percent, User, Utensils } from 'lucide-react';
 import { SyncStatus } from '@/components/SyncStatus';
 
 // Top bar actions extracted from the POS page to reduce page-level JSX size.
@@ -12,9 +12,12 @@ export function Header({
   isCashierModalOpen,
   onOpenCustomer,
   onOpenDiscount,
+  onOpenQuotation,
   onOpenTable,
   onOpenCashier,
   onOpenAdminSidebar,
+  userName,
+  onLogout,
 }: {
   selectedCustomerName: string | null;
   selectedTableId: string | null;
@@ -22,10 +25,37 @@ export function Header({
   isCashierModalOpen: boolean;
   onOpenCustomer: () => void;
   onOpenDiscount: () => void;
+  onOpenQuotation: () => void;
   onOpenTable: () => void;
   onOpenCashier: () => void;
   onOpenAdminSidebar: () => void;
+  userName?: string | null;
+  onLogout?: () => void;
 }) {
+  const [fallbackUserName, setFallbackUserName] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    try {
+      const rawUser = localStorage.getItem('user');
+      const rawCurrentUser = localStorage.getItem('currentUser');
+      const parsedUser = rawUser ? JSON.parse(rawUser) : null;
+      const parsedCurrentUser = rawCurrentUser ? JSON.parse(rawCurrentUser) : null;
+      setFallbackUserName(parsedUser?.name || parsedCurrentUser?.name || null);
+    } catch {
+      setFallbackUserName(null);
+    }
+  }, []);
+
+  const displayName = userName || fallbackUserName || 'User';
+  const handleLogout = () => {
+    if (onLogout) {
+      onLogout();
+      return;
+    }
+    localStorage.removeItem('user');
+    window.location.reload();
+  };
+
   return (
     <header className="flex items-center bg-[#1a1a1a] border-b border-zinc-800 px-2 py-1 gap-1 overflow-x-auto scrollbar-hide">
       <HeaderButton
@@ -35,6 +65,7 @@ export function Header({
         onClick={onOpenCustomer}
       />
       <HeaderButton icon={<Percent size={20} />} label="Desconto" onClick={onOpenDiscount} />
+      <HeaderButton icon={<FileText size={20} />} label="Cotação" onClick={onOpenQuotation} />
 
       <div className="w-px h-8 bg-zinc-800 mx-1" />
 
@@ -54,7 +85,19 @@ export function Header({
       />
 
       <div className="flex-grow" />
-      <SyncStatus />
+      <div className="flex items-center gap-3">
+        <span className="text-sm font-medium text-zinc-300">{displayName}</span>
+        <span className="opacity-50 text-zinc-500">|</span>
+        <SyncStatus />
+        <button
+          onClick={handleLogout}
+          className="p-1 rounded hover:bg-zinc-700 transition text-zinc-400 hover:text-white"
+          title="Terminar sessão"
+          aria-label="Terminar sessão"
+        >
+          <LogOut size={16} />
+        </button>
+      </div>
       <button
         onClick={onOpenAdminSidebar}
         className="p-2 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors"

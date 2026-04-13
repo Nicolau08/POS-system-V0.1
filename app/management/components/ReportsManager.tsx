@@ -17,6 +17,16 @@ import {
 } from 'lucide-react';
 import { supabase, isConfigured } from '@/lib/supabase';
 
+import { getPosApiBase } from '@/lib/apiBase';
+
+async function fetchLocalJson(path: string) {
+  const response = await fetch(`${getPosApiBase()}${path}`);
+  if (!response.ok) {
+    throw new Error(`Falha ao carregar dados locais (${response.status})`);
+  }
+  return response.json();
+}
+
 type ReportKey =
   | 'products'
   | 'customers'
@@ -405,24 +415,22 @@ export default function ReportsManager() {
 
       const [
         { data: customerData, error: customerError },
-        { data: categoryData, error: categoryError },
-        { data: productData, error: productError },
+        localCategories,
+        localProducts,
         { data: orderData, error: orderError },
       ] = await Promise.all([
         supabase.from('customers').select('id, name').order('name'),
-        supabase.from('categories').select('id, name').order('name'),
-        supabase.from('products').select('id, name, category_id').order('name'),
+        fetchLocalJson('/categorias'),
+        fetchLocalJson('/produtos'),
         supabase.from('orders').select('payment_method'),
       ]);
 
       if (customerError) throw customerError;
-      if (categoryError) throw categoryError;
-      if (productError) throw productError;
       if (orderError) throw orderError;
 
       setCustomers(customerData || []);
-      setCategories(categoryData || []);
-      setProducts(productData || []);
+      setCategories(localCategories || []);
+      setProducts(localProducts || []);
 
       const methods = Array.from(
         new Set((orderData || []).map((item) => item.payment_method).filter(Boolean))
@@ -563,16 +571,11 @@ export default function ReportsManager() {
       let nextReport: BuiltReport | null = null;
 
       if (reportKey === 'products') {
-        let query = supabase
-          .from('products')
-          .select('code, name, price, final_price, stock_quantity, active, categories(name), created_at')
-          .order('name');
-
-        if (selectedCategory !== 'all') query = query.eq('category_id', selectedCategory);
-        if (selectedProduct !== 'all') query = query.eq('id', selectedProduct);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const localProducts = await fetchLocalJson('/produtos');
+        const data = (localProducts || [])
+          .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
+          .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
+          .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
 
         const rows = (data || []).map((item: any) => ({
           'Código': item.code ?? '-',
@@ -785,16 +788,11 @@ export default function ReportsManager() {
       }
 
       if (reportKey === 'stock_movement') {
-        let query = supabase
-          .from('products')
-          .select('code, name, stock_quantity, min_stock, cost, price, final_price, categories(name), updated_at')
-          .order('name');
-
-        if (selectedCategory !== 'all') query = query.eq('category_id', selectedCategory);
-        if (selectedProduct !== 'all') query = query.eq('id', selectedProduct);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const localProducts = await fetchLocalJson('/produtos');
+        const data = (localProducts || [])
+          .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
+          .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
+          .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
 
         const rows = (data || []).map((item: any) => {
           const qty = Number(item.stock_quantity || 0);

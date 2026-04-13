@@ -1,6 +1,8 @@
 // Shared POS domain types used across page, components, and hooks.
 export interface Product {
   id: string;
+  code?: string | number;
+  barcode?: string;
   name: string;
   price: number;
   category: string;
@@ -9,6 +11,8 @@ export interface Product {
   image?: string;
   stock_quantity?: number;
   min_stock?: number;
+  /** Supabase `products.id` (UUID); obrigatorio para sync de vendas/estoque */
+  cloud_id?: string;
   is_service?: boolean;
 }
 
@@ -22,6 +26,7 @@ export interface CartItem extends Product {
 
 export interface Customer {
   id: string;
+  cloud_id?: string | null;
   name: string;
   phone: string;
   email?: string;
@@ -32,8 +37,12 @@ export interface Customer {
 export interface User {
   id: string;
   name: string;
+  surname?: string | null;
+  email?: string | null;
   password?: string;
   role: 'admin' | 'user';
+  accessLevel?: number;
+  active?: boolean;
   avatar?: string;
 }
 
@@ -42,9 +51,45 @@ export type Discount = {
   amount: number;
 };
 
-export type PaymentMethod = 'cash' | 'card' | 'pix';
+export type PaymentMethod = string;
+
+export type PaymentMethodOption = {
+  id: string;
+  name: string;
+  code: string;
+  shortcut?: string | null;
+  position: number;
+  enabled: boolean;
+  quickPayment: boolean;
+  requiredCustomer: boolean;
+  allowChange: boolean;
+  markAsPaid: boolean;
+  printReceipt: boolean;
+  openCashDrawer: boolean;
+};
 
 export type PaymentEntry = {
   method: PaymentMethod;
   amount: number;
+};
+
+/** Dados cadastrados em Gerenciamento → Minha Empresa (espelha API /company-profile). */
+export type CompanyProfile = {
+  name: string;
+  taxId: string;
+  street: string;
+  buildingNumber: string;
+  additionalStreet: string;
+  plotIdentification: string;
+  district: string;
+  city: string;
+  state: string;
+  country: string;
+  phone: string;
+  email: string;
+  bankAccountNumber: string;
+  bankDetails: string;
+  logoDataUrl: string | null;
+  voidReasons: string[];
+  updatedAt?: string | null;
 };

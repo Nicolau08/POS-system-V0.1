@@ -7,7 +7,7 @@ import {
   ChevronDown, Folder, Loader2, AlertCircle
 } from 'lucide-react';
 
-const API_URL = 'http://localhost:3001';
+import { getPosApiBase } from '@/lib/apiBase';
 
 interface Product {
   id: string;
@@ -30,6 +30,22 @@ interface Category {
   name: string;
 }
 
+interface ProductHistoryRow {
+  id: string;
+  product_id: string | null;
+  product_name: string;
+  movement_type: string;
+  document_type: string | null;
+  document_number: string | null;
+  document_id: string | null;
+  customer_name: string;
+  quantity: number;
+  quantity_abs: number;
+  unit_price: number;
+  discount_amount: number;
+  date: string;
+}
+
 export default function InventoryManager() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -39,6 +55,17 @@ export default function InventoryManager() {
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const [isResizing, setIsResizing] = useState(false);
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRows, setHistoryRows] = useState<ProductHistoryRow[]>([]);
+  const [historyError, setHistoryError] = useState('');
+  const [historyFrom, setHistoryFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [historyTo, setHistoryTo] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Filters
   const [filterNegative, setFilterNegative] = useState(false);
@@ -53,8 +80,8 @@ export default function InventoryManager() {
     setLoading(true);
     try {
       const [catRes, prodRes] = await Promise.all([
-        fetch(`${API_URL}/categorias`),
-        fetch(`${API_URL}/produtos`)
+        fetch(`${getPosApiBase()}/categorias`),
+        fetch(`${getPosApiBase()}/produtos`)
       ]);
       const catData = await catRes.json();
       const prodData = await prodRes.json();
@@ -128,13 +155,145 @@ export default function InventoryManager() {
     return { negative, nonZero, zero, totalCost, totalCostWithTax, totalSales, totalSalesWithTax };
   }, [products, filteredProducts]);
 
+  const selectedProduct = useMemo(
+    () => products.find((p) => String(p.id) === String(selectedProductId)) ?? null,
+    [products, selectedProductId]
+  );
+  const filteredHistoryRows = useMemo(() => {
+    const fromMs = historyFrom ? Date.parse(`${historyFrom}T00:00:00`) : Number.NEGATIVE_INFINITY;
+    const toMs = historyTo ? Date.parse(`${historyTo}T23:59:59.999`) : Number.POSITIVE_INFINITY;
+    return historyRows.filter((row) => {
+      const rowMs = Date.parse(String(row.date ?? ''));
+      if (!Number.isFinite(rowMs)) return false;
+      return rowMs >= fromMs && rowMs <= toMs;
+    });
+  }, [historyFrom, historyRows, historyTo]);
+
+  const sortedHistoryRows = useMemo(() => {
+    const parseDocumentSequence = (documentNumber: string | null) => {
+      const raw = String(documentNumber ?? '').trim();
+      if (!raw) return 0;
+      const parts = raw.split('/');
+      const lastPart = parts[parts.length - 1] ?? '';
+      const sequence = Number(lastPart);
+      return Number.isFinite(sequence) ? sequence : 0;
+    };
+
+    return [...filteredHistoryRows].sort((a, b) => {
+      const aTime = Date.parse(String(a.date ?? '')) || 0;
+      const bTime = Date.parse(String(b.date ?? '')) || 0;
+      if (bTime !== aTime) return bTime - aTime;
+
+      const aDocSeq = parseDocumentSequence(a.document_number ?? null);
+      const bDocSeq = parseDocumentSequence(b.document_number ?? null);
+      if (bDocSeq !== aDocSeq) return bDocSeq - aDocSeq;
+
+      const aQtyAbs = Math.abs(Number(a.quantity ?? 0));
+      const bQtyAbs = Math.abs(Number(b.quantity ?? 0));
+      if (bQtyAbs !== aQtyAbs) return bQtyAbs - aQtyAbs;
+
+      return String(b.id ?? '').localeCompare(String(a.id ?? ''));
+    });
+  }, [filteredHistoryRows]);
+
+  const historyRowsWithStock = useMemo(() => {
+    const currentStock = Number(selectedProduct?.stock_quantity ?? 0);
+    if (!Number.isFinite(currentStock)) {
+      return sortedHistoryRows.map((row) => ({
+        ...row,
+        stock_before_movement: null as number | null,
+        stock_after_movement: null as number | null,
+      }));
+    }
+
+    // Stock exato por linha:
+    // 1) reconstrói stock inicial usando TODO histórico (sem filtro de período);
+    // 2) aplica movimentos em ordem cronológica para achar o saldo daquele momento.
+    const allRowsAsc = [...historyRows].sort((a, b) => {
+      const aTime = Date.parse(String(a.date ?? '')) || 0;
+      const bTime = Date.parse(String(b.date ?? '')) || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+    });
+
+    const totalDelta = allRowsAsc.reduce((acc, row) => {
+      const qty = Number(row.quantity ?? 0);
+      return Number.isFinite(qty) ? acc + qty : acc;
+    }, 0);
+
+    let runningStock = currentStock - totalDelta;
+    const stockByMovementId = new Map<string, { before: number; after: number }>();
+    for (const row of allRowsAsc) {
+      const stockBeforeMovement = runningStock;
+      const qty = Number(row.quantity ?? 0);
+      if (Number.isFinite(qty)) {
+        runningStock += qty;
+      }
+      stockByMovementId.set(String(row.id ?? ''), {
+        before: stockBeforeMovement,
+        after: runningStock,
+      });
+    }
+
+    return sortedHistoryRows.map((row) => {
+      const snapshot = stockByMovementId.get(String(row.id ?? ''));
+      return {
+        ...row,
+        stock_before_movement: snapshot?.before ?? null,
+        stock_after_movement: snapshot?.after ?? null,
+      };
+    });
+  }, [historyRows, selectedProduct?.stock_quantity, sortedHistoryRows]);
+
+  const fetchProductHistory = async (productId: string) => {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const res = await fetch(`${getPosApiBase()}/produtos/${productId}/historico`);
+      if (!res.ok) throw new Error(`Falha ao carregar historico (${res.status})`);
+      const data = (await res.json()) as ProductHistoryRow[];
+      setHistoryRows(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setHistoryRows([]);
+      setHistoryError(error instanceof Error ? error.message : 'Falha ao carregar historico do produto');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openHistoryModal = async () => {
+    if (!selectedProductId) return;
+    setIsHistoryOpen(true);
+    await fetchProductHistory(selectedProductId);
+  };
+
+  const movementLabel = (type: string) => {
+    switch (String(type).toLowerCase()) {
+      case 'entrada':
+        return 'Entrada de stock';
+      case 'devolucao':
+        return 'Devolução';
+      case 'quebra':
+        return 'Quebra';
+      case 'ajuste':
+        return 'Regularização';
+      default:
+        return 'Venda';
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       {/* Toolbar */}
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
         <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
-        <ToolbarButton icon={<History size={20} />} label="Histórico" />
+        <ToolbarButton
+          icon={<History size={20} />}
+          label="Histórico"
+          onClick={() => void openHistoryModal()}
+          disabled={!selectedProductId}
+        />
         <ToolbarButton icon={<ClipboardCheck size={20} />} label="Contagem" />
         <ToolbarButton icon={<Zap size={20} />} label="Rápido" />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
@@ -241,19 +400,22 @@ export default function InventoryManager() {
           </div>
 
           {/* Table */}
-          <div className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]">
-            <table className="min-w-full text-left border-collapse table-fixed">
+          <div
+            className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]"
+            onClick={() => setSelectedProductId(null)}
+          >
+            <table className="min-w-full text-left text-xs border-collapse table-fixed">
               <thead className="sticky top-0 bg-[#141414] z-10">
-                <tr className="border-b border-zinc-800">
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize w-20">Código</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize">Nome</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Quantidade</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center w-20">Unidade</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Preço</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Custo</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Custo inc...</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Total</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-zinc-500 capitalize text-right w-24">Total incl...</th>
+                <tr className="text-zinc-400">
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap w-20">Código</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap">Nome</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Quantidade</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-center font-medium whitespace-nowrap w-20">Unidade</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Preço</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Custo</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Custo inc...</th>
+                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Total</th>
+                  <th className="border-b border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Total incl...</th>
                 </tr>
               </thead>
               <tbody>
@@ -276,24 +438,32 @@ export default function InventoryManager() {
                   filteredProducts.map((p, i) => (
                     <tr 
                       key={p.id} 
-                      className={`border-b border-zinc-800/50 transition-colors cursor-pointer ${
-                        i % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#141414]'
+                      className={`border-b border-zinc-800/70 transition-colors cursor-pointer ${
+                        selectedProductId === String(p.id)
+                          ? 'bg-[#00364b]'
+                          : i % 2 === 0
+                            ? 'bg-[#1a1a1a]'
+                            : 'bg-[#141414]'
                       } hover:bg-zinc-800/30`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedProductId(String(p.id));
+                      }}
                     >
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 truncate">{p.code || '---'}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-medium border-r border-zinc-800/50 truncate">
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 whitespace-nowrap truncate">{p.code || '---'}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-medium border-r border-zinc-800/80 whitespace-nowrap truncate">
                         <div className="flex items-center gap-2">
                           <div className={`w-2 h-2 rounded-full ${p.stock_quantity > 0 ? 'bg-emerald-500' : p.stock_quantity < 0 ? 'bg-red-500' : 'bg-zinc-500'}`} />
                           {p.name}
                         </div>
                       </td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 text-right">{p.stock_quantity}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-center">{p.unit || 'un'}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-400 border-r border-zinc-800/50 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold border-r border-zinc-800/50 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>
-                      <td className="px-4 py-1.5 text-xs text-zinc-200 font-bold text-right whitespace-nowrap">{formatPrice((p.final_price || p.price) * Math.abs(p.stock_quantity))}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">{p.stock_quantity}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap">{p.unit || 'un'}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
+                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold text-right whitespace-nowrap">{formatPrice((p.final_price || p.price) * Math.abs(p.stock_quantity))}</td>
                     </tr>
                   ))
                 )}
@@ -304,43 +474,181 @@ export default function InventoryManager() {
           {/* Footer */}
           <div className="h-20 bg-[#141414] border-t border-zinc-800 flex items-center justify-end px-8 gap-12">
             <div className="text-right">
-              <p className="text-[10px] font-bold text-zinc-500 capitalize">Preço de custo</p>
-              <div className="flex items-center gap-4 mt-1">
+              <p className="text-[12px] font-bold text-zinc-500 capitalize">Preço de custo</p>
+              <div className="grid grid-cols-[auto_100px] items-center gap-x-4 mt-1">
                 <span className="text-xs text-zinc-400">Custo total:</span>
-                <span className="text-xs font-bold text-white">{formatPrice(stats.totalCost)}</span>
+                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalCost)}</span>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="grid grid-cols-[auto_100px] items-center gap-x-4">
                 <span className="text-xs text-zinc-400">Custo total incl. imposto:</span>
-                <span className="text-xs font-bold text-white">{formatPrice(stats.totalCostWithTax)}</span>
+                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalCostWithTax)}</span>
               </div>
             </div>
             <div className="text-right">
-              <p className="text-[10px] font-bold text-zinc-500 capitalize">Preço de venda</p>
-              <div className="flex items-center gap-4 mt-1">
+              <p className="text-[12px] font-bold text-zinc-500 capitalize">Preço de venda</p>
+              <div className="grid grid-cols-[auto_100px] items-center gap-x-4 mt-1">
                 <span className="text-xs text-zinc-400">Total:</span>
-                <span className="text-xs font-bold text-white">{formatPrice(stats.totalSales)}</span>
+                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalSales)}</span>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="grid grid-cols-[auto_100px] items-center gap-x-4">
                 <span className="text-xs text-zinc-400">Total incl. impostos:</span>
-                <span className="text-xs font-bold text-white">{formatPrice(stats.totalSalesWithTax)}</span>
+                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalSalesWithTax)}</span>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {isHistoryOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="flex h-[82vh] w-[95vw] max-w-[1200px] flex-col overflow-hidden rounded border border-zinc-700 bg-[#1a1a1a]">
+            <div className="flex items-center justify-between border-b border-zinc-700 px-4 py-2">
+              <div className="text-sm text-zinc-200">
+                {selectedProduct?.name ?? 'Produto'} - Histórico do estoque
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHistoryOpen(false)}
+                className="rounded border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2 text-xs">
+              <label className="flex items-center gap-2">
+                <span className="text-zinc-400">Início</span>
+                <input
+                  type="date"
+                  value={historyFrom}
+                  onChange={(e) => setHistoryFrom(e.target.value)}
+                  className="h-8 rounded border border-zinc-700 bg-[#121212] px-2 text-zinc-100 focus:outline-none"
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-zinc-400">Fim</span>
+                <input
+                  type="date"
+                  value={historyTo}
+                  onChange={(e) => setHistoryTo(e.target.value)}
+                  className="h-8 rounded border border-zinc-700 bg-[#121212] px-2 text-zinc-100 focus:outline-none"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => selectedProductId && void fetchProductHistory(selectedProductId)}
+                className="h-8 rounded border border-zinc-700 bg-zinc-800/70 px-3 text-zinc-200 hover:bg-zinc-700"
+              >
+                Atualizar
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto">
+              <table className="min-w-full table-fixed border-collapse text-left">
+                <thead className="sticky top-0 z-10 bg-[#121212]">
+                  <tr className="border-b border-zinc-700 text-[11px] text-zinc-400">
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Tipo de documento</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Documento</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Cliente</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Data</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Quantidade</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Stock antes</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Stock depois</th>
+                    <th className="border-r border-zinc-800 px-3 py-2 text-left">Unit of measure</th>
+                    <th className="px-3 py-2 text-left">Preço de custo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyLoading ? (
+                    <tr>
+                      <td colSpan={9} className="px-3 py-8 text-center text-xs text-zinc-500">
+                        Carregando histórico...
+                      </td>
+                    </tr>
+                  ) : historyError ? (
+                    <tr>
+                      <td colSpan={9} className="px-3 py-8 text-center text-xs text-red-400">
+                        {historyError}
+                      </td>
+                    </tr>
+                  ) : historyRowsWithStock.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-3 py-8 text-center text-xs text-zinc-500">
+                        Nenhum movimento encontrado para este período.
+                      </td>
+                    </tr>
+                  ) : (
+                    historyRowsWithStock.map((row) => (
+                      <tr key={row.id} className="border-b border-zinc-800 text-xs text-zinc-200">
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">{movementLabel(row.movement_type)}</td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">{row.document_number ?? row.document_type ?? '-'}</td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">{row.customer_name || 'Unknown'}</td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">
+                          {row.date ? new Date(row.date).toLocaleString() : '-'}
+                        </td>
+                        <td
+                          className={`border-r border-zinc-900 px-3 py-2 text-left font-bold ${
+                            row.quantity >= 0 ? 'text-emerald-400' : 'text-red-400'
+                          }`}
+                        >
+                          {row.quantity.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 3 })}
+                        </td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">
+                          {row.stock_before_movement != null
+                            ? row.stock_before_movement.toLocaleString(undefined, {
+                                minimumFractionDigits: 0,
+                                maximumFractionDigits: 3,
+                              })
+                            : '-'}
+                        </td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">
+                          {row.stock_after_movement != null
+                            ? row.stock_after_movement.toLocaleString(undefined, {
+                                minimumFractionDigits: 0,
+                                maximumFractionDigits: 3,
+                              })
+                            : '-'}
+                        </td>
+                        <td className="border-r border-zinc-900 px-3 py-2 text-left">{selectedProduct?.unit || 'un'}</td>
+                        <td className="px-3 py-2 text-left">
+                          {formatPrice(row.unit_price || selectedProduct?.cost || 0)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ToolbarButton({ icon, label, onClick, active }: { icon: React.ReactNode, label: string, onClick?: () => void, active?: boolean }) {
+function ToolbarButton({
+  icon,
+  label,
+  onClick,
+  active,
+  disabled = false,
+}: {
+  icon: React.ReactNode,
+  label: string,
+  onClick?: () => void,
+  active?: boolean,
+  disabled?: boolean
+}) {
   return (
     <button 
       onClick={onClick}
+      disabled={disabled}
       className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 group ${
         active ? 'bg-zinc-800 text-white' : 'text-zinc-400'
-      }`}
+      } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent' : ''}`}
+      title={disabled ? 'Selecione um produto para ver o histórico' : undefined}
     >
-      <div className="mb-1 group-hover:scale-110 transition-transform">
+      <div className={`mb-1 transition-transform ${disabled ? '' : 'group-hover:scale-110'}`}>
         {icon}
       </div>
       <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">

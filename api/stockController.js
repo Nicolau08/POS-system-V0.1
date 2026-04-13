@@ -1,5 +1,5 @@
-const express = require('express');
-const { supabase, isSupabaseConfigured } = require('./supabaseClient');
+import express from 'express';
+import { supabase, isSupabaseConfigured } from './supabaseClient.js';
 
 const router = express.Router();
 
@@ -155,4 +155,4 @@ router.post('/recalculate', async (_req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

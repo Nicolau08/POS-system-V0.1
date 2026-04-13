@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Home, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Product } from '@/app/pos/types';
 
@@ -9,6 +9,7 @@ import type { Product } from '@/app/pos/types';
 export function ProductList({
   searchQuery,
   onSearchChange,
+  onSearchSubmit,
   productFamilies,
   selectedCategory,
   onSelectCategory,
@@ -23,6 +24,7 @@ export function ProductList({
 }: {
   searchQuery: string;
   onSearchChange: (value: string) => void;
+  onSearchSubmit: () => void;
   productFamilies: string[];
   selectedCategory: string | null;
   onSelectCategory: (value: string | null) => void;
@@ -47,7 +49,14 @@ export function ProductList({
             placeholder="Pesquisar produto por nome"
             className="w-full bg-transparent py-2 px-2 outline-none text-sm placeholder:text-zinc-600"
             value={searchQuery ?? ''}
+            autoFocus
             onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onSearchSubmit();
+              }
+            }}
           />
         </div>
       </div>
@@ -91,32 +100,40 @@ export function ProductList({
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-          {visibleProducts.map((product) => (
-            <motion.button
-              key={product.id}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => onAddToCart(product)}
-              className={`relative flex flex-col items-start justify-between h-28 p-4 rounded border border-zinc-800 transition-all ${product.color || 'bg-zinc-900/30'} hover:border-zinc-600 hover:bg-zinc-800/50 group text-left`}
-            >
-              {product.stock_quantity !== undefined && (
-                <span className={`absolute top-2 right-2 text-xs font-bold ${product.stock_quantity > 0 ? 'text-emerald-500/80' : 'text-red-500/80'}`}>
-                  {product.stock_quantity}
+          {visibleProducts.map((product) => {
+            const hasImage = Boolean(product.image);
+            return (
+              <motion.button
+                key={product.id}
+                onClick={() => onAddToCart(product)}
+                className="relative flex flex-col items-start justify-between h-28 p-4 rounded border border-zinc-800 transition-all bg-zinc-900/30 group text-left"
+              >
+                {product.stock_quantity !== undefined && (
+                  <span className={`absolute top-2 right-2 text-xs font-bold ${product.stock_quantity > 0 ? 'text-emerald-500/80' : 'text-red-500/80'}`}>
+                    {product.stock_quantity}
+                  </span>
+                )}
+                <div className={hasImage ? 'pr-20' : 'pr-8'}>
+                  <span className="block text-sm font-medium text-zinc-100 group-hover:text-white transition-colors">
+                    {product.name}
+                  </span>
+                  <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+                    {product.category || 'Sem familia'}
+                  </span>
+                </div>
+                <span className="text-sm font-mono font-medium text-zinc-500 group-hover:text-emerald-400 transition-colors">
+                  {formatPrice(product.price)}
                 </span>
-              )}
-              <div className="pr-8">
-                <span className="block text-sm font-medium text-zinc-100 group-hover:text-white transition-colors">
-                  {product.name}
-                </span>
-                <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
-                  {product.category || 'Sem familia'}
-                </span>
-              </div>
-              <span className="text-sm font-mono font-medium text-zinc-500 group-hover:text-emerald-400 transition-colors">
-                {formatPrice(product.price)}
-              </span>
-            </motion.button>
-          ))}
+
+                {hasImage && (
+                  <div className="absolute right-3 bottom-3 w-[56px] h-[56px] rounded border border-zinc-700 bg-zinc-900/70 overflow-hidden">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
+                  </div>
+                )}
+              </motion.button>
+            );
+          })}
         </div>
 
         {visibleProducts.length === 0 && (
@@ -128,22 +145,7 @@ export function ProductList({
 
       <footer className="p-2 bg-[#1a1a1a] border-t border-zinc-800 flex items-center justify-between text-xs text-zinc-500">
         <div>Página 1 / 1</div>
-        <div className="flex items-center gap-1">
-          <PaginationButton icon={<Home size={14} />} />
-          <PaginationButton icon={<ChevronsLeft size={14} />} />
-          <PaginationButton icon={<ChevronLeft size={14} />} />
-          <PaginationButton icon={<ChevronRight size={14} />} />
-          <PaginationButton icon={<ChevronsRight size={14} />} />
-        </div>
       </footer>
     </div>
-  );
-}
-
-function PaginationButton({ icon }: { icon: React.ReactNode }) {
-  return (
-    <button className="w-7 h-7 flex items-center justify-center rounded bg-zinc-800 hover:bg-zinc-700 transition-colors">
-      {icon}
-    </button>
   );
 }

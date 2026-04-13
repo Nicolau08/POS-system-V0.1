@@ -17,21 +17,29 @@ export function useProducts(
     return Array.from(
       new Set(
         sortedProducts
-          .filter((p) => p.price > 0 && p.category && p.category !== 'Category')
+          .filter((p) => p.active !== false && p.category && p.category !== 'Category')
           .map((p) => p.category)
       )
     ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [sortedProducts]);
 
   const sellableProducts = useMemo(
-    () => sortedProducts.filter((p) => p.price > 0),
+    () => sortedProducts.filter((p) => p.active !== false),
     [sortedProducts]
   );
 
   const visibleProducts = useMemo(() => {
     return sellableProducts.filter((p) => {
       const matchesCategory = !selectedCategory || p.category === selectedCategory;
-      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const query = searchQuery.trim().toLowerCase();
+      const productName = String(p.name ?? '').toLowerCase();
+      const productBarcode = String(p.barcode ?? '').toLowerCase();
+      const productCode = String(p.code ?? '').toLowerCase();
+      const matchesSearch =
+        query.length === 0 ||
+        productName.includes(query) ||
+        productBarcode.includes(query) ||
+        productCode.includes(query);
       return matchesCategory && matchesSearch;
     });
   }, [sellableProducts, selectedCategory, searchQuery]);

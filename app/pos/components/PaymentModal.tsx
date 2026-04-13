@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Banknote, CreditCard, Lock, Monitor, Smartphone, User } from 'lucide-react';
-import type { CartItem, Customer, Discount, PaymentEntry, PaymentMethod } from '@/app/pos/types';
+import { Banknote, CreditCard, Lock, Monitor, Printer, Save, Smartphone, User, X } from 'lucide-react';
+import type { CartItem, Customer, Discount, PaymentEntry, PaymentMethod, PaymentMethodOption } from '@/app/pos/types';
 
 export function PaymentModal({
   isOpen,
@@ -18,6 +18,7 @@ export function PaymentModal({
   tax,
   totalDiscount,
   total,
+  paymentMethods = [],
   isMultiplePayment,
   onToggleMultiplePayment,
   paymentMethod,
@@ -31,7 +32,10 @@ export function PaymentModal({
   multiplePaymentAmount,
   setMultiplePaymentAmount,
   onFinalize,
+  isReceiptPrintEnabled,
+  onToggleReceiptPrint,
   formatPrice,
+  docType,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -45,6 +49,7 @@ export function PaymentModal({
   tax: number;
   totalDiscount: number;
   total: number;
+  paymentMethods?: PaymentMethodOption[];
   isMultiplePayment: boolean;
   onToggleMultiplePayment: () => void;
   paymentMethod: PaymentMethod | null;
@@ -58,16 +63,33 @@ export function PaymentModal({
   multiplePaymentAmount: string;
   setMultiplePaymentAmount: (value: string) => void;
   onFinalize: () => void;
+  isReceiptPrintEnabled: boolean;
+  onToggleReceiptPrint: () => void;
   formatPrice: (value: number) => string;
+  docType: 'VD' | 'TK' | 'FP' | 'FT';
 }) {
-  const received = parseFloat(receivedAmount || '0');
+  const isProforma = docType === 'FP';
+  const receivedRaw = (receivedAmount ?? '').trim();
+  const receivedParsed = receivedRaw === '' ? NaN : parseFloat(receivedRaw);
+  const receivedForChange = Number.isFinite(receivedParsed) ? receivedParsed : 0;
   const totalPago = payments.reduce((acc, p) => acc + p.amount, 0);
   const missingAmount = Math.max(0, total - totalPago);
-  const singleChange = Math.max(0, received - total);
+  /** Vazio = pagamento exato (sem troco); preenchido = cálculo de troco (exige >= total). */
+  const singleChange = receivedRaw === '' ? 0 : Math.max(0, receivedForChange - total);
   const multiChange = Math.max(0, totalPago - total);
-  const canFinalize =
-    (!isMultiplePayment && !!paymentMethod && (paymentMethod !== 'cash' || received >= total)) ||
-    (isMultiplePayment && totalPago >= total);
+
+  const isCashSingle =
+    !isMultiplePayment && !!paymentMethod && isCashMethod(paymentMethod, paymentMethods);
+  const cashInputAllowed =
+    !isCashSingle ||
+    receivedRaw === '' ||
+    (Number.isFinite(receivedParsed) && receivedParsed >= total);
+
+  const canFinalize = isProforma
+    ? cart.length > 0
+    : ((!isMultiplePayment && !!paymentMethod && cashInputAllowed) || (isMultiplePayment && totalPago >= total));
+
+  const enabledMethods = paymentMethods.filter((method) => method.enabled);
 
   return (
     <AnimatePresence>
@@ -81,10 +103,26 @@ export function PaymentModal({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="p-4 border-b border-zinc-800 bg-zinc-900/50">
-              <h3 className="text-xl font-bold text-white">Finalizar Pagamento</h3>
-              <div className="flex gap-4 mt-2 text-xs text-zinc-500">
-                <span className="flex items-center gap-1"><User size={12} /> {selectedCustomer ? selectedCustomer.name : (customerName || 'Consumidor Final')}</span>
-                <span className="flex items-center gap-1"><Monitor size={12} /> Mesa: {tableNumber || 'N/A'}</span>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-bold text-white">{isProforma ? 'Salvar Proforma' : 'Finalizar Pagamento'}</h3>
+                  <div className="flex gap-4 mt-2 text-xs text-zinc-500">
+                    <span className="flex items-center gap-1"><User size={12} /> {selectedCustomer ? selectedCustomer.name : (customerName || 'Consumidor Final')}</span>
+                    <span className="flex items-center gap-1"><Monitor size={12} /> Mesa: {tableNumber || 'N/A'}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onToggleReceiptPrint}
+                  title={isReceiptPrintEnabled ? 'Impressão de recibo ativada' : 'Impressão de recibo desativada'}
+                  className={`w-14 h-12 rounded border flex items-center justify-center transition-colors ${
+                    isReceiptPrintEnabled
+                      ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                      : 'bg-red-600/30 border-red-500 text-red-400 hover:bg-red-600/40'
+                  }`}
+                >
+                  <Printer size={20} />
+                </button>
               </div>
             </div>
 
@@ -122,6 +160,12 @@ export function PaymentModal({
               </div>
 
               <div className="pt-4 space-y-3">
+                {isProforma ? (
+                  <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                    Documento em modo Proforma: nenhum pagamento e nenhum movimento de stock sera efetuado.
+                  </div>
+                ) : null}
+                {!isProforma && (
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-zinc-500 capitalize">Método de pagamento</span>
                   <button
@@ -135,19 +179,32 @@ export function PaymentModal({
                     Múltiplos Pagamentos
                   </button>
                 </div>
+                )}
 
-                {!isMultiplePayment ? (
+                {!isProforma && !isMultiplePayment ? (
                   <div className="grid grid-cols-3 gap-2">
-                    <PaymentMethodButton active={paymentMethod === 'cash'} onClick={() => setPaymentMethod('cash')} icon={<Banknote size={26} />} label="Dinheiro" />
-                    <PaymentMethodButton active={paymentMethod === 'card'} onClick={() => setPaymentMethod('card')} icon={<CreditCard size={26} />} label="Cartão" />
-                    <PaymentMethodButton active={paymentMethod === 'pix'} onClick={() => setPaymentMethod('pix')} icon={<Smartphone size={26} />} label="PIX" />
+                    {enabledMethods.map((method) => (
+                      <PaymentMethodButton
+                        key={method.id}
+                        active={paymentMethod === method.code}
+                        onClick={() => setPaymentMethod(method.code)}
+                        icon={paymentIconForCode(method.code, 26)}
+                        label={method.name}
+                      />
+                    ))}
                   </div>
-                ) : (
+                ) : !isProforma ? (
                   <div className="space-y-3">
                     <div className="grid grid-cols-3 gap-2">
-                      <PaymentMethodButton active={multiplePaymentMethod === 'cash'} onClick={() => setMultiplePaymentMethod('cash')} icon={<Banknote size={22} />} label="Dinheiro" />
-                      <PaymentMethodButton active={multiplePaymentMethod === 'card'} onClick={() => setMultiplePaymentMethod('card')} icon={<CreditCard size={22} />} label="Cartão" />
-                      <PaymentMethodButton active={multiplePaymentMethod === 'pix'} onClick={() => setMultiplePaymentMethod('pix')} icon={<Smartphone size={22} />} label="PIX" />
+                      {enabledMethods.map((method) => (
+                        <PaymentMethodButton
+                          key={method.id}
+                          active={multiplePaymentMethod === method.code}
+                          onClick={() => setMultiplePaymentMethod(method.code)}
+                          icon={paymentIconForCode(method.code, 22)}
+                          label={method.name}
+                        />
+                      ))}
                     </div>
 
                     <div className="flex gap-2">
@@ -176,9 +233,20 @@ export function PaymentModal({
                     {payments.length > 0 && (
                       <div className="space-y-1 text-sm border border-zinc-800 rounded p-3 bg-zinc-900/40">
                         {payments.map((p, i) => (
-                          <div key={`${p.method}-${p.amount}-${i}`} className="flex justify-between text-zinc-300">
-                            <span>{p.method === 'cash' ? 'Dinheiro' : p.method === 'card' ? 'Cartão' : 'PIX'}</span>
-                            <span>{formatPrice(p.amount)}</span>
+                          <div key={`${p.method}-${p.amount}-${i}`} className="flex items-center justify-between gap-2 text-zinc-300">
+                            <span>{paymentLabelForCode(p.method, paymentMethods)}</span>
+                            <div className="flex items-center gap-2">
+                              <span>{formatPrice(p.amount)}</span>
+                              <button
+                                type="button"
+                                onClick={() => setPayments((prev) => prev.filter((_, index) => index !== i))}
+                                aria-label={`Remover ${paymentLabelForCode(p.method, paymentMethods)} ${formatPrice(p.amount)}`}
+                                title="Remover pagamento"
+                                className="h-7 w-7 rounded border border-zinc-700 text-zinc-400 hover:text-red-400 hover:border-red-500 hover:bg-red-500/10 transition-colors flex items-center justify-center"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
                           </div>
                         ))}
                         <div className="pt-2 mt-2 border-t border-zinc-800 flex justify-between text-zinc-400">
@@ -194,9 +262,9 @@ export function PaymentModal({
                       </div>
                     )}
                   </div>
-                )}
+                ) : null}
 
-                {!isMultiplePayment && paymentMethod === 'cash' && (
+                {!isProforma && !isMultiplePayment && isCashMethod(paymentMethod, paymentMethods) && (
                   <div className="space-y-2 border border-zinc-800 rounded p-3 bg-zinc-900/40">
                     <input
                       type="number"
@@ -229,8 +297,8 @@ export function PaymentModal({
                     : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
                 }`}
               >
-                <Lock size={16} />
-                Finalizar
+                {isProforma ? <Save size={16} /> : <Lock size={16} />}
+                {isProforma ? 'Salvar' : 'Finalizar'}
               </button>
             </div>
 
@@ -239,6 +307,26 @@ export function PaymentModal({
       )}
     </AnimatePresence>
   );
+}
+
+function paymentIconForCode(code: string, size: number) {
+  const normalized = String(code || '').toLowerCase();
+  if (normalized === 'cash' || normalized === 'dinheiro') return <Banknote size={size} />;
+  if (normalized === 'card' || normalized === 'cartao' || normalized === 'cartão' || normalized === 'pos') return <CreditCard size={size} />;
+  if (normalized === 'pix' || normalized === 'mpesa' || normalized === 'm-pesa') return <Smartphone size={size} />;
+  return <CreditCard size={size} />;
+}
+
+function paymentLabelForCode(code: string, methods: PaymentMethodOption[]) {
+  const method = methods.find((item) => item.code === code);
+  return method?.name ?? code;
+}
+
+function isCashMethod(methodCode: string | null, methods: PaymentMethodOption[]) {
+  if (!methodCode) return false;
+  const method = methods.find((item) => item.code === methodCode);
+  if (!method) return String(methodCode).toLowerCase() === 'cash';
+  return method.allowChange || method.code === 'cash';
 }
 
 function PaymentMethodButton({

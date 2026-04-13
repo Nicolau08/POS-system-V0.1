@@ -1,7 +1,6 @@
-const { get, run } = require('./dbUtils');
+import { get, run } from './dbUtils.js';
 
 function buildDedupeKey(type, payload) {
-  if (type === 'stock' && payload?.productId) return `stock:${Number(payload.productId)}`;
   if (type === 'product' && payload?.id) return `product:${Number(payload.id)}`;
   if (type === 'customer' && payload?.id) return `customer:${Number(payload.id)}`;
   return null;
@@ -11,7 +10,6 @@ function buildSyncRef(type, payload) {
   if (payload?.syncRef) return String(payload.syncRef);
   if (type === 'sale' && payload?.local_sale_id) return `sale:${payload.local_sale_id}`;
   if (payload?.id != null) return `${type}:${payload.id}`;
-  if (type === 'stock' && payload?.productId != null) return `stock:${payload.productId}:${payload?.movementId ?? 'delta'}`;
   return null;
 }
 
@@ -39,41 +37,6 @@ async function enqueueSync(type, payload, options = {}) {
          SET type = ?, data = ?, status = 'pending', retries = 0, next_retry_at = ?, updated_at = ?, lock_token = NULL, locked_at = NULL
          WHERE id = ?`,
         [type, JSON.stringify(normalizedPayload), now, now, existingByRef.id]
-      );
-    }
-  }
-
-  if (type === 'stock' && dedupeKey) {
-    const existing = await get(
-      `SELECT id, data
-       FROM sync_queue
-       WHERE type = 'stock'
-         AND dedupe_key = ?
-         AND status IN ('pending', 'failed')
-       ORDER BY id DESC
-       LIMIT 1`,
-      [dedupeKey]
-    );
-
-    if (existing) {
-      let parsed = {};
-      try {
-        parsed = JSON.parse(existing.data);
-      } catch {
-        parsed = {};
-      }
-
-      const merged = {
-        ...parsed,
-        ...normalizedPayload,
-        quantity: Number(parsed.quantity ?? 0) + Number(normalizedPayload.quantity ?? 0),
-      };
-
-      return run(
-        `UPDATE sync_queue
-         SET data = ?, sync_ref = COALESCE(sync_ref, ?), status = 'pending', retries = 0, next_retry_at = ?, updated_at = ?, lock_token = NULL, locked_at = NULL
-         WHERE id = ?`,
-        [JSON.stringify(merged), syncRef, now, now, existing.id]
       );
     }
   }
@@ -107,6 +70,4 @@ async function enqueueSync(type, payload, options = {}) {
   );
 }
 
-module.exports = {
-  enqueueSync,
-};
+export { enqueueSync };
