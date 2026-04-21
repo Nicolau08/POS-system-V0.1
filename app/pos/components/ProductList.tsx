@@ -4,8 +4,16 @@ import React from 'react';
 import { Search } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Product } from '@/app/pos/types';
+import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 // Product search, families and grid section extracted from the POS page.
+function getDaysLeft(expiresAt?: string | null) {
+  if (!expiresAt) return null;
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
 export function ProductList({
   searchQuery,
   onSearchChange,
@@ -37,6 +45,57 @@ export function ProductList({
   onFamiliesPointerRelease: (event: React.PointerEvent<HTMLDivElement>) => void;
   onFamiliesClickCapture: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
+  const [tenantInfo, setTenantInfo] = React.useState<{
+    name: string;
+    nuit: string;
+    license_type: string;
+    license_expires_at: string | null;
+  } | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadTenantInfo = async () => {
+      try {
+        const apiBase = getPosApiBase().replace(/\/$/, '');
+        const response = await fetch(`${apiBase}/tenant/info`);
+        if (!response.ok) return;
+        const raw = await response.json();
+        const data = unwrapApiSuccessPayload<any>(raw);
+        console.log('TENANT INFO:', data);
+        if (cancelled || !data || typeof data !== 'object') return;
+        setTenantInfo({
+          name: String(data.name ?? '').trim() || 'Loja',
+          nuit: String(data.nuit ?? '').trim() || '--',
+          license_type: String(data.license_type ?? '').trim() || 'BASIC',
+          license_expires_at:
+            data.license_expires_at != null && String(data.license_expires_at).trim()
+              ? String(data.license_expires_at)
+              : null,
+        });
+      } catch {}
+    };
+    void loadTenantInfo();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const licenseVisual = React.useMemo(() => {
+    if (!tenantInfo?.license_expires_at) {
+      return { text: '--/--/----', className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
+    }
+    const date = new Date(tenantInfo.license_expires_at);
+    if (Number.isNaN(date.getTime())) {
+      return { text: '--/--/----', className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
+    }
+    const formatted = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+    const daysLeft = getDaysLeft(tenantInfo.license_expires_at);
+    if (daysLeft == null) return { text: formatted, className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
+    if (daysLeft <= 0) return { text: formatted, className: 'text-red-400', daysLeft, daysClassName: 'text-red-400' };
+    if (daysLeft <= 3) return { text: formatted, className: 'text-amber-400', daysLeft, daysClassName: 'text-amber-400' };
+    return { text: formatted, className: 'text-emerald-400', daysLeft, daysClassName: 'text-emerald-400' };
+  }, [tenantInfo]);
+
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-[#121212]">
       <div className="h-14 p-2 flex items-center gap-2 bg-[#1a1a1a] border-b border-zinc-800">
@@ -143,8 +202,14 @@ export function ProductList({
         )}
       </div>
 
-      <footer className="p-2 bg-[#1a1a1a] border-t border-zinc-800 flex items-center justify-between text-xs text-zinc-500">
-        <div>Página 1 / 1</div>
+      <footer className="p-2 bg-[#1a1a1a] border-t border-zinc-800 flex items-center justify-between text-xs">
+        <div className="truncate text-zinc-400">
+          Loja: <span className="text-zinc-200">{tenantInfo?.name ?? 'Loja'}</span>
+          {' | '}NUIT: <span className="text-zinc-200">{tenantInfo?.nuit ?? '--'}</span>
+          {' | '}Plano: <span className="text-zinc-200">{tenantInfo?.license_type ?? 'BASIC'}</span>
+          {' | '}Expira: <span className={licenseVisual.className}>{licenseVisual.text}</span>
+          {' | '}Dias restantes: <span className={licenseVisual.daysClassName}>{licenseVisual.daysLeft ?? '--'}</span>
+        </div>
       </footer>
     </div>
   );

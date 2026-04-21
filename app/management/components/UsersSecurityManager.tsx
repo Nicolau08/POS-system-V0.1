@@ -16,6 +16,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type ManagedUser = {
   id: string;
@@ -58,6 +59,7 @@ const PERMISSION_RULES_KEYS = [
   'painel.paises',
   'painel.taxas_impostos',
   'painel.minha_empresa',
+  'painel.emitir_serie',
 
   'estoque.inventario_rapido',
   'estoque.ver_preco_custo',
@@ -237,7 +239,7 @@ export default function UsersSecurityManager() {
     try {
       const res = await fetch(`${getPosApiBase()}/users`);
       if (!res.ok) throw new Error('Falha ao carregar usuários');
-      const data: unknown[] = (await res.json()) ?? [];
+      const data = (unwrapApiSuccessPayload<unknown[]>(await res.json()) ?? []);
       const normalized: ManagedUser[] = data.map((u: any) => ({
         id: String(u.id),
         name: String(u.name ?? ''),
@@ -263,7 +265,7 @@ export default function UsersSecurityManager() {
     try {
       const res = await fetch(`${getPosApiBase()}/permission-rules`);
       if (!res.ok) throw new Error('Falha ao carregar regras de permissão');
-      const data: unknown[] = (await res.json()) ?? [];
+      const data = (unwrapApiSuccessPayload<unknown[]>(await res.json()) ?? []);
       const normalized: Record<string, PermissionRule> = {};
       for (const row of data as any[]) {
         const key = String(row.key);

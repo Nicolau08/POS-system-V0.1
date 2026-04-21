@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { 
@@ -25,13 +25,14 @@ import {
   Globe,
   Percent,
   Building2,
-  ChevronLast,
-  Loader2
+  Loader2,
+  KeyRound
 } from 'lucide-react';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
 import ReportsManager from './components/ReportsManager';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import SyncStatusPanel from './components/SyncStatusPanel';
 import CustomersSuppliersManager from './components/CustomersSuppliersManager';
 import PaymentMethodsManager from './components/PaymentMethodsManager';
@@ -39,6 +40,7 @@ import UsersSecurityManager from './components/UsersSecurityManager';
 import MyCompanyManager from './components/MyCompanyManager';
 import DocumentsManager from './components/DocumentsManager';
 import GerenciamentoManager from './components/GerenciamentoManager';
+import LicenseSerialManager from './components/LicenseSerialManager';
 
 // Dynamically import Recharts to avoid SSR issues
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -71,13 +73,20 @@ const monthlyBarColors = [
 ];
 const DOCS_VIEW_STATE_STORAGE_KEY = 'management:documents-view-state';
 
-export default function ManagementPage() {
+type RouteProps = {
+  params: Promise<Record<string, string | string[] | undefined>>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+export default function ManagementPage({ params, searchParams }: RouteProps) {
+  const SIDEBAR_EXPANDED_WIDTH = 212;
+  const SIDEBAR_COLLAPSED_WIDTH = 56;
+  use(params);
+  use(searchParams);
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarSelectedTab, setSidebarSelectedTab] = useState('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(240);
-  const [isResizing, setIsResizing] = useState(false);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -101,38 +110,6 @@ export default function ManagementPage() {
     return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value) + ' MT';
   };
 
-  const startResizing = (e: React.MouseEvent) => {
-    setIsResizing(true);
-    e.preventDefault();
-  };
-
-  const stopResizing = () => {
-    setIsResizing(false);
-  };
-
-  const resize = React.useCallback((e: MouseEvent) => {
-    if (isResizing) {
-      const newWidth = e.clientX;
-      if (newWidth > 60 && newWidth < 400) {
-        setSidebarWidth(newWidth);
-        if (newWidth < 100) {
-          setIsSidebarCollapsed(true);
-        } else {
-          setIsSidebarCollapsed(false);
-        }
-      }
-    }
-  }, [isResizing]);
-
-  useEffect(() => {
-    window.addEventListener('mousemove', resize);
-    window.addEventListener('mouseup', stopResizing);
-    return () => {
-      window.removeEventListener('mousemove', resize);
-      window.removeEventListener('mouseup', stopResizing);
-    };
-  }, [isResizing, resize]);
-  
   // Dashboard Data
   const [monthlySalesData, setMonthlySalesData] = useState(initialMonthlySalesData);
   const [totalSales, setTotalSales] = useState(0);
@@ -167,10 +144,22 @@ export default function ManagementPage() {
     try {
       const apiBase = getPosApiBase();
       const yearNow = new Date().getFullYear();
-      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}`);
-      if (!summaryRes.ok) throw new Error('Falha ao carregar dashboard-summary');
-
-      const summary = await summaryRes.json();
+      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
+      const summaryText = await summaryRes.text();
+      if (!summaryRes.ok) {
+        throw new Error(
+          `dashboard-summary HTTP ${summaryRes.status}: ${summaryText.slice(0, 280) || summaryRes.statusText || 'sem corpo'}`
+        );
+      }
+      let summaryParsed: unknown = null;
+      try {
+        summaryParsed = summaryText ? JSON.parse(summaryText) : null;
+      } catch {
+        throw new Error('dashboard-summary: resposta não é JSON');
+      }
+      const summary = unwrapApiSuccessPayload<any>(summaryParsed);
 
       const monthly = Array.isArray(summary?.monthlySalesData)
         ? summary.monthlySalesData
@@ -187,15 +176,10 @@ export default function ManagementPage() {
       setTopCustomers(topCustomersData);
       setTopGroups(topGroupsData);
 
-    } catch (err: any) {
-      const errorMessage = err.message || (typeof err === 'string' ? err : 'Unknown error');
-      console.error('Error fetching dashboard data:', {
-        message: errorMessage,
-        details: err.details || 'No details',
-        hint: err.hint || 'No hint',
-        code: err.code || 'No code',
-        fullError: err
-      });
+    } catch (err: unknown) {
+      const errorMessage =
+        err instanceof Error ? err.message : typeof err === 'string' ? err : 'Erro desconhecido';
+      console.error('Error fetching dashboard data:', errorMessage, err);
       setTotalSales(0);
       setMonthlySalesData(initialMonthlySalesData);
       setBestMonth('---');
@@ -230,9 +214,11 @@ export default function ManagementPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`${getPosApiBase()}/permission-rules`);
+        const res = await fetch(`${getPosApiBase()}/permission-rules`, {
+          headers: { ...getPosUserAuthHeaders() },
+        });
         if (!res.ok) throw new Error('Falha ao carregar permission-rules');
-        const data: any[] = (await res.json()) ?? [];
+        const data = unwrapApiSuccessPayload<any[]>(await res.json()) ?? [];
         const normalized: Record<string, number> = {};
         for (const row of data) {
           if (!row?.key) continue;
@@ -305,6 +291,7 @@ export default function ManagementPage() {
     { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
     { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
     { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Segurança' },
+    { id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' },
     { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
     { id: 'countries', icon: <Globe size={18} />, label: 'Países' },
     { id: 'taxes', icon: <Percent size={18} />, label: 'Taxas de impostos' },
@@ -324,6 +311,7 @@ export default function ManagementPage() {
       customers: 'painel.clientes_fornecedores',
       promos: 'painel.promocoes_acoes',
       security: 'painel.usuarios_seguranca',
+      'license-serials': 'painel.emitir_serie',
       payments: 'painel.meios_pagamento',
       countries: 'painel.paises',
       taxes: 'painel.taxas_impostos',
@@ -429,8 +417,8 @@ export default function ManagementPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside 
-          className={`bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-all duration-300 relative ${isSidebarCollapsed ? 'w-16' : ''}`}
-          style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
+          className="bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-all duration-300 relative"
+          style={{ width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH }}
         >
           <div className="flex-1 pt-0 pb-2 overflow-y-auto custom-scrollbar">
             {sidebarItemsToRender.map((item) => (
@@ -440,7 +428,9 @@ export default function ManagementPage() {
                     setActiveTab(item.id);
                     setSidebarSelectedTab(item.id);
                   }}
-                  className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors relative group ${
+                  className={`w-full flex items-center py-2 transition-colors relative group ${
+                    isSidebarCollapsed ? 'justify-center px-2' : 'gap-2.5 px-4'
+                  } ${
                     sidebarSelectedTab === item.id
                       ? 'bg-zinc-800/50 text-white'
                       : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
@@ -457,13 +447,20 @@ export default function ManagementPage() {
             ))}
           </div>
 
-          {/* Resize Handle */}
-          <div 
-            onMouseDown={startResizing}
-            className={`absolute top-0 right-0 w-1 h-full cursor-col-resize transition-colors z-20 ${
-              isResizing ? 'bg-blue-500' : 'hover:bg-blue-500/50'
-            }`}
-          />
+          <div className="border-t border-zinc-800/60 p-2">
+            <button
+              type="button"
+              onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+              className={`flex h-9 w-full items-center rounded border border-zinc-800 bg-[#1a1a1a] text-zinc-400 transition-colors hover:text-zinc-200 hover:border-zinc-700 ${
+                isSidebarCollapsed ? 'justify-center' : 'justify-between px-3'
+              }`}
+              aria-label={isSidebarCollapsed ? 'Abrir menu lateral' : 'Fechar menu lateral'}
+              title={isSidebarCollapsed ? 'Abrir menu' : 'Fechar menu'}
+            >
+              {!isSidebarCollapsed && <span className="text-xs font-medium">Fechar menu</span>}
+              {isSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            </button>
+          </div>
         </aside>
 
       {/* Main Content */}
@@ -614,6 +611,7 @@ export default function ManagementPage() {
           {activeTab === 'customers' && <CustomersSuppliersManager />}
           {activeTab === 'payments' && <PaymentMethodsManager />}
           {activeTab === 'security' && <UsersSecurityManager />}
+          {activeTab === 'license-serials' && <LicenseSerialManager />}
           {activeTab === 'company' && <MyCompanyManager />}
           {activeTab === 'gerenciamento' && <GerenciamentoManager />}
           
@@ -625,6 +623,7 @@ export default function ManagementPage() {
             activeTab !== 'customers' &&
             activeTab !== 'payments' &&
             activeTab !== 'security' &&
+            activeTab !== 'license-serials' &&
             activeTab !== 'company' &&
             activeTab !== 'gerenciamento' && (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-600 italic">

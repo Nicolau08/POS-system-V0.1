@@ -11,6 +11,7 @@ export interface Product {
   image?: string;
   stock_quantity?: number;
   min_stock?: number;
+  active?: boolean;
   /** Supabase `products.id` (UUID); obrigatorio para sync de vendas/estoque */
   cloud_id?: string;
   is_service?: boolean;

@@ -10,6 +10,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 interface Product {
   id: string;
@@ -53,6 +54,8 @@ export default function ProductsManager() {
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const [isResizing, setIsResizing] = useState(false);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(240);
   const [columnWidths, setColumnWidths] = useState({
     code: 80,
     name: 250,
@@ -81,6 +84,8 @@ export default function ProductsManager() {
   };
 
   const startResizing = (e: React.MouseEvent) => {
+    resizeStartXRef.current = e.clientX;
+    resizeStartWidthRef.current = sidebarWidth;
     setIsResizing(true);
     e.preventDefault();
   };
@@ -98,7 +103,8 @@ export default function ProductsManager() {
 
   const resize = React.useCallback((e: MouseEvent) => {
     if (isResizing) {
-      const newWidth = e.clientX;
+      const deltaX = e.clientX - resizeStartXRef.current;
+      const newWidth = resizeStartWidthRef.current + deltaX;
       if (newWidth > 150 && newWidth < 600) {
         setSidebarWidth(newWidth);
       }
@@ -127,6 +133,10 @@ export default function ProductsManager() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [categoryModalMode, setCategoryModalMode] = useState<'create' | 'edit'>('create');
+  const [categoryForm, setCategoryForm] = useState({ name: '', parent_id: '' });
+  const [isDeleteCategoryConfirmOpen, setIsDeleteCategoryConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('detalhes');
   const newImageInputRef = useRef<HTMLInputElement | null>(null);
   const editImageInputRef = useRef<HTMLInputElement | null>(null);
@@ -160,8 +170,8 @@ export default function ProductsManager() {
       ]);
       if (!catRes.ok) throw new Error(`Falha ao carregar categorias (${catRes.status})`);
       if (!prodRes.ok) throw new Error(`Falha ao carregar produtos (${prodRes.status})`);
-      const catData = await catRes.json();
-      const prodData = await prodRes.json();
+      const catData = unwrapApiSuccessPayload<any[]>(await catRes.json());
+      const prodData = unwrapApiSuccessPayload<any[]>(await prodRes.json());
       setCategories(catData || []);
       setProducts(prodData || []);
     } catch (error) {
@@ -219,7 +229,7 @@ export default function ProductsManager() {
         })
       });
       if (!response.ok) throw new Error('Falha ao criar produto');
-      const createdResult = await response.json();
+      const createdResult = unwrapApiSuccessPayload<any>(await response.json());
       
       setIsNewProductModalOpen(false);
       setNewProduct({
@@ -311,7 +321,7 @@ export default function ProductsManager() {
         })
       });
       if (!response.ok) throw new Error('Falha ao atualizar produto');
-      const updatedResult = await response.json();
+      const updatedResult = unwrapApiSuccessPayload<any>(await response.json());
       
       const editedCategoryId = editingProduct.category_id ? String(editingProduct.category_id) : null;
       const editedProductId = String(editingProduct.id);
@@ -373,14 +383,134 @@ export default function ProductsManager() {
     reader.readAsDataURL(file);
   };
 
+  const selectedCategoryData = selectedCategory
+    ? categories.find((cat) => String(cat.id) === String(selectedCategory)) ?? null
+    : null;
+
+  const openCreateCategoryModal = () => {
+    setCategoryModalMode('create');
+    setCategoryForm({ name: '', parent_id: '' });
+    setIsCategoryModalOpen(true);
+  };
+
+  const openEditCategoryModal = () => {
+    if (!selectedCategoryData) {
+      showToast('Selecione um grupo para editar.', 'error');
+      return;
+    }
+    setCategoryModalMode('edit');
+    setCategoryForm({
+      name: selectedCategoryData.name ?? '',
+      parent_id: selectedCategoryData.parent_id ? String(selectedCategoryData.parent_id) : '',
+    });
+    setIsCategoryModalOpen(true);
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = String(categoryForm.name ?? '').trim();
+    if (!trimmedName) {
+      showToast('Informe o nome do grupo.', 'error');
+      return;
+    }
+    if (categoryModalMode === 'edit' && !selectedCategoryData) {
+      showToast('Selecione um grupo valido para editar.', 'error');
+      return;
+    }
+
+    try {
+      const directApiBase = getPosApiDirectBase();
+      const isEdit = categoryModalMode === 'edit';
+      const endpoint = isEdit
+        ? `${directApiBase}/categorias/${selectedCategoryData?.id}`
+        : `${directApiBase}/categorias`;
+      const method = isEdit ? 'PUT' : 'POST';
+      const response = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: trimmedName,
+          parent_id: categoryForm.parent_id || null,
+        }),
+      });
+      const rawBody = await response.text();
+      let payload: any = null;
+      if (rawBody) {
+        try {
+          payload = JSON.parse(rawBody);
+        } catch {
+          payload = { error: rawBody };
+        }
+      }
+      if (!response.ok) {
+        const normalizedError = String(payload?.error?.message ?? payload?.error ?? '').replace(/<[^>]*>/g, ' ').trim();
+        throw new Error(normalizedError || `Falha ao ${isEdit ? 'atualizar' : 'criar'} grupo`);
+      }
+      payload = unwrapApiSuccessPayload<any>(payload);
+
+      setIsCategoryModalOpen(false);
+      const savedCategoryId = String(payload?.id ?? selectedCategoryData?.id ?? '');
+      await fetchData();
+      if (savedCategoryId) {
+        setSelectedCategory(savedCategoryId);
+      }
+      showToast(isEdit ? 'Grupo atualizado com sucesso!' : 'Grupo criado com sucesso!');
+    } catch (error: any) {
+      console.error('Error saving category:', error);
+      showToast(error?.message || 'Nao foi possivel salvar o grupo. Reinicie a API e tente novamente.', 'error');
+    }
+  };
+
+  const handleDeleteCategory = async () => {
+    if (!selectedCategoryData) {
+      showToast('Selecione um grupo para excluir.', 'error');
+      return;
+    }
+
+    try {
+      const directApiBase = getPosApiDirectBase();
+      const response = await fetch(`${directApiBase}/categorias/${selectedCategoryData.id}`, {
+        method: 'DELETE',
+      });
+      const rawBody = await response.text();
+      let payload: any = null;
+      if (rawBody) {
+        try {
+          payload = JSON.parse(rawBody);
+        } catch {
+          payload = { error: rawBody };
+        }
+      }
+      if (!response.ok) {
+        const normalizedError = String(payload?.error?.message ?? payload?.error ?? '').replace(/<[^>]*>/g, ' ').trim();
+        throw new Error(normalizedError || 'Falha ao remover grupo');
+      }
+      payload = unwrapApiSuccessPayload<any>(payload);
+
+      setIsDeleteCategoryConfirmOpen(false);
+      setSelectedCategory(null);
+      await fetchData();
+      showToast('Grupo removido com sucesso!');
+    } catch (error: any) {
+      console.error('Error deleting category:', error);
+      showToast(error?.message || 'Nao foi possivel remover o grupo. Reinicie a API e tente novamente.', 'error');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       {/* Toolbar */}
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
         <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
-        <ToolbarButton icon={<FolderPlus size={20} />} label="Novo grupo" />
-        <ToolbarButton icon={<Edit size={20} />} label="Editar grupo" />
-        <ToolbarButton icon={<Trash2 size={20} />} label="Deletar grupo" />
+        <ToolbarButton icon={<FolderPlus size={20} />} label="Novo grupo" onClick={openCreateCategoryModal} />
+        <ToolbarButton icon={<Edit size={20} />} label="Editar grupo" onClick={openEditCategoryModal} disabled={!selectedCategoryData} />
+        <ToolbarButton icon={<Trash2 size={20} />} label="Deletar grupo" onClick={() => {
+          if (!selectedCategoryData) {
+            showToast('Selecione um grupo para excluir.', 'error');
+            return;
+          }
+          setIsDeleteCategoryConfirmOpen(true);
+        }} disabled={!selectedCategoryData} />
         <ToolbarButton 
           icon={<Plus size={20} />} 
           label="Novo produto" 
@@ -594,6 +724,88 @@ export default function ProductsManager() {
           </div>
         </div>
       </div>
+
+      {/* Create/Edit Category Modal */}
+      {isCategoryModalOpen && (
+        <div
+          className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setIsCategoryModalOpen(false)}
+        >
+          <div
+            className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 flex items-center justify-between bg-[#1a1a1a]">
+              <h3 className="text-xl text-zinc-200">
+                {categoryModalMode === 'edit' ? 'Editar grupo' : 'Novo grupo'}
+              </h3>
+              <ArrowRight size={24} className="text-zinc-200" />
+            </div>
+
+            <div className="flex border-b border-zinc-800">
+              <button
+                type="button"
+                className="relative px-6 py-2 text-[11px] font-medium bg-[#2da8df] text-white"
+              >
+                Detalhes
+                <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+              </button>
+              <div className="flex-1 border-b border-[#00a3e0]" />
+            </div>
+
+            <form id="category-form" onSubmit={handleSaveCategory} className="p-6 space-y-5 bg-[#1a1a1a]">
+              <div className="space-y-2">
+                <label className="text-xs text-zinc-400">Nome</label>
+                <input
+                  type="text"
+                  autoFocus
+                  required
+                  value={categoryForm.name}
+                  onChange={(e) => setCategoryForm((prev) => ({ ...prev, name: e.target.value }))}
+                  className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-zinc-400">Grupo</label>
+                <select
+                  value={categoryForm.parent_id}
+                  onChange={(e) => setCategoryForm((prev) => ({ ...prev, parent_id: e.target.value }))}
+                  className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none transition-colors appearance-none"
+                >
+                  <option value="">Produtos</option>
+                  {categories
+                    .filter((cat) => categoryModalMode !== 'edit' || String(cat.id) !== String(selectedCategoryData?.id))
+                    .map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </form>
+
+            <div className="p-4 bg-[#1a1a1a] border-t border-zinc-800 flex justify-end gap-3">
+              <button
+                type="submit"
+                form="category-form"
+                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+              >
+                <Check size={16} />
+                Salvar
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCategoryModalOpen(false)}
+                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+              >
+                <X size={16} />
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* New Product Modal */}
       {isNewProductModalOpen && (
@@ -1234,6 +1446,45 @@ export default function ProductsManager() {
         </div>
       )}
 
+      {/* Delete Category Confirmation Modal */}
+      {isDeleteCategoryConfirmOpen && selectedCategoryData && (
+        <div
+          className="fixed inset-0 z-[111] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setIsDeleteCategoryConfirmOpen(false)}
+        >
+          <div
+            className="bg-[#1a1a1a] border border-zinc-800 rounded-lg w-full max-w-sm overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 text-center space-y-4">
+              <div className="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mx-auto text-red-500">
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Confirmar Exclusão</h3>
+                <p className="text-xs text-zinc-400 mt-1">
+                  Tem certeza que deseja excluir o grupo <span className="text-zinc-200">"{selectedCategoryData.name}"</span>?
+                </p>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setIsDeleteCategoryConfirmOpen(false)}
+                  className="flex-1 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleDeleteCategory}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded transition-colors"
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification */}
       <AnimatePresence>
         {toast && (
@@ -1254,12 +1505,29 @@ export default function ProductsManager() {
   );
 }
 
-function ToolbarButton({ icon, label, onClick, active }: { icon: React.ReactNode, label: string, onClick?: () => void, active?: boolean }) {
+function ToolbarButton({
+  icon,
+  label,
+  onClick,
+  active,
+  disabled,
+}: {
+  icon: React.ReactNode,
+  label: string,
+  onClick?: () => void,
+  active?: boolean,
+  disabled?: boolean
+}) {
   return (
     <button 
       onClick={onClick}
-      className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 group ${
-        active ? 'bg-zinc-800 text-white' : 'text-zinc-400'
+      disabled={disabled}
+      className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all group ${
+        disabled
+          ? 'text-zinc-600 cursor-not-allowed'
+          : active
+            ? 'bg-zinc-800 text-white hover:bg-zinc-700'
+            : 'text-zinc-400 hover:bg-zinc-800'
       }`}
     >
       <div className="mb-1 group-hover:scale-110 transition-transform">

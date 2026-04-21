@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, ChevronsUpDown, Edit3, Printer, Trash2, Users, Truck, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type OrderRow = {
   id: number | string;
@@ -289,8 +290,8 @@ export default function DocumentsManager() {
       if (!clientsRes.ok) throw new Error(`Falha ao carregar clientes (${clientsRes.status})`);
       if (!productsRes.ok) throw new Error(`Falha ao carregar produtos (${productsRes.status})`);
 
-      const docsOrders = ((await ordersRes.json()) ?? []) as OrderRow[];
-      const salesOrders = ((await salesRes.json()) ?? []) as OrderRow[];
+      const docsOrders = (unwrapApiSuccessPayload<OrderRow[]>(await ordersRes.json()) ?? []) as OrderRow[];
+      const salesOrders = (unwrapApiSuccessPayload<OrderRow[]>(await salesRes.json()) ?? []) as OrderRow[];
       const mergedOrdersMap = new Map<string, OrderRow>();
       for (const order of docsOrders) {
         mergedOrdersMap.set(String(order.id), order);
@@ -321,9 +322,9 @@ export default function DocumentsManager() {
       });
       setOrders(safeOrders);
 
-      const usersData = ((await usersRes.json()) ?? []) as Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>;
-      const clientsData = ((await clientsRes.json()) ?? []) as Array<{ name?: string | null }>;
-      const productsData = ((await productsRes.json()) ?? []) as Array<{ name?: string | null }>;
+      const usersData = (unwrapApiSuccessPayload<Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>>(await usersRes.json()) ?? []);
+      const clientsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await clientsRes.json()) ?? []);
+      const productsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await productsRes.json()) ?? []);
 
       const productNames = Array.from(
         new Set(
