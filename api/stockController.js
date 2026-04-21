@@ -1,5 +1,7 @@
 import express from 'express';
 import { supabase, isSupabaseConfigured } from './supabaseClient.js';
+import { authenticateUser, requireAdmin } from './middlewares/auth.js';
+import { parsePagination, withPaginationPayload } from './services/queryOptions.service.js';
 
 const router = express.Router();
 
@@ -17,10 +19,13 @@ function requireSupabase(res) {
 router.get('/', async (req, res) => {
   if (!requireSupabase(res)) return;
 
-  const limitRaw = Number(req.query.limit ?? 50);
-  const offsetRaw = Number(req.query.offset ?? 0);
-  const limit = Math.min(Math.max(1, limitRaw), 200);
-  const offset = Math.max(0, offsetRaw);
+  const pagination = parsePagination(req.query ?? {});
+  const page = pagination.page;
+  const legacyLimit = Math.min(Math.max(1, Number(req.query.limit ?? 50)), 200);
+  const limit = pagination.hasPagination ? pagination.limit : legacyLimit;
+  const offsetFromPage = pagination.offset;
+  const offsetFromLegacy = Math.max(0, Number(req.query.offset ?? 0));
+  const offset = req.query.page !== undefined || req.query.limit !== undefined ? offsetFromPage : offsetFromLegacy;
 
   try {
     const { data: products, error: productError } = await supabase
@@ -32,12 +37,10 @@ router.get('/', async (req, res) => {
 
     const productIds = (products ?? []).map((p) => p.id);
     if (productIds.length === 0) {
-      return res.json({
-        limit,
-        offset,
-        count: 0,
-        items: [],
-      });
+      if (pagination.hasPagination) {
+        return res.json(withPaginationPayload([], { page, limit, total: 0 }));
+      }
+      return res.json({ limit, offset, count: 0, items: [] });
     }
 
     const { data: ledgerRows, error: ledgerError } = await supabase
@@ -58,18 +61,27 @@ router.get('/', async (req, res) => {
       };
     });
 
-    res.json({
-      limit,
-      offset,
-      count: items.length,
-      items,
-    });
+    if (pagination.hasPagination) {
+      const { count, error: countError } = await supabase
+        .from('products')
+        .select('*', { count: 'exact', head: true });
+      if (countError) throw countError;
+      return res.json(
+        withPaginationPayload(items, {
+          page,
+          limit,
+          total: Number(count ?? 0),
+        })
+      );
+    }
+
+    res.json({ limit, offset, count: items.length, items });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/validate', async (_req, res) => {
+router.get('/validate', async (req, res) => {
   if (!requireSupabase(res)) return;
 
   try {
@@ -97,6 +109,22 @@ router.get('/validate', async (_req, res) => {
           difference: diff,
         });
       }
+    }
+
+    const pagination = parsePagination(req.query ?? {});
+    if (pagination.hasPagination) {
+      const start = pagination.offset;
+      const end = start + pagination.limit;
+      const pagedMismatches = mismatches.slice(start, end);
+      return res.json({
+        total_products_checked: Number((products ?? []).length),
+        mismatches_count: Number(mismatches.length),
+        ...withPaginationPayload(pagedMismatches, {
+          page: pagination.page,
+          limit: pagination.limit,
+          total: Number(mismatches.length),
+        }),
+      });
     }
 
     res.json({
@@ -136,7 +164,7 @@ router.get('/:productId/current', async (req, res) => {
   }
 });
 
-router.post('/recalculate', async (_req, res) => {
+router.post('/recalculate', authenticateUser, requireAdmin, async (_req, res) => {
   if (!requireSupabase(res)) return;
 
   try {

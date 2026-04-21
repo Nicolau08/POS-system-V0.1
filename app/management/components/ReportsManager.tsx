@@ -18,13 +18,18 @@ import {
 import { supabase, isConfigured } from '@/lib/supabase';
 
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 async function fetchLocalJson(path: string) {
   const response = await fetch(`${getPosApiBase()}${path}`);
   if (!response.ok) {
     throw new Error(`Falha ao carregar dados locais (${response.status})`);
   }
-  return response.json();
+  return unwrapApiSuccessPayload(await response.json());
+}
+
+function toArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
 }
 
 type ReportKey =
@@ -429,8 +434,8 @@ export default function ReportsManager() {
       if (orderError) throw orderError;
 
       setCustomers(customerData || []);
-      setCategories(localCategories || []);
-      setProducts(localProducts || []);
+      setCategories(toArray<CategoryOption>(localCategories));
+      setProducts(toArray<ProductOption>(localProducts));
 
       const methods = Array.from(
         new Set((orderData || []).map((item) => item.payment_method).filter(Boolean))
@@ -572,7 +577,7 @@ export default function ReportsManager() {
 
       if (reportKey === 'products') {
         const localProducts = await fetchLocalJson('/produtos');
-        const data = (localProducts || [])
+        const data = toArray<any>(localProducts)
           .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
           .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
           .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
@@ -789,7 +794,7 @@ export default function ReportsManager() {
 
       if (reportKey === 'stock_movement') {
         const localProducts = await fetchLocalJson('/produtos');
-        const data = (localProducts || [])
+        const data = toArray<any>(localProducts)
           .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
           .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
           .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));

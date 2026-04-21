@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   X,
@@ -80,15 +80,37 @@ import {
   deleteCustomer,
   fetchCustomers as posFetchCustomers,
   fetchProducts as posFetchProducts,
+  fetchSetupStatus as posFetchSetupStatus,
   fetchUsers as posFetchUsers,
   fetchPaymentMethods as posFetchPaymentMethods,
   fetchCompanyProfile,
   fetchDocumentItems,
   fetchDocuments,
+  PosApiError,
   saveCustomer,
   syncNextVDNumber as posSyncNextVDNumber,
+  type SetupStatusPayload,
 } from '@/lib/services/posService';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
+import { getPosTaxPercentLabel } from '@/lib/taxConfig';
+import LicenseExpiredScreen from '@/components/LicenseExpiredScreen';
+import { useLicenseGuard } from '@/components/LicenseGuardProvider';
+import SetupWizard from '@/components/SetupWizard';
+import ActivationScreen from '@/components/ActivationScreen';
+
+type RouteProps = {
+  params: Promise<Record<string, string | string[] | undefined>>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+type ActivationStatePayload = {
+  success: boolean;
+  isActivated: boolean;
+  machineId: string;
+  activationCode: string;
+  reason?: string;
+  licensePath?: string;
+};
 
 const FALLBACK_PAYMENT_METHODS: PaymentMethodOption[] = [
   {
@@ -241,14 +263,15 @@ function LoginScreen({
   onSelectUser: (user: PosUser) => void, 
   password: string, 
   setPassword: React.Dispatch<React.SetStateAction<string>>, 
-  onLogin: () => void, 
+  onLogin: () => void | Promise<unknown>, 
   error: boolean 
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isResettingAdminPin, setIsResettingAdminPin] = useState(false);
 
   const handleKeyClick = (key: string) => {
     if (key === 'enter') {
-      onLogin();
+      void onLogin();
     } else if (key === 'back') {
       setPassword(prev => prev.slice(0, -1));
     } else {
@@ -262,7 +285,7 @@ function LoginScreen({
       if (!isModalOpen) return;
       
       if (e.key === 'Enter') {
-        onLogin();
+        void onLogin();
       } else if (e.key === 'Backspace') {
         setPassword(prev => prev.slice(0, -1));
       } else if (e.key.length === 1) {
@@ -281,6 +304,32 @@ function LoginScreen({
     ['7', '8', '9'],
     ['back', '0', 'enter']
   ];
+
+  const handleResetAdminPin = async () => {
+    if (!selectedUser || String(selectedUser.role ?? '').toLowerCase() !== 'admin') return;
+    const confirmed = window.confirm('Redefinir PIN do Admin para 1234?');
+    if (!confirmed) return;
+
+    try {
+      setIsResettingAdminPin(true);
+      const response = await fetch(`${getPosApiBase()}/auth/admin/reset-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: selectedUser.id }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(String(payload?.error ?? `Erro HTTP ${response.status}`));
+      }
+      setPassword('');
+      window.alert('PIN do Admin redefinido para 1234.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'falha ao redefinir PIN do Admin';
+      window.alert(message);
+    } finally {
+      setIsResettingAdminPin(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-zinc-100 font-sans overflow-hidden select-none relative p-8">
@@ -342,7 +391,7 @@ function LoginScreen({
                     <input 
                       type="password"
                       value={password ?? ''}
-                      readOnly
+                      onChange={(e) => setPassword(e.target.value)}
                       className="w-full text-3xl tracking-widest focus:outline-none bg-transparent text-white text-center"
                     />
                   </div>
@@ -364,6 +413,17 @@ function LoginScreen({
                     </button>
                   ))}
                 </div>
+
+                {String(selectedUser?.role ?? '').toLowerCase() === 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleResetAdminPin()}
+                    disabled={isResettingAdminPin}
+                    className="h-11 rounded border border-amber-700/60 bg-amber-900/20 text-amber-300 text-sm font-medium transition-colors hover:bg-amber-900/35 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isResettingAdminPin ? 'A redefinir...' : 'Redefinir PIN do Admin (1234)'}
+                  </button>
+                )}
               </div>
             </motion.div>
           </div>
@@ -394,8 +454,13 @@ function LoginScreen({
   );
 }
 
-export default function POSPage() {
+export default function POSPage({ params, searchParams }: RouteProps) {
+  // Next 16 passes route props as Promises in app router.
+  // Explicitly unwrapping avoids sync dynamic API warnings in dev overlays.
+  use(params);
+  use(searchParams);
   const router = useRouter();
+  const { licenseExpired, tenantName, expiresAt, clearLicenseExpired } = useLicenseGuard();
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
@@ -420,6 +485,9 @@ export default function POSPage() {
   const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('cash');
   const [multiplePaymentAmount, setMultiplePaymentAmount] = useState('');
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
+  const [isFinalizingPayment, setIsFinalizingPayment] = useState(false);
+  const [paymentFinalizeError, setPaymentFinalizeError] = useState<string | null>(null);
+  const [allowStockOverrideOnCheckout, setAllowStockOverrideOnCheckout] = useState(false);
 
   // Discount Modal State
   const [isDiscountModalOpen, setIsDiscountModalOpen] = useState(false);
@@ -433,6 +501,11 @@ export default function POSPage() {
   const [isSaleFinalized, setIsSaleFinalized] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [users, setUsers] = useState<PosUser[]>([]);
+  const [setupStatus, setSetupStatus] = useState<SetupStatusPayload | null>(null);
+  const [isSetupLoading, setIsSetupLoading] = useState(true);
+  const [activationState, setActivationState] = useState<ActivationStatePayload | null>(null);
+  const [isActivationLoading, setIsActivationLoading] = useState(true);
+  const [isActivatingLicense, setIsActivatingLicense] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', email: '', address: '' });
   const [customerSearch, setCustomerSearch] = useState('');
@@ -447,7 +520,7 @@ export default function POSPage() {
   });
 
   // Login State (isolated hook to keep session handling centralized)
-  const auth = useAuth(users);
+  const auth = useAuth();
   const {
     isLoggedIn,
     setIsLoggedIn,
@@ -493,6 +566,7 @@ export default function POSPage() {
   const familiesScrollRef = useRef<HTMLDivElement | null>(null);
   const scannerBufferRef = useRef('');
   const scannerResetTimerRef = useRef<number | null>(null);
+  const checkoutIdempotencyKeyRef = useRef<string | null>(null);
   const familiesMomentumFrameRef = useRef<number | null>(null);
   const familiesDragStateRef = useRef({
     isDragging: false,
@@ -813,7 +887,7 @@ export default function POSPage() {
           </div>
           ${discountRowHtml}
           <div class="print-row">
-            <span>IVA (16%):</span>
+            <span>IVA (${getPosTaxPercentLabel()}):</span>
             <span>${formatReceiptAmount(tax)}</span>
           </div>
           <div class="print-divider"></div>
@@ -876,6 +950,67 @@ export default function POSPage() {
       setSelectedLoginUser(null);
     }
   }, [setSelectedLoginUser]);
+
+  const refreshSetupStatus = useCallback(async () => {
+    try {
+      const status = await posFetchSetupStatus();
+      setSetupStatus(status);
+      return status;
+    } catch {
+      setSetupStatus(null);
+      return null;
+    } finally {
+      setIsSetupLoading(false);
+    }
+  }, []);
+
+  const refreshActivationState = useCallback(async () => {
+    if (!window.electronAPI?.getActivationState) {
+      const fallback: ActivationStatePayload = {
+        success: true,
+        isActivated: true,
+        machineId: '',
+        activationCode: '',
+      };
+      setActivationState(fallback);
+      setIsActivationLoading(false);
+      return fallback;
+    }
+
+    try {
+      const state = await window.electronAPI.getActivationState();
+      const normalized: ActivationStatePayload = {
+        success: Boolean(state?.success),
+        isActivated: Boolean(state?.isActivated),
+        machineId: String(state?.machineId ?? ''),
+        activationCode: String(state?.activationCode ?? ''),
+        reason: state?.reason ? String(state.reason) : undefined,
+        licensePath: state?.licensePath ? String(state.licensePath) : undefined,
+      };
+      setActivationState(normalized);
+      return normalized;
+    } catch {
+      const failed: ActivationStatePayload = {
+        success: false,
+        isActivated: false,
+        machineId: '',
+        activationCode: '',
+        reason: 'Falha ao obter estado de ativação.',
+      };
+      setActivationState(failed);
+      return failed;
+    } finally {
+      setIsActivationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSetupStatus();
+  }, [refreshSetupStatus]);
+
+  useEffect(() => {
+    void refreshActivationState();
+  }, [refreshActivationState]);
 
   // --- Effects ---
   useEffect(() => {
@@ -1192,6 +1327,10 @@ export default function POSPage() {
     setPayments([]);
     setIsMultiplePayment(false);
     setMultiplePaymentAmount('');
+    setAllowStockOverrideOnCheckout(false);
+    setPaymentFinalizeError(null);
+    setIsFinalizingPayment(false);
+    checkoutIdempotencyKeyRef.current = null;
     setSelectedCustomer(null);
     setCurrentReceiptNumber(null);
     setDocType('VD');
@@ -1258,31 +1397,24 @@ export default function POSPage() {
   };
 
   const handleFinalizePayment = async () => {
+    if (isFinalizingPayment) return;
+
     const saleDate = new Date();
     const saleTimestamp = saleDate.toISOString();
     const isVDDocument = docType === 'VD';
+    setPaymentFinalizeError(null);
+
     if (!isConfigured) {
       const offlineSequence = isVDDocument ? nextVDNumber : null;
-      const offlineDocumentNumber = isVDDocument && offlineSequence ? formatDocumentNumber(offlineSequence, saleDate) : null;
-      alert('Configuração do Supabase ausente ou inválida. O pedido não será salvo no banco de dados, mas o recibo será gerado.');
-      if (isReceiptPrintEnabled) {
-        setCurrentReceiptNumber(offlineDocumentNumber);
-        setIsReceiptModalOpen(true);
-        setIsSaleFinalized(true);
-      }
-      if (isVDDocument && offlineSequence) {
-        const updatedNext = offlineSequence + 1;
-        setNextVDNumber(updatedNext);
-      }
-      setIsPaymentModalOpen(false);
-      if (!isReceiptPrintEnabled) {
-        clearCart(true);
-        setCustomerName('');
-        setTableNumber('');
-        setIsSaleFinalized(false);
-      }
+      const fallbackMessage = 'Servidor indisponível. A venda não foi gravada; recibo bloqueado por segurança.';
+      setPaymentFinalizeError(fallbackMessage);
+      showToast(fallbackMessage, 'error');
+      checkoutIdempotencyKeyRef.current = null;
+      if (isVDDocument && offlineSequence) setNextVDNumber(offlineSequence);
       return;
     }
+
+    setIsFinalizingPayment(true);
 
     const finalPayments = isMultiplePayment ? payments : (paymentMethod ? [{ method: paymentMethod, amount: isCashPaymentMethod(paymentMethod) && receivedAmount !== '' ? parseFloat(receivedAmount) : total }] : []);
     const isPaidSale = finalPayments.every((entry) => paymentMethodMarksAsPaid(entry.method));
@@ -1297,6 +1429,13 @@ export default function POSPage() {
     
     // Save to Supabase via service layer
     try {
+      const idempotencyKey =
+        checkoutIdempotencyKeyRef.current ||
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`);
+      checkoutIdempotencyKeyRef.current = idempotencyKey;
+
       const result = await createOrder({
         cart,
         globalDiscount,
@@ -1317,6 +1456,10 @@ export default function POSPage() {
         paymentStatus,
         saleTimestamp,
         saleDate,
+        allowNegativeStockOverride: allowStockOverrideOnCheckout,
+        stockOverrideReason: allowStockOverrideOnCheckout ? 'Override confirmado no POS durante checkout.' : null,
+      }, {
+        idempotencyKey,
       });
 
       if (loadedQuotationSource) {
@@ -1338,6 +1481,8 @@ export default function POSPage() {
         }
       }
 
+      checkoutIdempotencyKeyRef.current = null;
+      setPaymentFinalizeError(null);
       if (isReceiptPrintEnabled) {
         // Open receipt modal for manual printing
         setFinalizedDocType(saleDocType);
@@ -1365,9 +1510,18 @@ export default function POSPage() {
         setTableNumber('');
         setIsSaleFinalized(false);
       }
+      setAllowStockOverrideOnCheckout(false);
     } catch (error: any) {
       const err = handleSupabaseError(error, 'handleFinalizePayment');
-      alert(`Erro ao salvar o pedido: ${err.message}` + "`n`n" + `O recibo será exibido para impressão.`);
+      const code = error instanceof PosApiError ? String(error.code ?? '') : '';
+      if (code === 'CHECKOUT_IN_PROGRESS') {
+        setPaymentFinalizeError('Este pedido já está a ser processado. Aguarde e tente novamente.');
+      } else if (code === 'INSUFFICIENT_STOCK') {
+        setPaymentFinalizeError('Estoque insuficiente. Solicite autorização para venda sem stock ou ajuste o carrinho.');
+      } else {
+        setPaymentFinalizeError(`Falha ao salvar pedido: ${err.message}`);
+      }
+      showToast(`Falha ao concluir pagamento: ${err.message}`, 'error');
 
       // The order was not persisted on the server, so release the optimistic UI reservations.
       // Then refresh product stock from the server (helps with concurrent sales).
@@ -1397,20 +1551,14 @@ export default function POSPage() {
         // If refresh fails, the optimistic release above is still enough to keep UI consistent.
       }
 
-      if (isReceiptPrintEnabled) {
-        // Still allow viewing receipt even if saving fails
-        setFinalizedDocType(saleDocType);
-        setCurrentReceiptNumber(null);
-        setIsReceiptModalOpen(true);
-        setIsSaleFinalized(true);
-      }
       try {
         const nextSequence = await posSyncNextVDNumber(new Date());
         setNextVDNumber(nextSequence);
       } catch {
         setNextVDNumber(1);
       }
-      setIsPaymentModalOpen(false);
+    } finally {
+      setIsFinalizingPayment(false);
     }
   };
 
@@ -1454,7 +1602,7 @@ export default function POSPage() {
         showToast('Cliente excluído com sucesso!', 'success');
       } catch (error) {
         handleSupabaseError(error, 'confirmDeleteCustomer');
-        alert('Erro ao excluir cliente.');
+        showToast('Erro ao excluir cliente.', 'error');
       }
     }
   };
@@ -1698,7 +1846,7 @@ export default function POSPage() {
     setIsReceiptModalOpen(false);
   };
 
-  const handleReceiptPrint = () => {
+  const handleReceiptPrint = async () => {
     const printMarkup = buildPrintReceiptMarkup();
     const estimatedHeightMm = Math.max(
       34,
@@ -1912,6 +2060,24 @@ export default function POSPage() {
 </html>
 `;
 
+    if (window.electronAPI?.printReceipt) {
+      try {
+        const result = await window.electronAPI.printReceipt(printHtml);
+        if (result?.success) {
+          showToast('Recibo enviado para a impressora padrão.', 'success');
+          return;
+        }
+        if (result?.error) {
+          showToast(
+            `Impressão silenciosa indisponível (${result.error}). A abrir fallback manual...`,
+            'info'
+          );
+        }
+      } catch {
+        showToast('Falha na impressão silenciosa. A abrir fallback manual...', 'info');
+      }
+    }
+
     const iframe = document.createElement('iframe');
     iframe.setAttribute(
       'style',
@@ -1937,7 +2103,7 @@ export default function POSPage() {
       }
 
       const runPrint = () => {
-        const receipt = doc.querySelector('.print-receipt');
+        const receipt = doc.querySelector<HTMLElement>('.print-receipt');
         const styleTag = doc.getElementById('page-size-style');
         if (receipt && styleTag) {
           const px = Math.max(receipt.scrollHeight, receipt.offsetHeight);
@@ -1971,8 +2137,93 @@ export default function POSPage() {
     iframe.srcdoc = printHtml;
   };
 
-  if (!isLoggedIn || !isAuthRestored) {
-    if (!isAuthRestored) return null; // Prevent flicker
+  if (!isAuthRestored) return null; // Prevent flicker
+
+  if (licenseExpired) {
+    return (
+      <LicenseExpiredScreen
+        tenantName={tenantName}
+        expiresAt={expiresAt}
+        onActivated={clearLicenseExpired}
+      />
+    );
+  }
+
+  if (isSetupLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-200">
+        <div className="rounded border border-zinc-800 bg-zinc-900/80 px-6 py-4 text-sm">
+          A preparar configuração inicial...
+        </div>
+      </div>
+    );
+  }
+
+  if (setupStatus && !setupStatus.isSetupComplete) {
+    return (
+      <SetupWizard
+        status={setupStatus}
+        onCompleted={async () => {
+          await refreshSetupStatus();
+          await refreshActivationState();
+          await fetchUsers();
+        }}
+      />
+    );
+  }
+
+  if (setupStatus?.isSetupComplete) {
+    if (isActivationLoading) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-200">
+          <div className="rounded border border-zinc-800 bg-zinc-900/80 px-6 py-4 text-sm">
+            A validar ativação da licença...
+          </div>
+        </div>
+      );
+    }
+
+    if (!activationState?.isActivated) {
+      return (
+        <ActivationScreen
+          activationCode={activationState?.activationCode || ''}
+          machineId={activationState?.machineId || ''}
+          reason={activationState?.reason || null}
+          isSubmitting={isActivatingLicense}
+          onRefresh={async () => {
+            await refreshActivationState();
+          }}
+          onActivate={async (licenseKey) => {
+            if (!window.electronAPI?.activateLicense) {
+              throw new Error('Ativação disponível apenas na app Electron.');
+            }
+            setIsActivatingLicense(true);
+            try {
+              const result = await window.electronAPI.activateLicense(licenseKey);
+              if (!result?.success) {
+                throw new Error(result?.error || 'Falha ao ativar licença.');
+              }
+              await refreshActivationState();
+            } finally {
+              setIsActivatingLicense(false);
+            }
+          }}
+          onRestartNow={async () => {
+            if (!window.electronAPI?.restartApp) {
+              window.location.reload();
+              return;
+            }
+            const result = await window.electronAPI.restartApp();
+            if (!result?.success) {
+              throw new Error(result?.error || 'Falha ao reiniciar aplicação.');
+            }
+          }}
+        />
+      );
+    }
+  }
+
+  if (!isLoggedIn) {
     return (
       <LoginScreen 
         users={users}
@@ -2056,8 +2307,6 @@ export default function POSPage() {
             setIsAddingCustomer(true);
             setIsCustomerModalOpen(true);
           }}
-          tableNumber={tableNumber}
-          onTableNumberChange={setTableNumber}
           cart={cart}
           globalDiscount={globalDiscount}
           formatPrice={formatPrice}
@@ -2080,7 +2329,11 @@ export default function POSPage() {
               setIsCancelModalOpen(true);
             }
           }}
-          onOpenPayment={() => cart.length > 0 && setIsPaymentModalOpen(true)}
+          onOpenPayment={() => {
+            if (cart.length <= 0) return;
+            setPaymentFinalizeError(null);
+            setIsPaymentModalOpen(true);
+          }}
           onOpenBillPreview={() => cart.length > 0 && setIsReceiptModalOpen(true)}
         />
       </main>
@@ -2128,6 +2381,7 @@ export default function POSPage() {
                   <button 
                     onClick={() => {
                       executeAddToCart(pendingProduct);
+                      setAllowStockOverrideOnCheckout(true);
                       setIsStockModalOpen(false);
                       setPendingProduct(null);
                     }}
@@ -2408,11 +2662,13 @@ export default function POSPage() {
       <PaymentModal
         isOpen={isPaymentModalOpen}
         onClose={() => {
+          if (isFinalizingPayment) return;
           setIsPaymentModalOpen(false);
           setPaymentMethod(null);
           setReceivedAmount('');
           setPayments([]);
           setIsMultiplePayment(false);
+          setPaymentFinalizeError(null);
         }}
         selectedCustomer={selectedCustomer}
         customerName={customerName}
@@ -2443,6 +2699,8 @@ export default function POSPage() {
         multiplePaymentAmount={multiplePaymentAmount}
         setMultiplePaymentAmount={setMultiplePaymentAmount}
         onFinalize={handleFinalizePayment}
+        isFinalizing={isFinalizingPayment}
+        finalizeError={paymentFinalizeError}
         isReceiptPrintEnabled={isReceiptPrintEnabled}
         onToggleReceiptPrint={() => setIsReceiptPrintEnabled((prev) => !prev)}
         formatPrice={formatPrice}
@@ -2471,7 +2729,9 @@ export default function POSPage() {
         isCashPaymentMethod={isCashPaymentMethod}
         companyProfile={companyProfile}
         onPrimaryAction={handleReceiptPrimaryAction}
-        onPrint={handleReceiptPrint}
+        onPrint={() => {
+          void handleReceiptPrint();
+        }}
       />
 
       {/* --- Cancel Order Confirmation Modal --- */}

@@ -6,21 +6,27 @@ const router = express.Router();
 
 router.get('/status', async (_req, res) => {
   try {
+    const tenantId = String(_req.tenantId ?? _req.user?.tenant_id ?? '').trim();
     const [totals, totalRetriesRow, lastSyncedRow, lastErrorRow, pullStates] = await Promise.all([
       all(
         `SELECT status, COUNT(*) AS count
          FROM sync_queue
+         WHERE tenant_id = ?
          GROUP BY status`
+        ,
+        [tenantId]
       ),
-      get(`SELECT COALESCE(SUM(retries), 0) AS total_retries FROM sync_queue`),
-      get(`SELECT MAX(synced_at) AS last_synced_at FROM sync_queue WHERE status = 'synced'`),
+      get(`SELECT COALESCE(SUM(retries), 0) AS total_retries FROM sync_queue WHERE tenant_id = ?`, [tenantId]),
+      get(`SELECT MAX(synced_at) AS last_synced_at FROM sync_queue WHERE tenant_id = ? AND status = 'synced'`, [tenantId]),
       get(
         `SELECT id, queue_id, type, error_message, payload, created_at
          FROM sync_logs
+         WHERE tenant_id = ?
          ORDER BY id DESC
-         LIMIT 1`
+         LIMIT 1`,
+        [tenantId]
       ),
-      all(`SELECT id, last_sync_at FROM sync_state ORDER BY id ASC`),
+      all(`SELECT id, last_sync_at FROM sync_state WHERE id LIKE ? ORDER BY id ASC`, [`%:${tenantId}`]),
     ]);
 
     res.json({
@@ -79,7 +85,8 @@ router.post('/full-reset', async (_req, res) => {
       });
     }
 
-    const result = await fullSyncFromCloud();
+    const tenantId = String(_req.tenantId ?? _req.user?.tenant_id ?? '').trim();
+    const result = await fullSyncFromCloud(tenantId);
     if (result?.success) {
       res.json(result);
       return;
@@ -93,11 +100,14 @@ router.post('/full-reset', async (_req, res) => {
 
 router.get('/logs', async (_req, res) => {
   try {
+    const tenantId = String(_req.tenantId ?? _req.user?.tenant_id ?? '').trim();
     const logs = await all(
       `SELECT id, queue_id, type, error_message, payload, created_at
        FROM sync_logs
+       WHERE tenant_id = ?
        ORDER BY id DESC
-       LIMIT 50`
+       LIMIT 50`,
+      [tenantId]
     );
     res.json(logs);
   } catch (error) {

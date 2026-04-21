@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type CustomerRow = {
   id: string;
@@ -82,7 +83,7 @@ export default function CustomersSuppliersManager() {
     setLoading(true);
     try {
       const response = await fetch(`${getPosApiBase()}/clientes`);
-      const data = await response.json();
+      const data = unwrapApiSuccessPayload<any[]>(await response.json());
       setRows(Array.isArray(data) ? data : []);
     } catch {
       setRows([]);
@@ -166,7 +167,8 @@ export default function CustomersSuppliersManager() {
       body: JSON.stringify(payload),
     });
     if (!response.ok) return;
-    const result = await response.json().catch(() => ({}));
+    const rawResult = await response.json().catch(() => ({}));
+    const result = unwrapApiSuccessPayload<any>(rawResult);
     const savedId = editing?.id ?? String(result?.id ?? '');
     if (savedId) {
       setMetaById((prev) => ({
