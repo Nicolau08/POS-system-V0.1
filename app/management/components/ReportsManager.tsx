@@ -15,13 +15,15 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { supabase, isConfigured } from '@/lib/supabase';
-
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 async function fetchLocalJson(path: string) {
-  const response = await fetch(`${getPosApiBase()}${path}`);
+  const response = await fetch(`${getPosApiBase()}${path}`, {
+    headers: {
+      ...getPosUserAuthHeaders(),
+    },
+  });
   if (!response.ok) {
     throw new Error(`Falha ao carregar dados locais (${response.status})`);
   }
@@ -413,34 +415,20 @@ export default function ReportsManager() {
     setErrorMessage('');
 
     try {
-      if (!isConfigured) {
-        setLoading(false);
-        return;
-      }
-
       const [
-        { data: customerData, error: customerError },
+        reportFilters,
         localCategories,
         localProducts,
-        { data: orderData, error: orderError },
       ] = await Promise.all([
-        supabase.from('customers').select('id, name').order('name'),
+        fetchLocalJson('/reports/filters'),
         fetchLocalJson('/categorias'),
         fetchLocalJson('/produtos'),
-        supabase.from('orders').select('payment_method'),
       ]);
 
-      if (customerError) throw customerError;
-      if (orderError) throw orderError;
-
-      setCustomers(customerData || []);
+      setCustomers(toArray<CustomerOption>(reportFilters?.customers));
       setCategories(toArray<CategoryOption>(localCategories));
       setProducts(toArray<ProductOption>(localProducts));
-
-      const methods = Array.from(
-        new Set((orderData || []).map((item) => item.payment_method).filter(Boolean))
-      ) as string[];
-      setPaymentMethods(methods.sort((a, b) => a.localeCompare(b)));
+      setPaymentMethods(toArray<string>(reportFilters?.paymentMethods));
     } catch (error: any) {
       console.error('Error fetching report filters:', error);
       setErrorMessage(error.message || 'Não foi possível carregar os filtros dos relatórios.');
@@ -565,10 +553,6 @@ export default function ReportsManager() {
         throw new Error('Selecione um relatório antes de continuar.');
       }
 
-      if (!isConfigured) {
-        throw new Error('Supabase não configurado. Configure a ligação para ativar os relatórios.');
-      }
-
       if (dateFrom > dateTo) {
         throw new Error('A data inicial não pode ser maior do que a data final.');
       }
@@ -613,15 +597,10 @@ export default function ReportsManager() {
       }
 
       if (reportKey === 'customers') {
-        let query = supabase
-          .from('customers')
-          .select('name, phone, email, address, points, created_at')
-          .order('name');
-
-        if (selectedCustomer !== 'all') query = query.eq('id', selectedCustomer);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const params = new URLSearchParams();
+        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
+        const queryString = params.toString();
+        const data = toArray<any>(await fetchLocalJson(`/reports/customers${queryString ? `?${queryString}` : ''}`));
 
         const rows = (data || []).map((item: any) => ({
           Cliente: item.name,
@@ -650,18 +629,13 @@ export default function ReportsManager() {
       }
 
       if (reportKey === 'sales_by_day') {
-        let query = supabase
-          .from('orders')
-          .select('id, total, subtotal, tax, discount, payment_method, status, created_at')
-          .gte('created_at', `${dateFrom}T00:00:00`)
-          .lte('created_at', `${dateTo}T23:59:59`)
-          .order('created_at');
-
-        if (selectedStatus !== 'all') query = query.eq('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') query = query.eq('payment_method', selectedPaymentMethod);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const params = new URLSearchParams({
+          dateFrom,
+          dateTo,
+        });
+        if (selectedStatus !== 'all') params.set('status', selectedStatus);
+        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
+        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
 
         const grouped = new Map<string, { orders: number; subtotal: number; tax: number; discount: number; total: number }>();
 
@@ -705,19 +679,14 @@ export default function ReportsManager() {
       }
 
       if (reportKey === 'documents_by_customer') {
-        let query = supabase
-          .from('orders')
-          .select('id, total, payment_method, status, created_at, table_number, customers(id, name)')
-          .gte('created_at', `${dateFrom}T00:00:00`)
-          .lte('created_at', `${dateTo}T23:59:59`)
-          .order('created_at');
-
-        if (selectedCustomer !== 'all') query = query.eq('customer_id', selectedCustomer);
-        if (selectedStatus !== 'all') query = query.eq('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') query = query.eq('payment_method', selectedPaymentMethod);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const params = new URLSearchParams({
+          dateFrom,
+          dateTo,
+        });
+        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
+        if (selectedStatus !== 'all') params.set('status', selectedStatus);
+        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
+        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
 
         const rows = (data || []).map((item: any, index: number) => ({
           Loja: '1',
@@ -749,19 +718,14 @@ export default function ReportsManager() {
       }
 
       if (reportKey === 'invoice_list') {
-        let query = supabase
-          .from('orders')
-          .select('id, doc_type, document_number, total, subtotal, tax, discount, payment_method, status, created_at, customers(name)')
-          .gte('created_at', `${dateFrom}T00:00:00`)
-          .lte('created_at', `${dateTo}T23:59:59`)
-          .order('created_at');
-
-        if (selectedCustomer !== 'all') query = query.eq('customer_id', selectedCustomer);
-        if (selectedStatus !== 'all') query = query.eq('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') query = query.eq('payment_method', selectedPaymentMethod);
-
-        const { data, error } = await query;
-        if (error) throw error;
+        const params = new URLSearchParams({
+          dateFrom,
+          dateTo,
+        });
+        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
+        if (selectedStatus !== 'all') params.set('status', selectedStatus);
+        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
+        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
 
         const rows = (data || []).map((item: any, index: number) => ({
           'Número': item.document_number || `${item.doc_type || 'DOC'}-${String(index + 1).padStart(5, '0')}`,
@@ -1004,12 +968,6 @@ export default function ReportsManager() {
             {errorMessage && (
               <div className="border border-rose-500/30 bg-rose-950/30 px-3 py-3 text-sm text-rose-200 rounded-sm">
                 {errorMessage}
-              </div>
-            )}
-
-            {!isConfigured && (
-              <div className="border border-amber-500/30 bg-amber-950/20 px-3 py-3 text-sm text-amber-200 rounded-sm">
-                Configure o Supabase para que os relatórios possam buscar dados do banco.
               </div>
             )}
           </div>

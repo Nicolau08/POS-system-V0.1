@@ -11,6 +11,15 @@ import {
 } from './queryOptions.service.js';
 
 const POS_TAX_RATE = Math.max(0, Number(process.env.POS_TAX_RATE ?? 0.16) || 0.16);
+const TAX_DIVISOR = 1 + POS_TAX_RATE;
+const SALES_STATUS_SQL = `
+  CASE
+    WHEN LOWER(COALESCE(v.status, '')) IN ('approved', 'aprovado') THEN 'approved'
+    WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'pending'
+    WHEN LOWER(COALESCE(v.payment_method, '')) LIKE '%conta corrente%' THEN 'pending'
+    ELSE COALESCE(v.status, 'completed')
+  END
+`;
 
 const runDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -109,15 +118,12 @@ const salesSelectSql = `
       printf('%04d', COALESCE(v.doc_sequence, v.id))
     ) AS document_number,
     v.payment_method AS payment_method,
-    CASE
-      WHEN LOWER(COALESCE(v.status, '')) IN ('approved', 'aprovado') THEN 'approved'
-      WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'pending'
-      WHEN LOWER(COALESCE(v.payment_method, '')) LIKE '%conta corrente%' THEN 'pending'
-      ELSE COALESCE(v.status, 'completed')
-    END AS status,
+    ${SALES_STATUS_SQL} AS status,
     v.approved_document_type AS approved_document_type,
     v.approved_document_number AS approved_document_number,
     0 AS discount,
+    ROUND(v.total / ${TAX_DIVISOR}, 2) AS subtotal,
+    ROUND(v.total - (v.total / ${TAX_DIVISOR}), 2) AS tax,
     v.total AS total,
     v.data AS created_at,
     v.customer_id AS customer_id,
@@ -130,13 +136,15 @@ const salesSelectSql = `
    AND c.tenant_id = v.tenant_id
 `;
 
-export async function listSales(filters = {}, actorUser = null) {
-  const pagination = parsePagination(filters);
-  const search = parseSearchTerm(filters.search);
-  const dateFrom = parseDateFilter(filters.dateFrom ?? filters.from);
-  const dateTo = parseDateFilter(filters.dateTo ?? filters.to);
-  const tenantId = await resolveTenantId(actorUser?.tenant_id);
-
+function buildSalesWhereClause({
+  tenantId,
+  search = '',
+  dateFrom = '',
+  dateTo = '',
+  status = '',
+  paymentMethod = '',
+  customerId = '',
+}) {
   const where = [];
   const params = [];
   where.push(`v.tenant_id = ?`);
@@ -155,8 +163,37 @@ export async function listSales(filters = {}, actorUser = null) {
     where.push(`datetime(v.data) <= datetime(?)`);
     params.push(dateTo);
   }
+  if (status) {
+    where.push(`${SALES_STATUS_SQL} = ?`);
+    params.push(status);
+  }
+  if (paymentMethod) {
+    where.push(`COALESCE(v.payment_method, '') = ?`);
+    params.push(paymentMethod);
+  }
+  if (customerId) {
+    where.push(`CAST(COALESCE(v.customer_id, '') AS TEXT) = ?`);
+    params.push(customerId);
+  }
 
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return {
+    whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    params,
+  };
+}
+
+export async function listSales(filters = {}, actorUser = null) {
+  const pagination = parsePagination(filters);
+  const search = parseSearchTerm(filters.search);
+  const dateFrom = parseDateFilter(filters.dateFrom ?? filters.from);
+  const dateTo = parseDateFilter(filters.dateTo ?? filters.to);
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  const { whereSql, params } = buildSalesWhereClause({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+  });
   const orderedSql = `${salesSelectSql} ${whereSql} ORDER BY datetime(v.data) DESC, v.id DESC`;
 
   if (!pagination.hasPagination) {
@@ -178,6 +215,29 @@ export async function listSales(filters = {}, actorUser = null) {
     limit: pagination.limit,
     total: Number(totalRow?.total ?? 0),
   });
+}
+
+export async function listSalesForReports(filters = {}, actorUser = null) {
+  const search = parseSearchTerm(filters.search);
+  const dateFrom = parseDateFilter(filters.dateFrom ?? filters.from);
+  const dateTo = parseDateFilter(filters.dateTo ?? filters.to);
+  const status = String(filters.status ?? '').trim().toLowerCase();
+  const paymentMethod = String(filters.paymentMethod ?? filters.payment_method ?? '').trim();
+  const customerId = String(filters.customerId ?? filters.customer_id ?? '').trim();
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+
+  const { whereSql, params } = buildSalesWhereClause({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+    status,
+    paymentMethod,
+    customerId,
+  });
+
+  const orderedSql = `${salesSelectSql} ${whereSql} ORDER BY datetime(v.data) ASC, v.id ASC`;
+  return allDb(orderedSql, params);
 }
 
 export async function updateSalePaymentStatus(saleIdRaw, paidRaw, actorUser = null) {
