@@ -10,3 +10,4 @@ dev-output.txt
 api/*.db
 api/*.db-shm
 api/*.db-wal
+backups/
