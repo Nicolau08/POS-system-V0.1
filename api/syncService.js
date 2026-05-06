@@ -1884,10 +1884,13 @@ async function fullSyncFromCloud(tenantId) {
 
 function isPermanentError(error) {
   const message = String(error?.message ?? '').toLowerCase();
+  // Unique / duplicate conflicts: use normal retries (idempotent sale sync, data fixes).
+  if (message.includes('duplicate key') || message.includes('unique constraint')) {
+    return false;
+  }
   return (
     message.includes('invalid') ||
     message.includes('violates') ||
-    message.includes('duplicate key') ||
     message.includes('null value') ||
     message.includes('unsupported sync type')
   );
@@ -1896,11 +1899,49 @@ function isPermanentError(error) {
 function isDuplicateSaleError(error) {
   const code = String(error?.code ?? '');
   const message = String(error?.message ?? '').toLowerCase();
+  const details = String(error?.details ?? '').toLowerCase();
+  const hint = String(error?.hint ?? '').toLowerCase();
   return (
-    code === '23505' ||
+    (code === '23505' &&
+      (
+        message.includes('local_sale_id') ||
+        details.includes('local_sale_id') ||
+        message.includes('orders_local_sale_id_key') ||
+        details.includes('orders_local_sale_id_key') ||
+        hint.includes('local_sale_id')
+      )) ||
     (message.includes('duplicate') && message.includes('local_sale_id')) ||
-    message.includes('orders_local_sale_id_key')
+    details.includes('local_sale_id') ||
+    message.includes('orders_local_sale_id_key') ||
+    details.includes('orders_local_sale_id_key')
   );
+}
+
+function isDocumentNumberUniqueViolation(error) {
+  const code = String(error?.code ?? '');
+  const message = String(error?.message ?? '').toLowerCase();
+  const details = String(error?.details ?? '').toLowerCase();
+  if (code !== '23505') return false;
+  return (
+    message.includes('document_number') ||
+    details.includes('document_number') ||
+    message.includes('idx_orders_tenant_document_number_unique') ||
+    details.includes('idx_orders_tenant_document_number_unique')
+  );
+}
+
+async function idempotentDocumentNumberConflict(supabase, tenantId, localSaleId, documentNumber) {
+  const doc = documentNumber == null ? '' : String(documentNumber).trim();
+  if (!doc) return false;
+  const { data: row, error } = await supabase
+    .from('orders')
+    .select('local_sale_id')
+    .eq('tenant_id', tenantId)
+    .eq('document_number', doc)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row) return false;
+  return String(row.local_sale_id ?? '') === String(localSaleId);
 }
 
 function buildExpectedQtyByProduct(items = []) {
@@ -2270,6 +2311,17 @@ async function syncSaleAtomically(payload) {
 
   if (rpcError) {
     if (isDuplicateSaleError(rpcError)) return;
+    if (
+      isDocumentNumberUniqueViolation(rpcError) &&
+      (await idempotentDocumentNumberConflict(
+        supabase,
+        tenantId,
+        localSaleId,
+        order_data.document_number,
+      ))
+    ) {
+      return;
+    }
     throw rpcError;
   }
 
@@ -2444,9 +2496,10 @@ async function processQueueItem(row) {
   if (!supabase) return;
 
   let payload = null;
+  let tenantId = null;
   try {
     payload = parseQueuePayload(row);
-    const tenantId = requireTenantId(row.tenant_id ?? payload?.tenant_id, `processQueueItem:${row.type}`);
+    tenantId = requireTenantId(row.tenant_id ?? payload?.tenant_id, `processQueueItem:${row.type}`);
     payload.tenant_id = tenantId;
     console.log('[QUEUE] processing:', {
       id: row.id,
