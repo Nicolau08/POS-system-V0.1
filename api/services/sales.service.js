@@ -383,18 +383,18 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
 
   if (requestedCustomerId) {
     const scopedCustomer = await getDb(
-      `SELECT id, name
+      `SELECT id, cloud_id, name
        FROM clientes
-       WHERE CAST(id AS TEXT) = CAST(? AS TEXT)
+       WHERE (CAST(id AS TEXT) = CAST(? AS TEXT) OR CAST(cloud_id AS TEXT) = CAST(? AS TEXT))
          AND tenant_id = ?
        LIMIT 1`,
-      [requestedCustomerId, tenantId]
+      [requestedCustomerId, requestedCustomerId, tenantId]
     );
     if (!scopedCustomer?.id) {
       localCustomerId = null;
       localCustomerName = null;
     } else {
-      localCustomerId = String(scopedCustomer.id);
+      localCustomerId = String(scopedCustomer.cloud_id ?? scopedCustomer.id);
       localCustomerName = String(scopedCustomer.name ?? localCustomerName ?? '').trim() || null;
     }
   }
