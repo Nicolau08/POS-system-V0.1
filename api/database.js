@@ -12,7 +12,9 @@ const dbPath = process.env.POS_DB_PATH
   : path.join(__dirname, 'pos.db');
 const db = new sqlite3.Database(dbPath);
 db.configure('busyTimeout', 5000);
-const DEFAULT_TENANT_ID = 'tenant-1';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID
+  ? String(process.env.DEFAULT_TENANT_ID).trim() || 'tenant-1'
+  : 'tenant-1';
 const DEFAULT_TENANT_NAME = process.env.DEFAULT_TENANT_NAME
   ? String(process.env.DEFAULT_TENANT_NAME).trim() || 'Default Tenant'
   : 'Default Tenant';

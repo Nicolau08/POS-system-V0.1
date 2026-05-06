@@ -6,6 +6,9 @@
     "dev": "next dev",
     "api:dev": "node api/server.js",
     "dev:full": "concurrently --names \"API,WEB\" --prefix-colors \"blue.bold,magenta.bold\" \"npm run api:dev\" \"npm run dev\"",
+    "dev:tenant:default": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item Env:POS_DB_PATH -ErrorAction SilentlyContinue; Remove-Item Env:POS_CONFIG_PATH -ErrorAction SilentlyContinue; Remove-Item Env:POS_LICENSE_PATH -ErrorAction SilentlyContinue; npm run dev:full\"",
+    "dev:tenant:qa02": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root='C:\\Users\\Nicol\\Documents\\POS system\\.dev-tenants\\tenant-qa-02'; New-Item -ItemType Directory -Force -Path $root, ($root + '\\data') | Out-Null; $env:POS_DB_PATH=($root + '\\data\\pos.db'); $env:POS_CONFIG_PATH=($root + '\\config.json'); $env:POS_LICENSE_PATH=($root + '\\license.json'); $env:DEFAULT_TENANT_ID='tenant-qa-02'; $env:DEFAULT_TENANT_NAME='Tenant QA 02'; npm run dev:full\"",
+    "dev:tenant:qa01": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root='C:\\Users\\Nicol\\Documents\\POS system\\.dev-tenants\\tenant-qa-01'; New-Item -ItemType Directory -Force -Path $root, ($root + '\\data') | Out-Null; $env:POS_DB_PATH=($root + '\\data\\pos.db'); $env:POS_CONFIG_PATH=($root + '\\config.json'); $env:POS_LICENSE_PATH=($root + '\\license.json'); $env:DEFAULT_TENANT_ID='tenant-qa-01'; $env:DEFAULT_TENANT_NAME='Tenant QA 01'; npm run dev:full\"",
     "build": "next build",
     "electron:clean": "node scripts/clean-electron-dist.mjs",
     "electron": "electron .",
@@ -13,6 +16,8 @@
     "electron-pack": "npm run electron:clean && electron-builder --win nsis --dir",
     "electron-dist": "npm run build && npm run electron:clean && electron-builder --win nsis",
     "test:e2e": "playwright test",
+    "sync:revive-dead-sales": "node api/scripts/revive-dead-sale-queue.mjs",
+    "sync:reset-sale-queue": "node api/scripts/reset-sale-queue.mjs",
     "stock:audit": "node api/scripts/stock-flow-audit.mjs",
     "license:tool": "node api/scripts/license-tool.mjs",
     "icon:win": "node scripts/generate-windows-icon.mjs"
