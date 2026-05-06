@@ -36,6 +36,8 @@ import {
 
 const DASHBOARD_SUMMARY_CACHE_TTL_MS = Math.max(1000, Number(process.env.DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 8000));
 const dashboardSummaryCache = new Map();
+const POS_TAX_RATE = Math.max(0, Number(process.env.POS_TAX_RATE ?? 0.16) || 0.16);
+const TAX_DIVISOR = 1 + POS_TAX_RATE;
 
 function resolveTenantIdStrict(tenantCandidate) {
   return requireTenantId(tenantCandidate, {
@@ -106,8 +108,8 @@ function buildDocumentosBaseSql() {
         v.approved_document_type AS approved_document_type,
         v.approved_document_number AS approved_document_number,
         0 AS discount,
-        v.total AS subtotal,
-        0 AS tax,
+        ROUND(v.total / ${TAX_DIVISOR}, 2) AS subtotal,
+        ROUND(v.total - (v.total / ${TAX_DIVISOR}), 2) AS tax,
         v.total AS total,
         v.data AS created_at,
         v.customer_id AS customer_id,

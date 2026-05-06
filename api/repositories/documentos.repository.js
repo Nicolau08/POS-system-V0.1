@@ -76,9 +76,8 @@ export function listDocumentoItems(whereSql, params, tenantId) {
   return all(
     `SELECT oi.id, oi.order_id, oi.product_id, oi.product_name, oi.quantity, oi.price, oi.discount_amount
      FROM order_items oi
-     INNER JOIN orders o ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
      ${whereSql}
-     AND o.tenant_id = ?
+     AND oi.tenant_id = ?
      ORDER BY datetime(oi.created_at) DESC, oi.id DESC`,
     [...params, tenantId]
   );
@@ -88,9 +87,8 @@ export function listDocumentoItemsPaginated(whereSql, params, limit, offset, ten
   return all(
     `SELECT oi.id, oi.order_id, oi.product_id, oi.product_name, oi.quantity, oi.price, oi.discount_amount
      FROM order_items oi
-     INNER JOIN orders o ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
      ${whereSql}
-     AND o.tenant_id = ?
+     AND oi.tenant_id = ?
      ORDER BY datetime(oi.created_at) DESC, oi.id DESC
      LIMIT ? OFFSET ?`,
     [...params, tenantId, limit, offset]
@@ -101,9 +99,8 @@ export async function countDocumentoItems(whereSql, params, tenantId) {
   const row = await get(
     `SELECT COUNT(*) AS total
      FROM order_items oi
-     INNER JOIN orders o ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
      ${whereSql}
-     AND o.tenant_id = ?`,
+     AND oi.tenant_id = ?`,
     [...params, tenantId]
   );
   return Number(row?.total ?? 0);
