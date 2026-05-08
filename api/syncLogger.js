@@ -37,12 +37,13 @@ async function logSyncError({ queueId = null, type = 'unknown', payload = null, 
     detailsFromError ||
     serializedError ||
     (error == null ? 'unknown sync error' : '[unknown sync error]');
+  const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim() || null;
   const payloadString = payload == null ? null : JSON.stringify(payload);
 
   try {
     await run(
-      `INSERT INTO sync_logs (queue_id, type, payload, error_message) VALUES (?, ?, ?, ?)`,
-      [queueId, type, payloadString, errorMessage]
+      `INSERT INTO sync_logs (queue_id, tenant_id, type, payload, error_message) VALUES (?, ?, ?, ?, ?)`,
+      [queueId, tenantId, type, payloadString, errorMessage]
     );
   } catch (logErr) {
     console.error('[sync] failed to persist sync log:', logErr.message);
@@ -50,6 +51,7 @@ async function logSyncError({ queueId = null, type = 'unknown', payload = null, 
 
   console.error('[sync] error:', {
     queueId,
+    tenantId,
     type,
     message: errorMessage,
     code: errorObj?.code ?? null,

@@ -4,6 +4,7 @@ import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Banknote, CreditCard, Lock, Monitor, Printer, Save, Smartphone, User, X } from 'lucide-react';
 import type { CartItem, Customer, Discount, PaymentEntry, PaymentMethod, PaymentMethodOption } from '@/app/pos/types';
+import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 
 export function PaymentModal({
   isOpen,
@@ -32,6 +33,8 @@ export function PaymentModal({
   multiplePaymentAmount,
   setMultiplePaymentAmount,
   onFinalize,
+  isFinalizing,
+  finalizeError,
   isReceiptPrintEnabled,
   onToggleReceiptPrint,
   formatPrice,
@@ -63,6 +66,8 @@ export function PaymentModal({
   multiplePaymentAmount: string;
   setMultiplePaymentAmount: (value: string) => void;
   onFinalize: () => void;
+  isFinalizing: boolean;
+  finalizeError: string | null;
   isReceiptPrintEnabled: boolean;
   onToggleReceiptPrint: () => void;
   formatPrice: (value: number) => string;
@@ -143,7 +148,7 @@ export function PaymentModal({
                   <span>{formatPrice(subtotal)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>IVA (17% Incluso)</span>
+                  <span>IVA ({getPosTaxPercentLabel()} Incluso)</span>
                   <span>{formatPrice(tax)}</span>
                 </div>
                 {!!totalDiscount && (
@@ -160,6 +165,11 @@ export function PaymentModal({
               </div>
 
               <div className="pt-4 space-y-3">
+                {finalizeError ? (
+                  <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {finalizeError}
+                  </div>
+                ) : null}
                 {isProforma ? (
                   <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
                     Documento em modo Proforma: nenhum pagamento e nenhum movimento de stock sera efetuado.
@@ -290,15 +300,15 @@ export function PaymentModal({
 
               <button
                 onClick={onFinalize}
-                disabled={!canFinalize}
+                disabled={!canFinalize || isFinalizing}
                 className={`flex-1 h-12 rounded text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                  canFinalize
+                  canFinalize && !isFinalizing
                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                     : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
                 }`}
               >
                 {isProforma ? <Save size={16} /> : <Lock size={16} />}
-                {isProforma ? 'Salvar' : 'Finalizar'}
+                {isFinalizing ? 'Finalizando...' : isProforma ? 'Salvar' : 'Finalizar'}
               </button>
             </div>
 

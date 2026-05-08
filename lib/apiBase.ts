@@ -20,3 +20,22 @@ export function getPosApiDirectBase(): string {
     'http://127.0.0.1:3001'
   );
 }
+
+/**
+ * Cabeçalhos para a API Express resolver o utilizador (middleware `authenticateUser`).
+ * Sem isto, pedidos feitos a partir de outro host que não 127.0.0.1/localhost falham com 401
+ * porque o fallback "legacy local" não se aplica.
+ */
+export function getPosUserAuthHeaders(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem('currentUser');
+    if (!raw) return {};
+    const u = JSON.parse(raw) as { id?: string };
+    const id = String(u?.id ?? '').trim();
+    if (!id) return {};
+    return { 'x-user-id': id };
+  } catch {
+    return {};
+  }
+}

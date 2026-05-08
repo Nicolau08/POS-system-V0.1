@@ -1,34 +1,44 @@
 import { get, run } from './dbUtils.js';
 
-function buildDedupeKey(type, payload) {
-  if (type === 'product' && payload?.id) return `product:${Number(payload.id)}`;
-  if (type === 'customer' && payload?.id) return `customer:${Number(payload.id)}`;
+function resolveTenantIdFromPayload(payload) {
+  const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim();
+  if (!tenantId) throw new Error('enqueueSync requires payload.tenant_id');
+  return tenantId;
+}
+
+function buildDedupeKey(type, payload, tenantId) {
+  if (type === 'product' && payload?.id) return `${tenantId}:product:${Number(payload.id)}`;
+  if (type === 'customer' && payload?.id) return `${tenantId}:customer:${Number(payload.id)}`;
+  if (type === 'category' && payload?.id) return `${tenantId}:category:${Number(payload.id)}`;
   return null;
 }
 
-function buildSyncRef(type, payload) {
-  if (payload?.syncRef) return String(payload.syncRef);
-  if (type === 'sale' && payload?.local_sale_id) return `sale:${payload.local_sale_id}`;
-  if (payload?.id != null) return `${type}:${payload.id}`;
+function buildSyncRef(type, payload, tenantId) {
+  if (payload?.syncRef) return `${tenantId}:${String(payload.syncRef)}`;
+  if (type === 'sale' && payload?.local_sale_id) return `${tenantId}:sale:${payload.local_sale_id}`;
+  if (payload?.id != null) return `${tenantId}:${type}:${payload.id}`;
   return null;
 }
 
 async function enqueueSync(type, payload, options = {}) {
   if (!type) throw new Error('enqueueSync requires type');
   const normalizedPayload = payload ?? {};
-  const dedupeKey = buildDedupeKey(type, normalizedPayload);
-  const syncRef = buildSyncRef(type, normalizedPayload);
+  const tenantId = resolveTenantIdFromPayload(normalizedPayload);
+  normalizedPayload.tenant_id = tenantId;
+  const dedupeKey = buildDedupeKey(type, normalizedPayload, tenantId);
+  const syncRef = buildSyncRef(type, normalizedPayload, tenantId);
   const now = new Date().toISOString();
 
   if (syncRef) {
     const existingByRef = await get(
       `SELECT id, status
        FROM sync_queue
-       WHERE sync_ref = ?
+       WHERE tenant_id = ?
+         AND sync_ref = ?
          AND status IN ('pending', 'failed', 'dead')
        ORDER BY id DESC
        LIMIT 1`,
-      [syncRef]
+      [tenantId, syncRef]
     );
 
     if (existingByRef && options.allowReplace !== false) {
@@ -41,16 +51,17 @@ async function enqueueSync(type, payload, options = {}) {
     }
   }
 
-  if ((type === 'product' || type === 'customer') && dedupeKey) {
+  if ((type === 'product' || type === 'customer' || type === 'category') && dedupeKey) {
     const existing = await get(
       `SELECT id
        FROM sync_queue
-       WHERE type = ?
+       WHERE tenant_id = ?
+         AND type = ?
          AND dedupe_key = ?
          AND status IN ('pending', 'failed')
        ORDER BY id DESC
        LIMIT 1`,
-      [type, dedupeKey]
+      [tenantId, type, dedupeKey]
     );
 
     if (existing) {
@@ -64,9 +75,9 @@ async function enqueueSync(type, payload, options = {}) {
   }
 
   return run(
-    `INSERT INTO sync_queue (type, data, dedupe_key, sync_ref, status, retries, next_retry_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
-    [type, JSON.stringify(normalizedPayload), dedupeKey, syncRef, now, now, now]
+    `INSERT INTO sync_queue (tenant_id, type, data, dedupe_key, sync_ref, status, retries, next_retry_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+    [tenantId, type, JSON.stringify(normalizedPayload), dedupeKey, syncRef, now, now, now]
   );
 }
 

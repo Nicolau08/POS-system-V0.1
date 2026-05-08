@@ -26,55 +26,38 @@ export async function countClientes(whereSql, params) {
   return Number(row?.total ?? 0);
 }
 
-export function insertCliente({ name, phone, email, address, cloudId, tenantId, updatedAt, syncVersion, originNodeId }) {
+export function insertCliente({ name, phone, email, address, cloudId, tenantId }) {
   return run(
-    `INSERT INTO clientes (name, phone, email, address, cloud_id, tenant_id, updated_at, deleted_at, sync_version, origin_node_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-    [name, phone, email, address, cloudId, tenantId, updatedAt, syncVersion, originNodeId]
+    `INSERT INTO clientes (name, phone, email, address, cloud_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?)`,
+    [name, phone, email, address, cloudId, tenantId]
   );
 }
 
 export function findClienteCloudIdByIdAndTenant(id, tenantId) {
   return get(
-    `SELECT cloud_id, deleted_at, sync_version
+    `SELECT cloud_id
      FROM clientes
      WHERE id = ?
-       AND tenant_id = ?
-       AND deleted_at IS NULL`,
+       AND tenant_id = ?`,
     [id, tenantId]
   );
 }
 
-export function updateClienteByIdAndTenant({
-  id,
-  name,
-  phone,
-  email,
-  address,
-  cloudId,
-  tenantId,
-  updatedAt,
-  syncVersion,
-  originNodeId,
-}) {
+export function updateClienteByIdAndTenant({ id, name, phone, email, address, cloudId, tenantId }) {
   return run(
     `UPDATE clientes
-     SET name = ?, phone = ?, email = ?, address = ?, cloud_id = ?, tenant_id = ?, deleted_at = NULL,
-         updated_at = ?, sync_version = ?, origin_node_id = ?
+     SET name = ?, phone = ?, email = ?, address = ?, cloud_id = ?, tenant_id = ?
      WHERE id = ?
-       AND tenant_id = ?
-       AND deleted_at IS NULL`,
-    [name, phone, email, address, cloudId, tenantId, updatedAt, syncVersion, originNodeId, id, tenantId]
+       AND tenant_id = ?`,
+    [name, phone, email, address, cloudId, tenantId, id, tenantId]
   );
 }
 
-export function deleteClienteByIdAndTenant({ id, tenantId, deletedAt, syncVersion, originNodeId }) {
+export function deleteClienteByIdAndTenant(id, tenantId) {
   return run(
-    `UPDATE clientes
-     SET deleted_at = ?, updated_at = ?, sync_version = ?, origin_node_id = ?
+    `DELETE FROM clientes
      WHERE id = ?
-       AND tenant_id = ?
-       AND deleted_at IS NULL`,
-    [deletedAt, deletedAt, syncVersion, originNodeId, id, tenantId]
+       AND tenant_id = ?`,
+    [id, tenantId]
   );
 }

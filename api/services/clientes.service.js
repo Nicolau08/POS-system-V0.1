@@ -13,8 +13,6 @@ import {
   updateClienteByIdAndTenant,
 } from '../repositories/clientes.repository.js';
 
-const LOCAL_SYNC_NODE_ID = String(process.env.SYNC_NODE_ID ?? 'local-node').trim() || 'local-node';
-
 async function resolveTenantId(tenantCandidate) {
   return requireTenantId(tenantCandidate, {
     status: 401,
@@ -31,7 +29,6 @@ export async function listAllClientes(query = {}, user = null) {
 
   where.push(`tenant_id = ?`);
   params.push(tenantId);
-  where.push(`deleted_at IS NULL`);
 
   if (search) {
     const token = `%${search}%`;
@@ -59,7 +56,6 @@ export async function listAllClientes(query = {}, user = null) {
 }
 
 export async function createCliente(payload = {}, user = null) {
-  const now = new Date().toISOString();
   const name = payload.name;
   const phone = payload.phone;
   const email = payload.email ?? null;
@@ -81,9 +77,6 @@ export async function createCliente(payload = {}, user = null) {
     address,
     cloudId: customerCloudId,
     tenantId,
-    updatedAt: now,
-    syncVersion: 1,
-    originNodeId: LOCAL_SYNC_NODE_ID,
   });
 
   const insertedId = insertResult.lastID;
@@ -95,10 +88,6 @@ export async function createCliente(payload = {}, user = null) {
     email,
     address,
     tenant_id: tenantId,
-    deleted_at: null,
-    updated_at: now,
-    sync_version: 1,
-    origin_node_id: LOCAL_SYNC_NODE_ID,
   };
 
   try {
@@ -115,7 +104,6 @@ export async function createCliente(payload = {}, user = null) {
 }
 
 export async function updateCliente(idRaw, payload = {}, user = null) {
-  const now = new Date().toISOString();
   const id = idRaw;
   const name = payload.name;
   const phone = payload.phone;
@@ -140,9 +128,6 @@ export async function updateCliente(idRaw, payload = {}, user = null) {
     address,
     cloudId: customerCloudId,
     tenantId,
-    updatedAt: now,
-    syncVersion: Number(existing?.sync_version ?? 1) + 1,
-    originNodeId: LOCAL_SYNC_NODE_ID,
   });
 
   const updated = updateResult.changes > 0;
@@ -157,10 +142,6 @@ export async function updateCliente(idRaw, payload = {}, user = null) {
       email,
       address,
       tenant_id: tenantId,
-      deleted_at: null,
-      updated_at: now,
-      sync_version: Number(existing?.sync_version ?? 1) + 1,
-      origin_node_id: LOCAL_SYNC_NODE_ID,
     });
     return { success: true, updated: true };
   } catch (queueErr) {
@@ -175,19 +156,11 @@ export async function updateCliente(idRaw, payload = {}, user = null) {
 
 export async function removeCliente(idRaw, user = null) {
   const id = idRaw;
-  const now = new Date().toISOString();
   const tenantId = await resolveTenantId(user?.tenant_id);
   const row = await findClienteCloudIdByIdAndTenant(id, tenantId);
   const customerCloudId = row?.cloud_id && isUuidString(String(row.cloud_id)) ? String(row.cloud_id).trim() : null;
 
-  const nextSyncVersion = Number(row?.sync_version ?? 1) + 1;
-  const deleteResult = await deleteClienteByIdAndTenant({
-    id,
-    tenantId,
-    deletedAt: now,
-    syncVersion: nextSyncVersion,
-    originNodeId: LOCAL_SYNC_NODE_ID,
-  });
+  const deleteResult = await deleteClienteByIdAndTenant(id, tenantId);
   const deleted = deleteResult.changes > 0;
   if (!deleted) return { success: true, deleted: false };
 
@@ -197,10 +170,6 @@ export async function removeCliente(idRaw, user = null) {
       cloud_id: customerCloudId,
       deleted: true,
       tenant_id: tenantId,
-      deleted_at: now,
-      updated_at: now,
-      sync_version: nextSyncVersion,
-      origin_node_id: LOCAL_SYNC_NODE_ID,
     });
     return { success: true, deleted: true };
   } catch (queueErr) {

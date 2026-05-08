@@ -1,8 +1,11 @@
 import { useMemo } from 'react';
 import type { CartItem, Discount } from '@/app/pos/types';
+import { getPosTaxRate } from '@/lib/taxConfig';
 
 // Centralizes cart totals/discount calculations to keep UI components lean.
 export function useCart(cart: CartItem[], globalDiscount: Discount | null) {
+  const taxRate = getPosTaxRate();
+
   const originalTotal = useMemo(
     () => cart.reduce((acc, item) => acc + item.price * item.quantity, 0),
     [cart]
@@ -27,9 +30,9 @@ export function useCart(cart: CartItem[], globalDiscount: Discount | null) {
   }, [cart, globalDiscount, originalTotal]);
 
   const total = Math.max(0, originalTotal - totalDiscount);
-  const subtotal = total / 1.16;
+  const subtotal = total / (1 + taxRate);
   const tax = total - subtotal;
-  const originalSubtotal = originalTotal / 1.16;
+  const originalSubtotal = originalTotal / (1 + taxRate);
 
   return {
     originalTotal,

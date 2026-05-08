@@ -3,6 +3,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, ChevronsUpDown, Edit3, Printer, Trash2, Users, Truck, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
 
 type OrderRow = {
   id: number | string;
@@ -120,6 +122,9 @@ function formatMoney(value: number | null | undefined) {
   const amount = Number(value ?? 0);
   return new Intl.NumberFormat('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
 }
+
+const DEFAULT_TAX_RATE_PERCENT = getPosTaxRate() * 100;
+const DEFAULT_TAX_RATE_LABEL = getPosTaxPercentLabel();
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '-';
@@ -289,8 +294,8 @@ export default function DocumentsManager() {
       if (!clientsRes.ok) throw new Error(`Falha ao carregar clientes (${clientsRes.status})`);
       if (!productsRes.ok) throw new Error(`Falha ao carregar produtos (${productsRes.status})`);
 
-      const docsOrders = ((await ordersRes.json()) ?? []) as OrderRow[];
-      const salesOrders = ((await salesRes.json()) ?? []) as OrderRow[];
+      const docsOrders = (unwrapApiSuccessPayload<OrderRow[]>(await ordersRes.json()) ?? []) as OrderRow[];
+      const salesOrders = (unwrapApiSuccessPayload<OrderRow[]>(await salesRes.json()) ?? []) as OrderRow[];
       const mergedOrdersMap = new Map<string, OrderRow>();
       for (const order of docsOrders) {
         mergedOrdersMap.set(String(order.id), order);
@@ -321,9 +326,9 @@ export default function DocumentsManager() {
       });
       setOrders(safeOrders);
 
-      const usersData = ((await usersRes.json()) ?? []) as Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>;
-      const clientsData = ((await clientsRes.json()) ?? []) as Array<{ name?: string | null }>;
-      const productsData = ((await productsRes.json()) ?? []) as Array<{ name?: string | null }>;
+      const usersData = (unwrapApiSuccessPayload<Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>>(await usersRes.json()) ?? []);
+      const clientsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await clientsRes.json()) ?? []);
+      const productsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await productsRes.json()) ?? []);
 
       const productNames = Array.from(
         new Set(
@@ -361,7 +366,11 @@ export default function DocumentsManager() {
         return;
       }
 
-      const itemsData = ((await itemsRes.json()) ?? []) as OrderItemRow[];
+      const itemsPayload = unwrapApiSuccessPayload<OrderItemRow[] | null>(await itemsRes.json());
+      if (itemsPayload != null && !Array.isArray(itemsPayload)) {
+        console.warn('[DocumentsManager] Resposta inesperada em /documentos-itens:', itemsPayload);
+      }
+      const itemsData = Array.isArray(itemsPayload) ? itemsPayload : [];
 
       const grouped: Record<string, OrderItemRow[]> = {};
       for (const item of itemsData ?? []) {
@@ -895,19 +904,20 @@ export default function DocumentsManager() {
                 ) : (
                   selectedItems.map((item, index) => {
                     const qty = Number(item.quantity ?? 0);
-                    const basePrice = Number(item.price ?? 0);
-                    const taxRate = Number(item.tax_rate ?? 0);
-                    const priceWithTax = basePrice * (1 + taxRate / 100);
-                    const rowTotal = Number(item.total ?? priceWithTax * qty);
+                    const unitPriceWithTax = Number(item.price ?? 0);
+                    const taxRate = Number(item.tax_rate ?? 0) > 0 ? Number(item.tax_rate ?? 0) : DEFAULT_TAX_RATE_PERCENT;
+                    const unitPriceBeforeTax = unitPriceWithTax / (1 + taxRate / 100);
+                    const unitTaxAmount = unitPriceWithTax - unitPriceBeforeTax;
+                    const rowTotal = Number(item.total ?? unitPriceWithTax * qty);
                     return (
                       <tr key={String(item.id)} className="border-b border-zinc-800/70 hover:bg-zinc-800/30">
                         <Td>{index + 1}</Td>
                         <Td>{item.product_name || '-'}</Td>
                         <Td>{item.unit || 'UN'}</Td>
                         <Td>{qty.toFixed(3)}</Td>
-                        <Td>{formatMoney(basePrice)}</Td>
-                        <Td>{`${taxRate}%`}</Td>
-                        <Td>{formatMoney(priceWithTax)}</Td>
+                        <Td>{formatMoney(unitPriceBeforeTax)}</Td>
+                        <Td>{`${formatMoney(unitTaxAmount)} (${Number(item.tax_rate ?? 0) > 0 ? `${taxRate}%` : DEFAULT_TAX_RATE_LABEL})`}</Td>
+                        <Td>{formatMoney(unitPriceWithTax)}</Td>
                         <Td>{formatMoney(rowTotal)}</Td>
                       </tr>
                     );

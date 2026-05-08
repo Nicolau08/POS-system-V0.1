@@ -17,8 +17,6 @@ export function Cart({
   customers,
   onSelectCustomer,
   onCreateCustomerFromName,
-  tableNumber,
-  onTableNumberChange,
   cart,
   globalDiscount,
   formatPrice,
@@ -44,8 +42,6 @@ export function Cart({
   customers: Customer[];
   onSelectCustomer: (customer: Customer | null) => void;
   onCreateCustomerFromName: () => void;
-  tableNumber: string;
-  onTableNumberChange: (value: string) => void;
   cart: CartItem[];
   globalDiscount: Discount | null;
   formatPrice: (value: number) => string;
@@ -151,16 +147,6 @@ export function Cart({
           </div>
         </div>
 
-        <div className="w-20 flex items-center px-2 bg-zinc-800 rounded h-10">
-          <span className="text-[10px] text-zinc-500 mr-1 capitalize font-bold whitespace-nowrap">Mesa</span>
-          <input
-            type="text"
-            value={tableNumber ?? ''}
-            onChange={(e) => onTableNumberChange(e.target.value)}
-            className="bg-transparent w-full text-center outline-none text-xs text-zinc-200 placeholder:text-zinc-600 font-mono"
-            placeholder="00"
-          />
-        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-hide" onClick={onClearSelection}>

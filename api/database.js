@@ -225,10 +225,7 @@ db.serialize(() => {
       is_system INTEGER NOT NULL DEFAULT 0,
       tenant_id TEXT NOT NULL,
       cloud_id TEXT UNIQUE,
-      updated_at TEXT,
-      deleted_at TEXT,
-      sync_version INTEGER NOT NULL DEFAULT 1,
-      origin_node_id TEXT
+      updated_at TEXT
     )
   `);
 
@@ -871,76 +868,6 @@ db.serialize(() => {
       console.error('Erro ao adicionar coluna updated_at em users:', err.message);
     }
   });
-  db.run(`ALTER TABLE users ADD COLUMN deleted_at TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna deleted_at em users:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE users ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna sync_version em users:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE users ADD COLUMN origin_node_id TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna origin_node_id em users:', err.message);
-    }
-  });
-  db.run(`UPDATE users SET sync_version = 1 WHERE sync_version IS NULL OR sync_version < 1`, (err) => {
-    if (err) {
-      console.error('Erro ao normalizar sync_version em users:', err.message);
-    }
-  });
-  db.run(`UPDATE users SET deleted_at = updated_at WHERE active = 0 AND deleted_at IS NULL`, (err) => {
-    if (err) {
-      console.error('Erro ao normalizar deleted_at em users:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE clientes ADD COLUMN deleted_at TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna deleted_at em clientes:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE clientes ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna sync_version em clientes:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE clientes ADD COLUMN origin_node_id TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna origin_node_id em clientes:', err.message);
-    }
-  });
-  db.run(`UPDATE clientes SET sync_version = 1 WHERE sync_version IS NULL OR sync_version < 1`, (err) => {
-    if (err) {
-      console.error('Erro ao normalizar sync_version em clientes:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE products ADD COLUMN deleted_at TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna deleted_at em products:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE products ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna sync_version em products:', err.message);
-    }
-  });
-  db.run(`ALTER TABLE products ADD COLUMN origin_node_id TEXT`, (err) => {
-    if (err && !String(err.message || '').includes('duplicate column name')) {
-      console.error('Erro ao adicionar coluna origin_node_id em products:', err.message);
-    }
-  });
-  db.run(`UPDATE products SET sync_version = 1 WHERE sync_version IS NULL OR sync_version < 1`, (err) => {
-    if (err) {
-      console.error('Erro ao normalizar sync_version em products:', err.message);
-    }
-  });
-  db.run(`UPDATE products SET deleted_at = updated_at WHERE COALESCE(deleted, 0) = 1 AND deleted_at IS NULL`, (err) => {
-    if (err) {
-      console.error('Erro ao normalizar deleted_at em products:', err.message);
-    }
-  });
 
   db.run(`ALTER TABLE order_items ADD COLUMN cloud_id TEXT`, (err) => {
     if (err && !String(err.message || '').includes('duplicate column name')) {
@@ -995,20 +922,13 @@ db.serialize(() => {
   safeRun(`CREATE INDEX IF NOT EXISTS idx_clientes_updated_at ON clientes(updated_at)`, 'Erro ao criar idx_clientes_updated_at:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_clientes_tenant_id ON clientes(tenant_id)`, 'Erro ao criar idx_clientes_tenant_id:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_clientes_tenant_name ON clientes(tenant_id, name)`, 'Erro ao criar idx_clientes_tenant_name:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_clientes_tenant_deleted_at ON clientes(tenant_id, deleted_at)`, 'Erro ao criar idx_clientes_tenant_deleted_at:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_clientes_tenant_sync_version ON clientes(tenant_id, sync_version)`, 'Erro ao criar idx_clientes_tenant_sync_version:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users(updated_at)`, 'Erro ao criar idx_users_updated_at:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id)`, 'Erro ao criar idx_users_tenant_id:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_users_tenant_updated_at ON users(tenant_id, updated_at)`, 'Erro ao criar idx_users_tenant_updated_at:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_users_tenant_deleted_at ON users(tenant_id, deleted_at)`, 'Erro ao criar idx_users_tenant_deleted_at:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_users_tenant_sync_version ON users(tenant_id, sync_version)`, 'Erro ao criar idx_users_tenant_sync_version:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_vendas_tenant_id ON vendas(tenant_id)`, 'Erro ao criar idx_vendas_tenant_id:');
   safeRun(
     `CREATE INDEX IF NOT EXISTS idx_products_category_tenant_deleted ON products(category_id, tenant_id, deleted)`,
     'Erro ao criar idx_products_category_tenant_deleted:'
   );
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_products_tenant_deleted_at ON products(tenant_id, deleted_at)`, 'Erro ao criar idx_products_tenant_deleted_at:');
-  safeRun(`CREATE INDEX IF NOT EXISTS idx_products_tenant_sync_version ON products(tenant_id, sync_version)`, 'Erro ao criar idx_products_tenant_sync_version:');
 
   ensureTenantGuards();
 
