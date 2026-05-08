@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@/app/pos/types';
+import { getPosApiBase } from '@/lib/apiBase';
 
 const LOGIN_KEY = 'isLoggedIn';
 const USER_KEY = 'currentUser';
 
 // Keeps current localStorage-based session behavior isolated in one place.
-export function useAuth(users: User[]) {
+export function useAuth() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
@@ -40,23 +41,68 @@ export function useAuth(users: User[]) {
     window.dispatchEvent(new Event('pos-auth-changed'));
   }, [isLoggedIn, currentUser, isAuthRestored]);
 
-  const login = useCallback(() => {
-    const foundUser = users.find((u) => u.id === selectedLoginUser?.id);
-    if (foundUser && foundUser.active !== false && loginPassword === foundUser.password) {
-      setCurrentUser(foundUser);
+  const login = useCallback(async () => {
+    const selectedUser = selectedLoginUser;
+    const userId = selectedUser?.id;
+    const enteredPin = String(loginPassword).trim();
+    const isPinValid = /^\d{4,}$/.test(enteredPin);
+
+    if (!userId || !isPinValid) {
+      setLoginError(true);
+      window.setTimeout(() => setLoginError(false), 500);
+      return false;
+    }
+
+    console.log("LOGIN REQUEST:", {
+      userId,
+      enteredPin,
+    });
+
+    try {
+      const response = await fetch(`${getPosApiBase()}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          enteredPin,
+        }),
+      });
+
+      if (response.status === 401) {
+        window.alert('PIN incorreto');
+        setLoginError(true);
+        window.setTimeout(() => setLoginError(false), 500);
+        return false;
+      }
+
+      if (!response.ok) {
+        setLoginError(true);
+        window.setTimeout(() => setLoginError(false), 500);
+        return false;
+      }
+
+      const payload = await response.json();
+      const loggedUser: User = {
+        ...selectedUser,
+        ...(payload?.user ?? {}),
+        accessLevel: Number(payload?.user?.access_level ?? payload?.user?.accessLevel ?? selectedUser.accessLevel ?? 0),
+        active: payload?.user?.active === false ? false : Boolean(payload?.user?.active ?? selectedUser.active ?? true),
+      };
+
+      setCurrentUser(loggedUser);
       setIsLoggedIn(true);
       setLoginError(false);
       setLoginPassword('');
       localStorage.setItem(LOGIN_KEY, 'true');
-      localStorage.setItem(USER_KEY, JSON.stringify(foundUser));
+      localStorage.setItem(USER_KEY, JSON.stringify(loggedUser));
       window.dispatchEvent(new Event('pos-auth-changed'));
       return true;
+    } catch {
+      setLoginError(true);
+      window.setTimeout(() => setLoginError(false), 500);
+      return false;
     }
-
-    setLoginError(true);
-    window.setTimeout(() => setLoginError(false), 500);
-    return false;
-  }, [loginPassword, selectedLoginUser, users]);
+  }, [loginPassword, selectedLoginUser]);
 
   const logout = useCallback(() => {
     setCurrentUser(null);

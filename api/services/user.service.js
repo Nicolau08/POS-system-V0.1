@@ -14,8 +14,6 @@ import {
   withPaginationPayload,
 } from './queryOptions.service.js';
 
-const LOCAL_SYNC_NODE_ID = String(process.env.SYNC_NODE_ID ?? 'local-node').trim() || 'local-node';
-
 const allDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
@@ -129,10 +127,9 @@ export async function authenticateLogin({ userId, enteredPin }) {
 
   if (auth.needsMigration) {
     const upgradedPinHash = await hashPin(enteredPin);
-    await runDb(`UPDATE users SET pin = ?, updated_at = ?, sync_version = COALESCE(sync_version, 0) + 1, origin_node_id = ? WHERE id = ?`, [
+    await runDb(`UPDATE users SET pin = ?, updated_at = ? WHERE id = ?`, [
       upgradedPinHash,
       new Date().toISOString(),
-      LOCAL_SYNC_NODE_ID,
       user.id,
     ]);
   }
@@ -182,9 +179,6 @@ export async function listUsers(filters = {}) {
     where.push(`active = ?`);
     whereParams.push(active ? 1 : 0);
   }
-  if (!parseBooleanFilter(filters.include_deleted)) {
-    where.push(`deleted_at IS NULL`);
-  }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const baseSelect = `SELECT id, name, surname, email, role, access_level, active, tenant_id FROM users ${whereSql} ORDER BY name ASC`;
@@ -221,8 +215,8 @@ export async function createUser(payload = {}, actorUser = null) {
   const hashedPin = await ensureHashedPin(pin);
 
   await runDb(
-    `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, updated_at, deleted_at, sync_version, origin_node_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       name,
@@ -235,9 +229,6 @@ export async function createUser(payload = {}, actorUser = null) {
       0,
       resolvedTenantId,
       now,
-      null,
-      1,
-      LOCAL_SYNC_NODE_ID,
     ]
   );
 
@@ -300,22 +291,14 @@ export async function updateUser(userId, payload = {}, actorUser = null) {
   if (updates.length === 0) return { error: 'nenhuma atualizacao informada', status: 400 };
 
   params.push(now);
-  params.push(LOCAL_SYNC_NODE_ID);
-  params.push(payload.active === false ? 0 : 1);
-  params.push(now);
   params.push(normalizedId);
   params.push(tenantId);
   const result = await runDb(
     `UPDATE users
-     SET ${updates.join(', ')},
-         updated_at = ?,
-         sync_version = COALESCE(sync_version, 0) + 1,
-         origin_node_id = ?,
-         deleted_at = CASE WHEN ? = 0 THEN COALESCE(deleted_at, ?) ELSE NULL END
+     SET ${updates.join(', ')}, updated_at = ?
      WHERE id = ?
        AND tenant_id = ?
-       AND COALESCE(is_system, 0) = 0
-       AND deleted_at IS NULL`,
+       AND COALESCE(is_system, 0) = 0`,
     params
   );
   if (result.changes > 0) {
@@ -333,19 +316,13 @@ export async function deactivateUser(userId, actorUser = null) {
   const normalizedId = String(userId ?? '').trim();
   if (!normalizedId) return { error: 'id invalido', status: 400 };
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
-  const now = new Date().toISOString();
   const result = await runDb(
     `UPDATE users
-     SET active = 0,
-         updated_at = ?,
-         deleted_at = ?,
-         sync_version = COALESCE(sync_version, 0) + 1,
-         origin_node_id = ?
+     SET active = 0, updated_at = ?
      WHERE id = ?
        AND tenant_id = ?
-       AND COALESCE(is_system, 0) = 0
-       AND deleted_at IS NULL`,
-    [now, now, LOCAL_SYNC_NODE_ID, normalizedId, tenantId]
+       AND COALESCE(is_system, 0) = 0`,
+    [new Date().toISOString(), normalizedId, tenantId]
   );
   if (result.changes > 0) {
     await logAudit('USER_DELETE', actorUser, {
@@ -389,10 +366,9 @@ export async function validateAdminPassword(adminPassword, tenantCandidate = nul
 
   if (shouldUpgradeAdminPin) {
     const upgradedPinHash = await hashPin(adminPassword);
-    await runDb(`UPDATE users SET pin = ?, updated_at = ?, sync_version = COALESCE(sync_version, 0) + 1, origin_node_id = ? WHERE id = ?`, [
+    await runDb(`UPDATE users SET pin = ?, updated_at = ? WHERE id = ?`, [
       upgradedPinHash,
       new Date().toISOString(),
-      LOCAL_SYNC_NODE_ID,
       validAdminUser.id,
     ]);
   }
@@ -420,10 +396,9 @@ export async function resetAdminPinToDefault(userId, tenantCandidate = null) {
 
   const defaultPin = '1234';
   const hashedPin = await ensureHashedPin(defaultPin);
-  await runDb(`UPDATE users SET pin = ?, updated_at = ?, sync_version = COALESCE(sync_version, 0) + 1, origin_node_id = ? WHERE id = ?`, [
+  await runDb(`UPDATE users SET pin = ?, updated_at = ? WHERE id = ?`, [
     hashedPin,
     new Date().toISOString(),
-    LOCAL_SYNC_NODE_ID,
     normalizedUserId,
   ]);
 
@@ -458,8 +433,8 @@ export async function configureInitialAdminPassword(rawPin, tenantCandidate = nu
   const hashedPin = await ensureHashedPin(pin);
   const adminUserId = 'admin-local';
   await runDb(
-    `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, cloud_id, updated_at, deleted_at, sync_version, origin_node_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, cloud_id, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        surname = excluded.surname,
@@ -471,11 +446,8 @@ export async function configureInitialAdminPassword(rawPin, tenantCandidate = nu
        is_system = 1,
        tenant_id = excluded.tenant_id,
        cloud_id = NULL,
-       updated_at = excluded.updated_at,
-       deleted_at = NULL,
-       sync_version = COALESCE(users.sync_version, 0) + 1,
-       origin_node_id = excluded.origin_node_id`,
-    [adminUserId, 'Admin', null, null, 'admin', hashedPin, 9, 1, 1, tenantId, null, now, null, 1, LOCAL_SYNC_NODE_ID]
+       updated_at = excluded.updated_at`,
+    [adminUserId, 'Admin', null, null, 'admin', hashedPin, 9, 1, 1, tenantId, null, now]
   );
 
   await runDb(

@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Printer } from 'lucide-react';
 import type { CartItem, CompanyProfile, Customer, PaymentEntry, PaymentMethod } from '@/app/pos/types';
 import { buildReceiptHeader } from '@/lib/receiptCompanyHeader';
+import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 
 export function ReceiptPreview({
   isOpen,
@@ -137,7 +138,7 @@ export function ReceiptPreview({
                   </div>
                 )}
                 <div className="flex justify-between">
-                  <span>IVA (16%):</span>
+                  <span>IVA ({getPosTaxPercentLabel()}):</span>
                   <span>{tax.toLocaleString('en-US', { minimumFractionDigits: 2 })}MT</span>
                 </div>
                 <div className="flex justify-between text-2xl font-bold border-t border-dashed border-black pt-2 mt-2">

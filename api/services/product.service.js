@@ -10,8 +10,6 @@ import {
   withPaginationPayload,
 } from './queryOptions.service.js';
 
-const LOCAL_SYNC_NODE_ID = String(process.env.SYNC_NODE_ID ?? 'local-node').trim() || 'local-node';
-
 const allDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
@@ -87,8 +85,7 @@ export async function listProducts(filters = {}, actorUser = null) {
     SELECT
       p.id, p.cloud_id, p.code, p.name, p.category_id, p.barcode, p.cost, p.price, p.tax, p.final_price,
       p.active, p.unit, p.description, p.age_restriction, p.is_service, p.default_quantity,
-      p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.deleted_at, p.sync_version, p.origin_node_id,
-      p.tenant_id, p.created_at, p.updated_at,
+      p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.tenant_id, p.created_at, p.updated_at,
       c.name AS category
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
@@ -130,8 +127,8 @@ export async function createProduct(payload = {}, actorUser = null) {
 
   const result = await runDb(
     `INSERT INTO products
-      (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, deleted, deleted_at, tenant_id, created_at, updated_at, sync_version, origin_node_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       cloudId,
       payload.code ?? null,
@@ -153,12 +150,9 @@ export async function createProduct(payload = {}, actorUser = null) {
       payload.color ?? null,
       payload.image ?? null,
       0,
-      null,
       tenantId,
       now,
       now,
-      1,
-      LOCAL_SYNC_NODE_ID,
     ]
   );
 
@@ -171,17 +165,7 @@ export async function createProduct(payload = {}, actorUser = null) {
   });
 
   try {
-    await enqueueSync('product', {
-      ...payload,
-      id: insertedId,
-      cloud_id: cloudId,
-      deleted: 0,
-      deleted_at: null,
-      tenant_id: tenantId,
-      updated_at: now,
-      sync_version: 1,
-      origin_node_id: LOCAL_SYNC_NODE_ID,
-    });
+    await enqueueSync('product', { ...payload, id: insertedId, cloud_id: cloudId, deleted: 0, tenant_id: tenantId, updated_at: now });
     return { success: true, id: insertedId, cloud_id: cloudId };
   } catch (queueErr) {
     return {
@@ -203,7 +187,7 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
 
   const localId = Number(localIdRaw);
   const existing = await getDb(
-    `SELECT cloud_id, sync_version
+    `SELECT cloud_id
      FROM products
      WHERE id = ?
        AND tenant_id = ?
@@ -218,8 +202,7 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
     `UPDATE products SET
       cloud_id = ?, code = ?, name = ?, category_id = ?, barcode = ?, cost = ?, price = ?, tax = ?,
       final_price = ?, active = ?, unit = ?, description = ?, age_restriction = ?, is_service = ?,
-      default_quantity = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, deleted_at = NULL,
-      updated_at = ?, sync_version = ?, origin_node_id = ?
+      default_quantity = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
     [
       nextCloudId,
@@ -242,8 +225,6 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
       payload.color ?? null,
       payload.image ?? null,
       now,
-      Number(existing?.sync_version ?? 1) + 1,
-      LOCAL_SYNC_NODE_ID,
       localId,
       tenantId,
     ]
@@ -264,11 +245,8 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
       id: localId,
       cloud_id: nextCloudId,
       deleted: 0,
-      deleted_at: null,
       tenant_id: tenantId,
       updated_at: now,
-      sync_version: Number(existing?.sync_version ?? 1) + 1,
-      origin_node_id: LOCAL_SYNC_NODE_ID,
     });
     return { success: true, updated: true, cloud_id: nextCloudId };
   } catch (queueErr) {
@@ -290,7 +268,7 @@ export async function deleteProduct(localIdRaw, actorUser = null) {
     `SELECT
        cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active,
        unit, description, age_restriction, is_service, default_quantity, stock_quantity,
-       min_stock, color, image, tenant_id, sync_version
+       min_stock, color, image, tenant_id
      FROM products
      WHERE id = ?
        AND tenant_id = ?
@@ -301,14 +279,11 @@ export async function deleteProduct(localIdRaw, actorUser = null) {
   const result = await runDb(
     `UPDATE products
      SET deleted = 1,
-         deleted_at = ?,
-         updated_at = ?,
-         sync_version = ?,
-         origin_node_id = ?
+         updated_at = CURRENT_TIMESTAMP
      WHERE id = ?
        AND tenant_id = ?
        AND COALESCE(deleted, 0) = 0`,
-    [now, now, Number(row?.sync_version ?? 1) + 1, LOCAL_SYNC_NODE_ID, localId, tenantId]
+    [localId, tenantId]
   );
   if (result.changes <= 0) return { success: true, deleted: false };
 
@@ -342,10 +317,7 @@ export async function deleteProduct(localIdRaw, actorUser = null) {
       image: row?.image ?? null,
       tenant_id: row?.tenant_id ? String(row.tenant_id) : tenantId,
       deleted: 1,
-      deleted_at: now,
       updated_at: now,
-      sync_version: Number(row?.sync_version ?? 1) + 1,
-      origin_node_id: LOCAL_SYNC_NODE_ID,
     });
     return { success: true, deleted: true };
   } catch (queueErr) {

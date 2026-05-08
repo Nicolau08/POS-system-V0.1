@@ -1,0 +1,651 @@
+import crypto from 'crypto';
+import db from '../database.js';
+import { enqueueSync } from '../syncQueue.js';
+import { logAudit } from '../utils/logger.js';
+import { assertTenantWrite, requireTenantId } from '../utils/tenant.js';
+import {
+  parseDateFilter,
+  parsePagination,
+  parseSearchTerm,
+  withPaginationPayload,
+} from './queryOptions.service.js';
+
+const POS_TAX_RATE = Math.max(0, Number(process.env.POS_TAX_RATE ?? 0.16) || 0.16);
+const TAX_DIVISOR = 1 + POS_TAX_RATE;
+const SALES_STATUS_SQL = `
+  CASE
+    WHEN LOWER(COALESCE(v.status, '')) IN ('approved', 'aprovado') THEN 'approved'
+    WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'pending'
+    WHEN LOWER(COALESCE(v.payment_method, '')) LIKE '%conta corrente%' THEN 'pending'
+    ELSE COALESCE(v.status, 'completed')
+  END
+`;
+
+const runDb = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.run(sql, params, function onRun(err) {
+      if (err) return reject(err);
+      resolve(this);
+    });
+  });
+
+const getDb = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) return reject(err);
+      resolve(row ?? null);
+    });
+  });
+
+const allDb = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows ?? []);
+    });
+  });
+
+async function resolveTenantId(tenantCandidate) {
+  return requireTenantId(tenantCandidate, {
+    status: 401,
+    message: 'tenant_id ausente para operacao de vendas',
+  });
+}
+
+function sanitizeIdempotencyKey(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return null;
+  if (key.length > 128) return key.slice(0, 128);
+  return key;
+}
+
+function calculateTaxFromTotal(totalAmount) {
+  const subtotalAmount = totalAmount / (1 + POS_TAX_RATE);
+  const taxAmount = totalAmount - subtotalAmount;
+  return {
+    subtotal: Number(subtotalAmount.toFixed(2)),
+    tax: Number(taxAmount.toFixed(2)),
+  };
+}
+
+async function canOverrideZeroStock(actorUser, tenantId) {
+  const role = String(actorUser?.role ?? '').trim().toLowerCase();
+  if (role === 'admin') return true;
+  const accessLevel = Number(actorUser?.access_level ?? actorUser?.accessLevel ?? 0);
+  const permissionRow = await getDb(
+    `SELECT required_level
+     FROM permission_rules
+     WHERE key = ?
+     LIMIT 1`,
+    ['vendas.venda_estoque_zero']
+  );
+  const requiredLevel = Number(permissionRow?.required_level ?? 999);
+  if (Number.isFinite(requiredLevel) && accessLevel >= requiredLevel) return true;
+  await logAudit('STOCK_OVERRIDE_DENIED', actorUser, {
+    entity: 'sale',
+    entity_id: null,
+    description: 'Stock override denied due to insufficient permission',
+    tenant_id: tenantId,
+    required_level: requiredLevel,
+    access_level: accessLevel,
+  });
+  return false;
+}
+
+const salesSelectSql = `
+  SELECT
+    CAST(v.id AS TEXT) AS id,
+    CASE
+      WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'FP'
+      WHEN UPPER(COALESCE(v.doc_type, '')) = 'TK' THEN 'TK'
+      WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT' THEN 'FT'
+      WHEN UPPER(COALESCE(v.doc_type, '')) = 'VD' THEN 'VD'
+      WHEN LOWER(COALESCE(v.payment_method, '')) LIKE '%conta corrente%' THEN 'FT'
+      ELSE 'VD'
+    END AS doc_type,
+    (
+      CASE
+        WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'FP'
+        WHEN UPPER(COALESCE(v.doc_type, '')) = 'TK' THEN 'TK'
+        WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT' THEN 'FT'
+        WHEN UPPER(COALESCE(v.doc_type, '')) = 'VD' THEN 'VD'
+        WHEN LOWER(COALESCE(v.payment_method, '')) LIKE '%conta corrente%' THEN 'FT'
+        ELSE 'VD'
+      END
+      || '/' ||
+      CAST(strftime('%Y', v.data) AS TEXT)
+      || '/' ||
+      printf('%04d', COALESCE(v.doc_sequence, v.id))
+    ) AS document_number,
+    v.payment_method AS payment_method,
+    ${SALES_STATUS_SQL} AS status,
+    v.approved_document_type AS approved_document_type,
+    v.approved_document_number AS approved_document_number,
+    0 AS discount,
+    ROUND(v.total / ${TAX_DIVISOR}, 2) AS subtotal,
+    ROUND(v.total - (v.total / ${TAX_DIVISOR}), 2) AS tax,
+    v.total AS total,
+    v.data AS created_at,
+    v.customer_id AS customer_id,
+    CAST(v.id AS TEXT) AS local_sale_id,
+    v.user_name AS user_name,
+    COALESCE(c.name, v.customer_name, 'Consumidor final') AS client_name
+  FROM vendas v
+  LEFT JOIN clientes c
+    ON CAST(c.cloud_id AS TEXT) = CAST(v.customer_id AS TEXT)
+   AND c.tenant_id = v.tenant_id
+`;
+
+function buildSalesWhereClause({
+  tenantId,
+  search = '',
+  dateFrom = '',
+  dateTo = '',
+  status = '',
+  paymentMethod = '',
+  customerId = '',
+}) {
+  const where = [];
+  const params = [];
+  where.push(`v.tenant_id = ?`);
+  params.push(tenantId);
+
+  if (search) {
+    where.push(`(LOWER(COALESCE(v.customer_name, '')) LIKE LOWER(?) OR LOWER(COALESCE(c.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(v.user_name, '')) LIKE LOWER(?))`);
+    const token = `%${search}%`;
+    params.push(token, token, token);
+  }
+  if (dateFrom) {
+    where.push(`datetime(v.data) >= datetime(?)`);
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    where.push(`datetime(v.data) <= datetime(?)`);
+    params.push(dateTo);
+  }
+  if (status) {
+    where.push(`${SALES_STATUS_SQL} = ?`);
+    params.push(status);
+  }
+  if (paymentMethod) {
+    where.push(`COALESCE(v.payment_method, '') = ?`);
+    params.push(paymentMethod);
+  }
+  if (customerId) {
+    where.push(`CAST(COALESCE(v.customer_id, '') AS TEXT) = ?`);
+    params.push(customerId);
+  }
+
+  return {
+    whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    params,
+  };
+}
+
+export async function listSales(filters = {}, actorUser = null) {
+  const pagination = parsePagination(filters);
+  const search = parseSearchTerm(filters.search);
+  const dateFrom = parseDateFilter(filters.dateFrom ?? filters.from);
+  const dateTo = parseDateFilter(filters.dateTo ?? filters.to);
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  const { whereSql, params } = buildSalesWhereClause({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+  });
+  const orderedSql = `${salesSelectSql} ${whereSql} ORDER BY datetime(v.data) DESC, v.id DESC`;
+
+  if (!pagination.hasPagination) {
+    return allDb(orderedSql, params);
+  }
+
+  const rows = await allDb(`${orderedSql} LIMIT ? OFFSET ?`, [...params, pagination.limit, pagination.offset]);
+  const totalRow = await getDb(
+    `SELECT COUNT(*) AS total
+     FROM vendas v
+     LEFT JOIN clientes c
+       ON CAST(c.cloud_id AS TEXT) = CAST(v.customer_id AS TEXT)
+      AND c.tenant_id = v.tenant_id
+     ${whereSql}`,
+    params
+  );
+  return withPaginationPayload(rows, {
+    page: pagination.page,
+    limit: pagination.limit,
+    total: Number(totalRow?.total ?? 0),
+  });
+}
+
+export async function listSalesForReports(filters = {}, actorUser = null) {
+  const search = parseSearchTerm(filters.search);
+  const dateFrom = parseDateFilter(filters.dateFrom ?? filters.from);
+  const dateTo = parseDateFilter(filters.dateTo ?? filters.to);
+  const status = String(filters.status ?? '').trim().toLowerCase();
+  const paymentMethod = String(filters.paymentMethod ?? filters.payment_method ?? '').trim();
+  const customerId = String(filters.customerId ?? filters.customer_id ?? '').trim();
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+
+  const { whereSql, params } = buildSalesWhereClause({
+    tenantId,
+    search,
+    dateFrom,
+    dateTo,
+    status,
+    paymentMethod,
+    customerId,
+  });
+
+  const orderedSql = `${salesSelectSql} ${whereSql} ORDER BY datetime(v.data) ASC, v.id ASC`;
+  return allDb(orderedSql, params);
+}
+
+export async function updateSalePaymentStatus(saleIdRaw, paidRaw, actorUser = null) {
+  const saleId = Number(saleIdRaw);
+  if (!Number.isFinite(saleId)) return { error: 'id invalido', status: 400 };
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+
+  const paid = Boolean(paidRaw);
+  const paymentMethod = paid ? 'dinheiro' : 'conta corrente';
+  const result = await runDb(
+    `UPDATE vendas
+     SET payment_method = ?,
+         status = CASE
+           WHEN LOWER(COALESCE(status, '')) = 'approved' THEN status
+           ELSE ?
+         END
+     WHERE id = ?
+       AND tenant_id = ?`,
+    [paymentMethod, paid ? 'completed' : 'pending', saleId, tenantId]
+  );
+
+  if (Number(result?.changes ?? 0) === 0) {
+    const existing = await getDb(
+      `SELECT id
+       FROM vendas
+       WHERE id = ?
+         AND tenant_id = ?
+       LIMIT 1`,
+      [saleId, tenantId]
+    );
+    if (!existing?.id) return { error: 'venda nao encontrada', status: 404 };
+  }
+
+  return {
+    success: true,
+    id: saleId,
+    status: paid ? 'completed' : 'pending',
+    payment_method: paymentMethod,
+  };
+}
+
+export async function createSale(payload = {}, actorUser = null, options = {}) {
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
+  const totalNumber = Number(payload.total);
+  const idempotencyKey = sanitizeIdempotencyKey(options?.idempotencyKey ?? payload?.idempotencyKey);
+  const storedDate = payload.saleTimestamp || payload.saleDate || payload.data || new Date().toISOString();
+  const requestedCustomerId = payload.selectedCustomerId == null ? null : String(payload.selectedCustomerId).trim() || null;
+  let localCustomerId = requestedCustomerId;
+  let localCustomerName = payload.selectedCustomerName == null ? null : String(payload.selectedCustomerName).trim() || null;
+  const localUserId = payload.selectedUserId == null ? null : String(payload.selectedUserId).trim() || null;
+  const localUserName = payload.selectedUserName == null ? null : String(payload.selectedUserName).trim() || null;
+  const paymentFromList = Array.isArray(payload.payments)
+    ? payload.payments.map((p) => String(p?.method ?? '').trim()).filter(Boolean)
+    : [];
+
+  const localPaymentMethod =
+    Boolean(payload.isMultiplePayment) && paymentFromList.length > 0
+      ? paymentFromList.join(' + ')
+      : String(payload.paymentMethod ?? paymentFromList[0] ?? '').trim() || null;
+
+  const normalizedDocType = String(payload.docType ?? 'VD').trim().toUpperCase() || 'VD';
+  const shouldDecreaseStock = normalizedDocType !== 'FP';
+  const allowNegativeStockOverride = Boolean(payload.allowNegativeStockOverride);
+  const stockOverrideReason = String(payload.stockOverrideReason ?? '').trim() || 'Stock override without explicit reason.';
+  const normalizedPaymentStatus = String(payload.paymentStatus ?? '').trim().toLowerCase();
+  const localStatus = normalizedDocType === 'FP' ? 'pending' : normalizedPaymentStatus === 'pending' ? 'pending' : 'completed';
+  const taxComputation = calculateTaxFromTotal(totalNumber);
+  const payloadTax = Number(payload.tax);
+  const payloadSubtotal = Number(payload.subtotal);
+  const effectiveTax = Number.isFinite(payloadTax) ? payloadTax : taxComputation.tax;
+  const effectiveSubtotal = Number.isFinite(payloadSubtotal) ? payloadSubtotal : taxComputation.subtotal;
+
+  if (!Number.isFinite(totalNumber)) return { error: 'total invalido', status: 400 };
+
+  if (idempotencyKey) {
+    const existingKey = await getDb(
+      `SELECT status, response_json
+       FROM checkout_idempotency
+       WHERE tenant_id = ?
+         AND idempotency_key = ?
+       LIMIT 1`,
+      [tenantId, idempotencyKey]
+    );
+    if (existingKey?.status === 'completed' && existingKey?.response_json) {
+      try {
+        const previousResponse = JSON.parse(String(existingKey.response_json));
+        return { ...previousResponse, idempotentReplay: true };
+      } catch {}
+    }
+    if (existingKey?.status === 'processing') {
+      return {
+        error: 'Checkout em processamento para esta chave idempotente',
+        status: 409,
+        code: 'CHECKOUT_IN_PROGRESS',
+      };
+    }
+
+    if (existingKey?.status === 'failed') {
+      await runDb(
+        `UPDATE checkout_idempotency
+         SET status = 'processing',
+             sale_id = NULL,
+             response_json = NULL,
+             error_message = NULL,
+             updated_at = ?
+         WHERE tenant_id = ?
+           AND idempotency_key = ?`,
+        [new Date().toISOString(), tenantId, idempotencyKey]
+      );
+    } else {
+      try {
+        await runDb(
+          `INSERT INTO checkout_idempotency (tenant_id, idempotency_key, status, created_at, updated_at)
+           VALUES (?, ?, 'processing', ?, ?)`,
+          [tenantId, idempotencyKey, new Date().toISOString(), new Date().toISOString()]
+        );
+      } catch (insertErr) {
+        const duplicated = String(insertErr?.message ?? '').includes('UNIQUE constraint failed');
+        if (!duplicated) throw insertErr;
+        const raceExisting = await getDb(
+          `SELECT status, response_json
+           FROM checkout_idempotency
+           WHERE tenant_id = ?
+             AND idempotency_key = ?
+           LIMIT 1`,
+          [tenantId, idempotencyKey]
+        );
+        if (raceExisting?.status === 'completed' && raceExisting?.response_json) {
+          try {
+            const previousResponse = JSON.parse(String(raceExisting.response_json));
+            return { ...previousResponse, idempotentReplay: true };
+          } catch {}
+        }
+        return {
+          error: 'Checkout em processamento para esta chave idempotente',
+          status: 409,
+          code: 'CHECKOUT_IN_PROGRESS',
+        };
+      }
+    }
+  }
+
+  if (requestedCustomerId) {
+    const scopedCustomer = await getDb(
+      `SELECT id, cloud_id, name
+       FROM clientes
+       WHERE (CAST(id AS TEXT) = CAST(? AS TEXT) OR CAST(cloud_id AS TEXT) = CAST(? AS TEXT))
+         AND tenant_id = ?
+       LIMIT 1`,
+      [requestedCustomerId, requestedCustomerId, tenantId]
+    );
+    if (!scopedCustomer?.id) {
+      localCustomerId = null;
+      localCustomerName = null;
+    } else {
+      localCustomerId = String(scopedCustomer.cloud_id ?? scopedCustomer.id);
+      localCustomerName = String(scopedCustomer.name ?? localCustomerName ?? '').trim() || null;
+    }
+  }
+
+  const stockAdjustments =
+    shouldDecreaseStock && Array.isArray(payload.cart)
+      ? payload.cart
+          .map((item) => ({
+            productId: Number(item?.id),
+            quantity: Number(item?.quantity ?? 0),
+            isService: Boolean(item?.is_service),
+          }))
+          .filter((item) => Number.isFinite(item.productId) && Number.isFinite(item.quantity) && item.quantity > 0 && !item.isService)
+      : [];
+  const stockOverrideAuthorized = allowNegativeStockOverride
+    ? await canOverrideZeroStock(actorUser, tenantId)
+    : false;
+  if (allowNegativeStockOverride && !stockOverrideAuthorized) {
+    if (idempotencyKey) {
+      await runDb(
+        `UPDATE checkout_idempotency
+         SET status = 'failed',
+             error_message = ?,
+             updated_at = ?
+         WHERE tenant_id = ?
+           AND idempotency_key = ?`,
+        ['override_forbidden', new Date().toISOString(), tenantId, idempotencyKey]
+      );
+    }
+    return {
+      error: 'Utilizador sem permissao para venda com estoque zero.',
+      status: 403,
+      code: 'STOCK_OVERRIDE_FORBIDDEN',
+    };
+  }
+
+  let usedSaleId;
+  let usedSequence;
+  let checkoutResponse = null;
+
+  try {
+    await runDb('BEGIN IMMEDIATE TRANSACTION');
+
+    const nextSequenceRow = await getDb(
+      `SELECT COALESCE(MAX(COALESCE(doc_sequence, id)), 0) + 1 AS next
+         FROM vendas
+        WHERE UPPER(COALESCE(doc_type, 'VD')) = ?`,
+      [normalizedDocType]
+    );
+    usedSequence = Number(nextSequenceRow?.next ?? 1);
+
+    const insertResult = await runDb(
+      `INSERT INTO vendas (
+        total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method, user_id, user_name, approved_document_type, approved_document_number, tenant_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        totalNumber,
+        storedDate,
+        normalizedDocType,
+        usedSequence,
+        localStatus,
+        localCustomerId,
+        localCustomerName,
+        localPaymentMethod,
+        localUserId,
+        localUserName,
+        null,
+        null,
+        tenantId,
+      ]
+    );
+
+    usedSaleId = insertResult.lastID;
+
+    if (Array.isArray(payload.cart) && payload.cart.length > 0) {
+      for (const rawItem of payload.cart) {
+        const quantity = Number(rawItem?.quantity ?? 0);
+        if (!Number.isFinite(quantity) || quantity <= 0) continue;
+        const linePrice = Number(rawItem?.price ?? rawItem?.unit_price ?? 0);
+        const discountAmount = Number(rawItem?.discount_amount ?? rawItem?.discountAmount ?? 0);
+        const nowIso = new Date().toISOString();
+
+        await runDb(
+          `INSERT INTO order_items
+            (id, order_id, tenant_id, product_id, product_name, quantity, price, discount_amount, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            crypto.randomUUID(),
+            String(usedSaleId),
+            tenantId,
+            rawItem?.id != null ? String(rawItem.id) : null,
+            String(rawItem?.name ?? rawItem?.product_name ?? 'Item'),
+            quantity,
+            Number.isFinite(linePrice) ? linePrice : 0,
+            Number.isFinite(discountAmount) ? discountAmount : 0,
+            nowIso,
+            nowIso,
+          ]
+        );
+      }
+    }
+
+    for (const adjustment of stockAdjustments) {
+      const updateResult = await runDb(
+        `UPDATE products
+         SET stock_quantity = stock_quantity - ?,
+             updated_at = ?
+         WHERE id = ?
+           AND tenant_id = ?
+           AND COALESCE(deleted, 0) = 0
+           AND stock_quantity >= ?`,
+        [adjustment.quantity, new Date().toISOString(), adjustment.productId, tenantId, adjustment.quantity]
+      );
+
+      if (Number(updateResult?.changes ?? 0) === 0) {
+        if (!stockOverrideAuthorized) {
+          throw new Error(`Estoque insuficiente para o produto ${adjustment.productId}`);
+        }
+        const forceResult = await runDb(
+          `UPDATE products
+           SET stock_quantity = stock_quantity - ?,
+               updated_at = ?
+           WHERE id = ?
+             AND tenant_id = ?
+             AND COALESCE(deleted, 0) = 0`,
+          [adjustment.quantity, new Date().toISOString(), adjustment.productId, tenantId]
+        );
+        if (Number(forceResult?.changes ?? 0) === 0) {
+          throw new Error(`Produto invalido para override ${adjustment.productId}`);
+        }
+        await logAudit('STOCK_OVERRIDE_SALE', actorUser, {
+          entity: 'sale',
+          entity_id: String(usedSaleId),
+          description: 'Stock override applied during sale',
+          product_id: adjustment.productId,
+          quantity_delta: -Math.abs(adjustment.quantity),
+          reason: stockOverrideReason,
+        });
+      }
+    }
+
+    await runDb('COMMIT');
+  } catch (error) {
+    try {
+      await runDb('ROLLBACK');
+    } catch {}
+    const statusCode = String(error?.message || '').includes('Estoque insuficiente') ? 409 : 500;
+    if (idempotencyKey) {
+      await runDb(
+        `UPDATE checkout_idempotency
+         SET status = 'failed',
+             error_message = ?,
+             updated_at = ?
+         WHERE tenant_id = ?
+           AND idempotency_key = ?`,
+        [String(error?.message ?? 'checkout_error'), new Date().toISOString(), tenantId, idempotencyKey]
+      );
+    }
+    return {
+      error: error.message,
+      status: statusCode,
+      code: statusCode === 409 ? 'INSUFFICIENT_STOCK' : 'CHECKOUT_FAILED',
+    };
+  }
+
+  const year = new Date(storedDate).getFullYear();
+  const usedDocumentNumber = `${normalizedDocType}/${year}/${String(usedSequence).padStart(4, '0')}`;
+  const localSaleId = crypto.randomUUID();
+
+  const salePayload = {
+    ...payload,
+    id: usedSaleId,
+    local_sale_id: localSaleId,
+    usedSequence,
+    usedDocType: normalizedDocType,
+    usedDocumentNumber,
+    total: totalNumber,
+    subtotal: effectiveSubtotal,
+    tax: effectiveTax,
+    saleTimestamp: storedDate,
+    tenant_id: tenantId,
+    stockAdjustments,
+  };
+
+  const auditUser =
+    actorUser && typeof actorUser === 'object'
+      ? actorUser
+      : {
+          id: localUserId,
+          name: localUserName,
+          role: null,
+        };
+
+  await logAudit('SALE_CREATE', auditUser, {
+    entity: 'sale',
+    entity_id: String(usedSaleId),
+    description: 'Sale created',
+    total: totalNumber,
+    document_number: usedDocumentNumber,
+    document_type: normalizedDocType,
+  });
+
+  if (stockAdjustments.length > 0) {
+    await logAudit('STOCK_CHANGE', auditUser, {
+      entity: 'sale',
+      entity_id: String(usedSaleId),
+      description: 'Stock updated from sale',
+      items: stockAdjustments.map((item) => ({
+        product_id: item.productId,
+        quantity_delta: -Math.abs(item.quantity),
+      })),
+    });
+  }
+
+  try {
+    await enqueueSync('sale', salePayload);
+    checkoutResponse = {
+      success: true,
+      id: usedSaleId,
+      usedSequence,
+      usedDocType: normalizedDocType,
+      usedDocumentNumber,
+      syncQueued: true,
+      taxRate: POS_TAX_RATE,
+    };
+  } catch (queueErr) {
+    checkoutResponse = {
+      success: true,
+      id: usedSaleId,
+      usedSequence,
+      usedDocType: normalizedDocType,
+      usedDocumentNumber,
+      syncQueued: false,
+      syncError: queueErr.message,
+      taxRate: POS_TAX_RATE,
+    };
+  }
+
+  if (idempotencyKey) {
+    await runDb(
+      `UPDATE checkout_idempotency
+       SET status = 'completed',
+           sale_id = ?,
+           response_json = ?,
+           error_message = NULL,
+           updated_at = ?
+       WHERE tenant_id = ?
+         AND idempotency_key = ?`,
+      [usedSaleId, JSON.stringify(checkoutResponse), new Date().toISOString(), tenantId, idempotencyKey]
+    );
+  }
+
+  return checkoutResponse;
+}

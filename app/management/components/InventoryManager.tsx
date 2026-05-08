@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 interface Product {
   id: string;
@@ -83,8 +84,8 @@ export default function InventoryManager() {
         fetch(`${getPosApiBase()}/categorias`),
         fetch(`${getPosApiBase()}/produtos`)
       ]);
-      const catData = await catRes.json();
-      const prodData = await prodRes.json();
+      const catData = unwrapApiSuccessPayload<any[]>(await catRes.json());
+      const prodData = unwrapApiSuccessPayload<any[]>(await prodRes.json());
       setCategories(catData || []);
       setProducts(prodData || []);
     } catch (error) {
@@ -251,7 +252,7 @@ export default function InventoryManager() {
     try {
       const res = await fetch(`${getPosApiBase()}/produtos/${productId}/historico`);
       if (!res.ok) throw new Error(`Falha ao carregar historico (${res.status})`);
-      const data = (await res.json()) as ProductHistoryRow[];
+      const data = unwrapApiSuccessPayload<ProductHistoryRow[]>(await res.json());
       setHistoryRows(Array.isArray(data) ? data : []);
     } catch (error) {
       setHistoryRows([]);

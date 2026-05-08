@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Edit3, FileText, PackagePlus, PackageSearch, Printer, Search, Trash2, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
+import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 const DOCUMENT_CARDS = [
   'Entrada de stock',
@@ -295,7 +296,7 @@ export default function GerenciamentoManager() {
     try {
       const res = await fetch(`${getPosApiBase()}/produtos`);
       if (!res.ok) throw new Error(`Falha ao carregar produtos (${res.status})`);
-      const data = ((await res.json()) ?? []) as ProductRow[];
+      const data = (unwrapApiSuccessPayload<ProductRow[]>(await res.json()) ?? []) as ProductRow[];
       setProducts(data);
     } catch {
       setProducts([]);
@@ -308,7 +309,7 @@ export default function GerenciamentoManager() {
     try {
       const clientsRes = await fetch(`${getPosApiBase()}/clientes`);
       if (!clientsRes.ok) throw new Error('Falha ao carregar clientes/fornecedores');
-      const clients = ((await clientsRes.json()) ?? []) as PartyRow[];
+      const clients = (unwrapApiSuccessPayload<PartyRow[]>(await clientsRes.json()) ?? []) as PartyRow[];
       setParties(clients);
       if (!selectedPartyId && clients[0]?.id != null) setSelectedPartyId(String(clients[0].id));
     } catch {
@@ -329,14 +330,14 @@ export default function GerenciamentoManager() {
         `${getPosApiBase()}/documentos/next-number?prefix=${encodeURIComponent(prefix)}&year=${year}`
       );
       if (!res.ok) throw new Error('Falha ao obter próximo número');
-      const data = await res.json();
+      const data = unwrapApiSuccessPayload<any>(await res.json());
       setDocumentNumber(String(data?.documentNumber ?? ''));
     } catch {
       try {
         // Fallback local: calcula próxima sequência a partir da listagem atual de documentos.
         const docsRes = await fetch(`${getPosApiBase()}/documentos`);
         if (!docsRes.ok) return;
-        const docs = ((await docsRes.json()) ?? []) as Array<{ document_number?: string | null }>;
+        const docs = (unwrapApiSuccessPayload<Array<{ document_number?: string | null }>>(await docsRes.json()) ?? []);
         const prefixWithYear = `${prefix}/${year}/`;
         let maxSeq = 0;
         for (const doc of docs) {
