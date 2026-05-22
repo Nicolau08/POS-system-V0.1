@@ -1,4 +1,4 @@
-import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosApiDirectBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 
 export class PosApiError extends Error {
   status: number;
@@ -32,7 +32,13 @@ function unwrapApiPayload(payload: unknown): any {
 const fetchJSON = async (path: string, options?: RequestInit): Promise<any> => {
   const base = getPosApiBase().replace(/\/$/, '');
   const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...getPosUserAuthHeaders(),
+      ...(options?.headers ?? {}),
+    },
+  });
   const text = await response.text();
 
   if (!response.ok) {
@@ -54,6 +60,9 @@ const fetchJSON = async (path: string, options?: RequestInit): Promise<any> => {
       'Erro API'
     );
     const code = errorObject?.code != null ? String(errorObject.code) : null;
+    if (response.status === 403 && isLicenseExpiredMessage(message)) {
+      dispatchLicenseExpiredEvent({ message, code });
+    }
     throw new PosApiError(message, response.status, code, json);
   }
 
@@ -106,10 +115,34 @@ export type SetupStatusPayload = {
   adminPasswordSet: boolean;
   licenseActivated: boolean;
   isSetupComplete: boolean;
+  licenseExpired: boolean;
+  licenseExpiresAt: string | null;
+  registrySync?: {
+    synced: boolean;
+    skipped: boolean;
+    error: string | null;
+    expiresAt: string | null;
+  };
 };
 
-export const fetchSetupStatus = async (): Promise<SetupStatusPayload> => {
-  const data = await fetchJSON('/setup/status');
+const LICENSE_EXPIRED_EVENT = 'pos-license-expired';
+export const LICENSE_REFRESHED_EVENT = 'pos-license-refreshed';
+
+function isLicenseExpiredMessage(message: string): boolean {
+  return /licen[cç]a\s+expirada/i.test(message);
+}
+
+function dispatchLicenseExpiredEvent(detail?: Record<string, unknown>) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(LICENSE_EXPIRED_EVENT, { detail: detail ?? {} }));
+}
+
+export const fetchSetupStatus = async (options?: {
+  /** Evita POST à consola Supabase — uso em polls e ao voltar de outras rotas. */
+  skipRegistrySync?: boolean;
+}): Promise<SetupStatusPayload> => {
+  const skip = options?.skipRegistrySync ? '&skipRegistrySync=1' : '';
+  const data = await fetchJSON(`/setup/status?_=${Date.now()}${skip}`, { cache: 'no-store' });
   return {
     dbPath: data?.dbPath != null ? String(data.dbPath) : null,
     dbExists: Boolean(data?.dbExists),
@@ -126,8 +159,40 @@ export const fetchSetupStatus = async (): Promise<SetupStatusPayload> => {
     adminPasswordSet: Boolean(data?.adminPasswordSet),
     licenseActivated: Boolean(data?.licenseActivated),
     isSetupComplete: Boolean(data?.isSetupComplete),
+    licenseExpired: Boolean(data?.licenseExpired),
+    licenseExpiresAt:
+      data?.licenseExpiresAt != null
+        ? String(data.licenseExpiresAt)
+        : data?.license_expires_at != null
+          ? String(data.license_expires_at)
+          : null,
+    registrySync: data?.registrySync
+      ? {
+          synced: Boolean(data.registrySync.synced),
+          skipped: Boolean(data.registrySync.skipped),
+          error: data.registrySync.error != null ? String(data.registrySync.error) : null,
+          expiresAt:
+            data.registrySync.expiresAt != null ? String(data.registrySync.expiresAt) : null,
+        }
+      : undefined,
   };
 };
+
+export { LICENSE_EXPIRED_EVENT };
+
+/** Repõe dados do tenant a partir do Supabase (operacao destrutiva). Requer `ENABLE_FULL_RESET_SYNC=true` e utilizador admin. */
+export async function requestFullResetFromCloud(): Promise<Record<string, unknown>> {
+  return fetchJSON('/sync/full-reset', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getPosUserAuthHeaders(),
+      'x-sync-confirm': 'FULL_RESET',
+    },
+    body: JSON.stringify({ confirm: 'FULL_RESET' }),
+  });
+}
 
 export const initializeSetupWizard = async (payload: {
   storeName: string;
@@ -158,6 +223,29 @@ export const activateLicenseToken = async (token: string) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: String(token ?? '').trim() }),
   });
+};
+
+/** Token de 12 dígitos gerado na consola após prolongar a licença. */
+export const redeemReactivationTokenOnServer = async (token: string) => {
+  return fetchJSON('/setup/license/reactivate-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: String(token ?? '').trim() }),
+  });
+};
+
+/** Após o Electron gravar license.json: marca licença como activa na BD local (127.0.0.1). */
+export const acknowledgeLicenseFileOnServer = async () => {
+  return fetchJSON('/setup/license/ack-file', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+};
+
+/** Força sincronização da data de término com a consola (Supabase). */
+export const syncLicenseFromConsole = async () => {
+  return fetchJSON('/setup/license/sync-registry', { method: 'POST' });
 };
 
 export const fetchPaymentMethods = async () => {
