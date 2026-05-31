@@ -1,13 +1,46 @@
+# --- Dependências e build ---
 node_modules/
+.api-runtime-node_modules/
 .next/
+dist-electron*/
 coverage/
-.DS_Store
-*.log
-dev-output.txt
 *.tsbuildinfo
+
+# --- Sistema ---
+.DS_Store
+Thumbs.db
+
+# --- Segredos (manter só o exemplo) ---
 .env*
 !.env.example
+
+# --- Bases de dados e backups locais ---
 api/*.db
 api/*.db-shm
 api/*.db-wal
 backups/
+data/license-issuer-store.json
+
+# --- Ambiente de desenvolvimento local ---
+.dev-tenants/
+
+# --- Testes (só na máquina local) ---
+tests/
+api/tests/
+test-results/
+playwright-report/
+playwright.config.ts
+supabase/tests/
+
+# --- Artefactos de debug / teste manual ---
+license-test.json
+dev-output*.txt
+dev-error*.txt
+*.err.log
+check_schema.ts
+
+# --- Logs ---
+*.log
+
+# --- CI que depende de tests/ (opcional local) ---
+.github/workflows/smoke.yml
