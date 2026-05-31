@@ -1,20 +1,142 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# POSly
 
-# Run and deploy your AI Studio app
+**Ponto de venda desktop para retalho em Windows** — rápido no balcão, dados na loja, licenciamento controlado por máquina.
 
-This contains everything you need to run your app locally.
+| | |
+|---|---|
+| **Versão** | 1.0.0 |
+| **Plataforma** | Windows (instalador NSIS) |
+| **Estado** | Piloto 1.0.0 — checklist de validação em PC limpo |
 
-View your app in AI Studio: https://ai.studio/apps/c14954c3-3315-4c7a-a41e-b1a6054d4f2b
+---
 
-## Run Locally
+## Visão
 
-**Prerequisites:**  Node.js
+Pequenas e médias lojas precisam de um POS **fiável offline**, fácil de instalar e de suportar, sem depender sempre de internet. O **POSly** combina caixa, gestão e cópias de segurança numa única aplicação desktop, com activação por licença e consola central para distribuidor ou equipa interna.
 
+---
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Problema → Solução
+
+| Desafio do retalho | Como o POSly responde |
+|--------------------|------------------------|
+| Internet instável no balcão | API e base **SQLite locais** por instalação |
+| Instalação complexa | Um instalador Windows (`POSly Setup 1.0.0.exe`) |
+| Controlo de quem usa o software | Licença por **máquina** (voucher ou assinatura HMAC) |
+| Operação do dia-a-dia | Caixa + **gestão** (stock, utilizadores, relatórios, backups) |
+
+---
+
+## O que está incluído
+
+- **Caixa** — produtos, carrinho, pagamentos, impressão / recibo
+- **Gestão** — utilizadores e permissões, inventário, relatórios, documentos
+- **Resiliência** — backups locais da base de dados
+- **Licenciamento** — activação por código (voucher), consola web, renovação e runbooks de suporte
+
+Dados por loja/PC em `%APPDATA%\POSly\` (`license.json`, `data\pos.db`).
+
+---
+
+## Arquitectura (resumo)
+
+```
+[Loja — Windows]
+   POSly (Electron)
+      ├── Interface: Next.js + React (TypeScript)
+      ├── API local: Node.js + Express (JavaScript)
+      └── Dados: SQLite (pos.db)
+
+[Cloud — licenciamento]
+   Consola /license-admin → Supabase (PostgreSQL)
+```
+
+- **Offline-first** no balcão; cloud usada sobretudo para **emissão e controlo de licenças**.
+- Stack: **TypeScript** (interface), **JavaScript** (API e desktop), **SQLite** local + **Supabase** para registo de licenças.
+
+---
+
+## Modelo comercial
+
+- **Licenciamento por instalação / máquina** — activação via voucher ou licença assinada com `machine_id`.
+- **Consola de licenças** (`/license-admin`) — registo de clientes (tenants), emissão de códigos, reactivação e auditoria em Supabase.
+
+*Para detalhes comerciais ou demonstração, contacte o autor do repositório.*
+
+---
+
+## Maturidade e validação
+
+- Versão de pacote **1.0.0** com build de instalador documentado.
+- Checklist de **piloto em PC limpo**: [docs/TESTE-PILOTO.md](docs/TESTE-PILOTO.md) (~15 passos: instalação, activação, venda de teste, backup).
+- Runbooks: [docs/INSTALACAO.md](docs/INSTALACAO.md) (build e implantação), [docs/SUPORTE.md](docs/SUPORTE.md) (renovar licença, trocar máquina, backups).
+
+---
+
+## Repositório e documentação
+
+| Recurso | Conteúdo |
+|---------|----------|
+| [GitHub](https://github.com/Nicolau08/POS-system-V0.1) | Código e issues |
+| [docs/INSTALACAO.md](docs/INSTALACAO.md) | Build, PC limpo, PIN admin, migração legado |
+| [docs/SUPORTE.md](docs/SUPORTE.md) | Runbook operacional |
+| [docs/TESTE-PILOTO.md](docs/TESTE-PILOTO.md) | Checklist piloto 1.0.0 |
+
+---
+
+## Para desenvolvedores
+
+**Pré-requisitos:** Node.js LTS, npm.
+
+### Arranque local
+
+```bash
+npm install
+copy .env.example .env
+```
+
+Edite `.env` com os segredos de desenvolvimento (**nunca** faça commit de `.env`). Lista completa: [.env.example](.env.example).
+
+```bash
+npm run dev:full
+```
+
+- Web: [http://localhost:3000](http://localhost:3000)
+- API: [http://localhost:3001](http://localhost:3001)
+
+Modo desktop (opcional):
+
+```bash
+npm run electron-dev
+```
+
+Scripts úteis: `npm run dev:tenant:default`, `npm run license:tool`.
+
+### Build do instalador Windows
+
+```bash
+npm run electron-dist
+```
+
+Gera o instalador NSIS em `dist-electron-out/` (ex.: `POSly Setup 1.0.0.exe`). Antes do build, configure `POS_LICENSE_HMAC_SECRET` e restantes variáveis — ver [docs/INSTALACAO.md](docs/INSTALACAO.md).
+
+### Licenciamento (técnico)
+
+A consola corre no Next.js:
+
+- URL: `/license-admin`
+- API: `/api/license-issuer/*` (protegida por `LICENSE_ISSUER_ADMIN_TOKEN`)
+
+Fluxo: registar tenant na consola → gerar voucher → cliente activa no desktop → `license.json` + registo em Supabase (com `POS_LICENSE_ISSUER_BASE_URL`). Migração: `supabase/migrations/20260521_posly_license_issuer.sql`.
+
+### Variáveis de ambiente (resumo)
+
+| Variável | Descrição |
+|----------|-----------|
+| `POS_LICENSE_HMAC_SECRET` | Segredo HMAC (POSly + consola) |
+| `POS_LICENSE_ISSUER_BASE_URL` | URL base do Next com `/api/license-issuer` |
+| `LICENSE_ISSUER_ADMIN_TOKEN` | Token da consola `/license-admin` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Backend da consola de licenças |
+| `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Cliente Supabase (se aplicável) |
+| `POS_APP_USERDATA_SUBDIR` | Subpasta em `%APPDATA%` (omissão: `POSly`) |
+| `POS_DB_PATH` / `POS_LICENSE_PATH` / `POS_BACKUP_DIR` | Sobrescritas de caminhos (dev/suporte) |
