@@ -3,14 +3,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   RotateCcw, FolderPlus, Edit, Trash2, Plus, Edit3, Trash, 
-  Printer, FileText, Hash, Sliders, ArrowDownUp, Download, 
-  Upload, HelpCircle, Search, ChevronRight, ChevronDown, Package, Folder,
+  Printer, FileText, Hash, Download, 
+  Upload, Search, ChevronRight, ChevronDown, Package, Folder,
   Check, X, Loader2, ArrowRight, AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { formatMoneyMt, moneyFieldLabel, POS_MONEY_PLACEHOLDER } from '@/lib/currency';
+
+function parseMoneyInput(raw: string): number {
+  const n = Number(String(raw).replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Mostra vazio para o placeholder aparecer; 0 fica como placeholder. */
+function moneyInputValue(value: number | null | undefined): string | number {
+  if (value == null || value === 0) return '';
+  return value;
+}
 
 interface Product {
   id: string;
@@ -69,7 +81,6 @@ export default function ProductsManager() {
     unit: 60,
     createdAt: 100,
     updatedAt: 100,
-    actions: 80
   });
   const [resizingColumn, setResizingColumn] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -79,9 +90,7 @@ export default function ProductsManager() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const formatPrice = (value: number) => {
-    return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value) + ' MT';
-  };
+  const formatPrice = (value: number) => formatMoneyMt(value);
 
   const startResizing = (e: React.MouseEvent) => {
     resizeStartXRef.current = e.clientX;
@@ -157,8 +166,32 @@ export default function ProductsManager() {
     default_quantity: true,
     stock_quantity: 0,
     min_stock: 0,
-    image: ''
+    image: '',
   });
+
+  const openNewProductModal = () => {
+    setNewProduct({
+      code: '',
+      name: '',
+      price: 0,
+      category_id: selectedCategory ? String(selectedCategory) : '',
+      barcode: '',
+      cost: 0,
+      tax: 0,
+      final_price: 0,
+      active: true,
+      unit: 'un',
+      description: '',
+      age_restriction: '',
+      is_service: false,
+      default_quantity: true,
+      stock_quantity: 0,
+      min_stock: 0,
+      image: '',
+    });
+    setActiveTab('detalhes');
+    setIsNewProductModalOpen(true);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -515,10 +548,7 @@ export default function ProductsManager() {
           icon={<Plus size={20} />} 
           label="Novo produto" 
           active={isNewProductModalOpen}
-          onClick={() => {
-            setActiveTab('detalhes');
-            setIsNewProductModalOpen(true);
-          }}
+          onClick={openNewProductModal}
         />
         <ToolbarButton 
           icon={<Edit3 size={20} />} 
@@ -549,11 +579,8 @@ export default function ProductsManager() {
         <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
         <ToolbarButton icon={<FileText size={20} />} label="Salvar como PDF" />
         <ToolbarButton icon={<Hash size={20} />} label="Etiquetas de preço" />
-        <ToolbarButton icon={<Sliders size={20} />} label="Classificação" />
-        <ToolbarButton icon={<ArrowDownUp size={20} />} label="Mov. med. preço" />
         <ToolbarButton icon={<Download size={20} />} label="Importar" />
         <ToolbarButton icon={<Upload size={20} />} label="Exportar" />
-        <ToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -641,13 +668,12 @@ export default function ProductsManager() {
                   <ResizableHeader width={columnWidths.unit} label="Un." onResize={(e) => startResizingColumn(e, 'unit')} align="center" />
                   <ResizableHeader width={columnWidths.createdAt} label="Criado" onResize={(e) => startResizingColumn(e, 'createdAt')} />
                   <ResizableHeader width={columnWidths.updatedAt} label="Atualizado" onResize={(e) => startResizingColumn(e, 'updatedAt')} />
-                  <th className="border-b border-zinc-700/80 px-4 py-2.5 text-center font-medium whitespace-nowrap" style={{ width: columnWidths.actions }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={13} className="py-20 text-center">
+                    <td colSpan={12} className="py-20 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 size={24} className="text-blue-500 animate-spin" />
                         <span className="text-xs text-zinc-500">Carregando produtos...</span>
@@ -656,7 +682,7 @@ export default function ProductsManager() {
                   </tr>
                 ) : filteredProducts.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="py-20 text-center text-xs text-zinc-600 italic">
+                    <td colSpan={12} className="py-20 text-center text-xs text-zinc-600 italic">
                       Nenhum produto encontrado
                     </td>
                   </tr>
@@ -667,6 +693,7 @@ export default function ProductsManager() {
                       onClick={() => setSelectedProductId(p.id)}
                       onDoubleClick={() => {
                         setEditingProduct(p);
+                        setActiveTab('detalhes');
                         setIsEditProductModalOpen(true);
                       }}
                       className={`border-b border-zinc-800/70 transition-colors cursor-pointer ${
@@ -688,34 +715,7 @@ export default function ProductsManager() {
                       </td>
                       <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap truncate">{p.unit || 'un'}</td>
                       <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{new Date(p.created_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                        <div className="flex items-center justify-center gap-2">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingProduct(p);
-                              setActiveTab('detalhes');
-                              setIsEditProductModalOpen(true);
-                            }}
-                            className="p-1 hover:bg-zinc-800 text-zinc-500 hover:text-white rounded transition-colors"
-                            title="Editar"
-                          >
-                            <Edit3 size={14} />
-                          </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setProductToDelete(p.id);
-                              setIsDeleteConfirmOpen(true);
-                            }}
-                            className="p-1 hover:bg-red-500/20 text-zinc-500 hover:text-red-500 rounded transition-colors"
-                            title="Excluir"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </td>
+                      <td className="px-4 py-2.5 text-zinc-500 whitespace-nowrap truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
                     </tr>
                   ))
                 )}
@@ -965,52 +965,62 @@ export default function ProductsManager() {
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Preço de Venda</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
                       <input 
                         type="number" 
                         required
                         step="0.01"
-                        value={newProduct.price ?? 0}
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(newProduct.price)}
                         onChange={(e) => {
-                          const val = Number(e.target.value);
+                          const val = parseMoneyInput(e.target.value);
                           setNewProduct({...newProduct, price: val, final_price: val + (newProduct.tax || 0)});
                         }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Custo</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
                       <input 
                         type="number" 
                         step="0.01"
-                        value={newProduct.cost ?? 0}
-                        onChange={(e) => setNewProduct({...newProduct, cost: Number(e.target.value)})}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(newProduct.cost)}
+                        onChange={(e) => setNewProduct({...newProduct, cost: parseMoneyInput(e.target.value)})}
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Imposto (R$)</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Imposto')}</label>
                       <input 
                         type="number" 
                         step="0.01"
-                        value={newProduct.tax ?? 0}
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(newProduct.tax)}
                         onChange={(e) => {
-                          const val = Number(e.target.value);
+                          const val = parseMoneyInput(e.target.value);
                           setNewProduct({...newProduct, tax: val, final_price: (newProduct.price || 0) + val});
                         }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Preço Final</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
                       <input 
                         type="number" 
                         disabled
-                        value={newProduct.final_price ?? 0}
-                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(newProduct.final_price)}
+                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
                       />
                     </div>
                   </div>
@@ -1266,52 +1276,62 @@ export default function ProductsManager() {
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Preço de Venda</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
                       <input 
                         type="number" 
                         required
                         step="0.01"
-                        value={editingProduct.price ?? 0}
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(editingProduct.price)}
                         onChange={(e) => {
-                          const val = Number(e.target.value);
+                          const val = parseMoneyInput(e.target.value);
                           setEditingProduct({...editingProduct, price: val, final_price: val + (editingProduct.tax || 0)});
                         }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Custo</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
                       <input 
                         type="number" 
                         step="0.01"
-                        value={editingProduct.cost ?? 0}
-                        onChange={(e) => setEditingProduct({...editingProduct, cost: Number(e.target.value)})}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(editingProduct.cost)}
+                        onChange={(e) => setEditingProduct({...editingProduct, cost: parseMoneyInput(e.target.value)})}
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Imposto (R$)</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Imposto')}</label>
                       <input 
                         type="number" 
                         step="0.01"
-                        value={editingProduct.tax ?? 0}
+                        min="0"
+                        inputMode="decimal"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(editingProduct.tax)}
                         onChange={(e) => {
-                          const val = Number(e.target.value);
+                          const val = parseMoneyInput(e.target.value);
                           setEditingProduct({...editingProduct, tax: val, final_price: (editingProduct.price || 0) + val});
                         }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">Preço Final</label>
+                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
                       <input 
                         type="number" 
                         disabled
-                        value={editingProduct.final_price ?? 0}
-                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none"
+                        placeholder={POS_MONEY_PLACEHOLDER}
+                        value={moneyInputValue(editingProduct.final_price)}
+                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
                       />
                     </div>
                   </div>

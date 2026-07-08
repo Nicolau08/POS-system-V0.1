@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import sqlite3Import from 'sqlite3';
 import { uuidv4 } from './cloudIdUtils.js';
 import { ensureHashedPin } from './pinAuth.js';
+import { buildDefaultPaymentMethodInsertRows } from './constants/paymentMethodDefaults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sqlite3 = sqlite3Import.verbose();
@@ -10,6 +11,9 @@ const sqlite3 = sqlite3Import.verbose();
 const dbPath = process.env.POS_DB_PATH
   ? path.resolve(String(process.env.POS_DB_PATH))
   : path.join(__dirname, 'pos.db');
+if (process.env.POS_DEV_TENANT || process.env.POS_DB_PATH) {
+  console.log(`[database] SQLite: ${dbPath}`);
+}
 const db = new sqlite3.Database(dbPath);
 db.configure('busyTimeout', 5000);
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID
@@ -1225,6 +1229,7 @@ db.serialize(() => {
           }
         }
       });
+      seedDefaultPaymentMethodsForTenant(defaultTenantId);
     })
     .catch((tenantErr) => {
       console.error('Erro ao garantir tenant padrao:', tenantErr.message);
@@ -1235,144 +1240,30 @@ db.serialize(() => {
       console.error('Erro ao verificar permission_rules iniciais:', permSeedErr.message);
     }
   });
+});
 
-  db.get(`SELECT COUNT(*) AS total FROM categories`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar categorias iniciais:', err.message);
-      return;
-    }
+function seedDefaultPaymentMethodsForTenant(tenantId) {
+  db.get(
+    `SELECT COUNT(*) AS total FROM payment_methods WHERE tenant_id = ?`,
+    [tenantId],
+    (err, row) => {
+      if (err) {
+        console.error('Erro ao verificar meios de pagamento iniciais:', err.message);
+        return;
+      }
+      if ((row?.total ?? 0) > 0) return;
 
-    if ((row?.total ?? 0) === 0) {
-      const seedCategoryNames = ['Bebidas', 'Comidas', 'Petiscos', 'Sobremesas'];
-      db.serialize(() => {
-        for (const name of seedCategoryNames) {
-          db.run(
-            `INSERT OR IGNORE INTO categories (name, tenant_id)
-             SELECT ?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) WHERE NOT EXISTS (
-               SELECT 1 FROM deleted_category_tombstones
-               WHERE tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)
-                 AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM(?))
-             )`,
-            [name, name]
-          );
-        }
-      });
-    }
-  });
-
-  db.get(`SELECT COUNT(*) AS total FROM products`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar produtos iniciais:', err.message);
-      return;
-    }
-
-    if ((row?.total ?? 0) === 0) {
-      const seedCategoryNames = ['Bebidas', 'Comidas', 'Petiscos', 'Sobremesas'];
-      db.serialize(() => {
-        for (const name of seedCategoryNames) {
-          db.run(
-            `INSERT OR IGNORE INTO categories (name, tenant_id)
-             SELECT ?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) WHERE NOT EXISTS (
-               SELECT 1 FROM deleted_category_tombstones
-               WHERE tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)
-                 AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM(?))
-             )`,
-            [name, name]
-          );
-        }
-
-        db.run(
-          `INSERT INTO products
-            (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-           VALUES (?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1), ?, ?, (SELECT id FROM categories WHERE name = ? AND tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            uuidv4(),
-            1,
-            'Coca-Cola',
-            'Bebidas',
-            null,
-            0,
-            50,
-            0,
-            50,
-            1,
-            'un',
-            0,
-            1,
-            20,
-            5,
-            '#ff0000',
-            '',
-            new Date().toISOString(),
-            new Date().toISOString(),
-          ],
-          (productOneErr) => {
-            if (productOneErr) {
-              console.error('Erro ao inserir produto inicial Coca-Cola:', productOneErr.message);
-              return;
-            }
-
-            db.run(
-              `INSERT INTO products
-                (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-               VALUES (?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1), ?, ?, (SELECT id FROM categories WHERE name = ? AND tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                uuidv4(),
-                2,
-                'Água',
-                'Bebidas',
-                null,
-                0,
-                25,
-                0,
-                25,
-                1,
-                'un',
-                0,
-                1,
-                50,
-                10,
-                '#00aaff',
-                '',
-                new Date().toISOString(),
-                new Date().toISOString(),
-              ],
-              (productTwoErr) => {
-                if (productTwoErr) {
-                  console.error('Erro ao inserir produto inicial Água:', productTwoErr.message);
-                }
-              }
-            );
-          }
-        );
-      });
-    }
-  });
-
-  db.get(`SELECT COUNT(*) AS total FROM payment_methods`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar meios de pagamento iniciais:', err.message);
-      return;
-    }
-
-    if ((row?.total ?? 0) === 0) {
       const now = new Date().toISOString();
-      const tenantSql = `(SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)`;
-      const seedRows = [
-        ['DINHEIRO', 'cash', '', 1, 1, 1, 0, 1, 1, 1, 1, now, now],
-        ['CARTAO', 'card', '', 2, 1, 1, 0, 0, 1, 1, 0, now, now],
-        ['PIX', 'pix', '', 3, 1, 1, 0, 0, 1, 1, 0, now, now],
-      ];
-      for (const seed of seedRows) {
+      for (const seed of buildDefaultPaymentMethodInsertRows(tenantId, now)) {
         db.run(
           `INSERT OR IGNORE INTO payment_methods
             (name, code, tenant_id, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, created_at, updated_at)
-           VALUES (?, ?, ${tenantSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          seed
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          seed,
         );
       }
-    }
-  });
-});
+    },
+  );
+}
 
 export default db;

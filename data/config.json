@@ -1,0 +1,12 @@
+{
+  "setupCompleted": true,
+  "setupCompletedAt": "2026-06-04T12:04:11.446Z",
+  "tenantId": "hp-pvd",
+  "storeName": "HP PVD",
+  "nuit": "401123123",
+  "printerType": "thermal-80",
+  "machineId": "496f8de2-a08f-4868-ae73-12e9ffdccc34",
+  "licenseExpiresAt": "2027-07-05T06:00:00.000Z",
+  "licenseKeyHash": "59e456b2ae0984cc55648e2f709be74aea06bf1d5adbdd020f975da24b91ba56",
+  "licenseMode": "voucher"
+}

@@ -2,7 +2,8 @@ import { app, BrowserWindow, Menu, ipcMain, dialog } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import fsSync from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import electronUpdaterModule from 'electron-updater';
@@ -24,6 +25,8 @@ const APP_WEB_PORT = 3000;
 const APP_API_PORT = 3001;
 
 const resolvePosAppMode = () => {
+  // Instalador desktop = sempre caixa POSly (consola de licenças corre no browser em dev/cloud).
+  if (app.isPackaged) return 'pos';
   const raw = String(process.env.POS_APP_MODE || 'pos').trim().toLowerCase();
   if (raw === 'license-console' || raw === 'license-admin' || raw === 'console') {
     return 'license-console';
@@ -712,16 +715,43 @@ const licenseEnvForBackend = async () => {
   };
 };
 
+/** Raiz lógica do app (app.asar) — resolução de `node_modules` no pacote. */
+const resolvePackagedAppRoot = () => app.getAppPath();
+
+/** Diretório real para `cwd` do processo filho (não usar o ficheiro .asar no Windows). */
+const resolvePackagedCwd = () => {
+  const appPath = app.getAppPath();
+  if (appPath.endsWith('.asar')) {
+    return path.dirname(appPath);
+  }
+  return appPath;
+};
+
+const resolveNodeBinaryForChild = () => {
+  const candidates = [process.execPath, process.argv[0]].filter(Boolean).map((p) => path.normalize(p));
+  for (const candidate of candidates) {
+    try {
+      fsSync.accessSync(candidate, fsSync.constants.F_OK);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return path.normalize(process.execPath);
+};
+
 const resolveBackendEntry = async () => {
   if (app.isPackaged) {
+    const appRoot = resolvePackagedAppRoot();
     const candidates = [
-      path.join(process.resourcesPath, 'api', 'server.js'),
+      path.join(appRoot, 'api', 'server.js'),
       path.join(process.resourcesPath, 'app.asar', 'api', 'server.js'),
+      path.join(process.resourcesPath, 'api', 'server.js'),
     ];
     for (const candidate of candidates) {
       if (await fileExists(candidate)) return candidate;
     }
-    throw new Error('Backend não encontrado nos resources (api/server.js).');
+    throw new Error('Backend não encontrado (api/server.js no app.asar).');
   }
 
   return path.join(__dirname, '..', 'api', 'server.js');
@@ -737,16 +767,37 @@ const resolveWebEntry = async () => {
 };
 
 const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
-  const child = spawn(process.execPath, [entryPath], {
-    cwd: cwd || path.dirname(entryPath),
-    env: {
-      ...process.env,
-      ...env,
-      ELECTRON_RUN_AS_NODE: '1',
-      NODE_ENV: app.isPackaged ? 'production' : process.env.NODE_ENV || 'development',
-    },
+  const nodeBin = resolveNodeBinaryForChild();
+  const workDir =
+    cwd ||
+    (app.isPackaged && String(entryPath).includes('.asar')
+      ? resolvePackagedCwd()
+      : path.dirname(entryPath));
+
+  const childEnv = {
+    ...process.env,
+    ...env,
+    ELECTRON_RUN_AS_NODE: '1',
+    NODE_ENV: app.isPackaged ? 'production' : process.env.NODE_ENV || 'development',
+    ...(app.isPackaged
+      ? {
+          POS_APP_MODE: 'pos',
+          NODE_PATH: resolvePackagedAppRoot(),
+        }
+      : {}),
+  };
+
+  const options = {
+    cwd: workDir,
+    env: childEnv,
     stdio: 'pipe',
-  });
+    windowsHide: process.platform === 'win32',
+  };
+
+  const child =
+    process.platform === 'win32'
+      ? execFile(nodeBin, [entryPath], options)
+      : spawn(nodeBin, [entryPath], options);
 
   child.stdout?.on('data', (chunk) => onLog(chunk));
   child.stderr?.on('data', (chunk) => onLog(chunk));

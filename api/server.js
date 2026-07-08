@@ -40,10 +40,15 @@ import {
 } from './utils/backup.js';
 import { logAudit, logError, logInfo } from './utils/logger.js';
 import { validateLicenseAccess } from './services/user.service.js';
+import { getLoginUsers, login } from './controllers/users.controller.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({
   path: path.resolve(__dirname, '../.env'),
+});
+dotenv.config({
+  path: path.resolve(__dirname, '../.env.local'),
+  override: true,
 });
 
 const app = express();
@@ -54,6 +59,22 @@ app.use(attachRequestContext);
 app.use(createRateLimiter());
 app.use(sanitizeInputMiddleware);
 app.use('/setup', setupRoutes);
+
+function rejectNonLocalAuthRoute(req, res, next) {
+  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
+  const remote = String(req.socket?.remoteAddress ?? '').trim();
+  const candidate = forwarded || remote;
+  const normalized = candidate.startsWith('::ffff:') ? candidate.replace('::ffff:', '') : candidate;
+  const local = new Set(['127.0.0.1', '::1', 'localhost']);
+  if (!local.has(normalized)) {
+    return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
+  }
+  return next();
+}
+
+/** Login screen: sem sessão ainda — antes do middleware de auth. */
+app.get('/auth/login-users', rejectNonLocalAuthRoute, getLoginUsers);
+app.post('/auth/login', rejectNonLocalAuthRoute, login);
 
 const LICENSE_GRACE_PERIOD_MS = Math.max(
   0,

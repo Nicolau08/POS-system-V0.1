@@ -118,7 +118,7 @@ Scripts úteis: `npm run dev:tenant:default`, `npm run license:tool`.
 npm run electron-dist
 ```
 
-Gera o instalador NSIS em `dist-electron-out/` (ex.: `POSly Setup 1.0.0.exe`). Antes do build, configure `POS_LICENSE_HMAC_SECRET` e restantes variáveis — ver [docs/INSTALACAO.md](docs/INSTALACAO.md).
+Gera **apenas o desktop POSly** (modo caixa; sem consola de licenças Electron) em `dist-electron/` (ex.: `POSly Setup 0.1.0.exe`). O `.exe` instalado abre só a janela da aplicação — API e Next correm em segundo plano sem janela CMD. Antes do build, configure `POS_LICENSE_HMAC_SECRET` no `.env.local` (o mesmo segredo usado na consola web `/license-admin` em dev).
 
 ### Licenciamento (técnico)
 

@@ -1,0 +1,1338 @@
+import { app, BrowserWindow, Menu, ipcMain, dialog } from 'electron';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
+import { spawn, execFile } from 'child_process';
+import fsSync from 'fs';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+import electronUpdaterModule from 'electron-updater';
+import machineIdModule from 'node-machine-id';
+import {
+  isReactivationTokenInput,
+  normalizeReactivationTokenInput,
+} from '../lib/licensing/reactivationToken.js';
+import {
+  resignMachineLicensePayload,
+  verifyOfflineReactivationToken,
+} from '../lib/licensing/offlineReactivationToken.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.join(__dirname, '..');
+dotenv.config({ path: path.join(projectRoot, '.env') });
+dotenv.config({ path: path.join(projectRoot, '.env.local'), override: true });
+
+const loadPackagedBuildSecrets = () => {
+  try {
+    if (!app.isPackaged) return;
+    const secretsPath = path.join(__dirname, '.build-secrets.json');
+    const raw = fsSync.readFileSync(secretsPath, 'utf8');
+    const secrets = JSON.parse(raw);
+    for (const [key, value] of Object.entries(secrets)) {
+      if (!process.env[key] && value != null && String(value).trim()) {
+        process.env[key] = String(value).trim();
+      }
+    }
+  } catch {
+    // Build sem secrets embutidos — activação HMAC falhará até configurar env.
+  }
+};
+loadPackagedBuildSecrets();
+const APP_WEB_PORT = 3000;
+const APP_API_PORT = 3001;
+
+const resolvePosAppMode = () => {
+  // Instalador desktop = sempre caixa POSly (consola de licenças corre no browser em dev/cloud).
+  if (app.isPackaged) return 'pos';
+  const raw = String(process.env.POS_APP_MODE || 'pos').trim().toLowerCase();
+  if (raw === 'license-console' || raw === 'license-admin' || raw === 'console') {
+    return 'license-console';
+  }
+  return 'pos';
+};
+
+const isLicenseConsoleMode = () => resolvePosAppMode() === 'license-console';
+
+const resolveDevWebPort = () => {
+  const fromEnv = Number.parseInt(String(process.env.POS_WEB_PORT || ''), 10);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  // Consola partilha o mesmo Next que o POS (:3000) quando ambos correm em dev.
+  return APP_WEB_PORT;
+};
+
+const resolveDevWebUrl = () => {
+  const port = resolveDevWebPort();
+  const routePath = isLicenseConsoleMode() ? '/license-admin' : '/';
+  return `http://localhost:${port}${routePath}`;
+};
+
+/** Evita conflito de cache/GPU quando POS + consola correm em paralelo (electron-dev:all). */
+const configureIsolatedUserDataForLicenseConsole = () => {
+  if (!isLicenseConsoleMode()) return;
+  const appDataRoot = app.getPath('appData');
+  const subdir = String(process.env.POS_APP_USERDATA_SUBDIR || 'POSly').trim() || 'POSly';
+  const isolatedUserData = path.join(appDataRoot, `${subdir}-license-console`);
+  app.setPath('userData', isolatedUserData);
+};
+
+configureIsolatedUserDataForLicenseConsole();
+
+const { machineIdSync } = machineIdModule;
+const { autoUpdater } = electronUpdaterModule;
+
+let backendProcess = null;
+let webProcess = null;
+let mainWindow = null;
+let backendStartupLogs = '';
+let webStartupLogs = '';
+
+const fileExists = async (targetPath) => {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const ensureDir = async (targetPath) => {
+  await fs.mkdir(targetPath, { recursive: true });
+};
+
+const getRuntimePaths = () => {
+  const userDataPath = app.getPath('userData');
+  return {
+    userDataPath,
+    databasePath: path.join(userDataPath, 'data', 'pos.db'),
+    configPath: path.join(userDataPath, 'config.json'),
+    licensePath: path.join(userDataPath, 'license.json'),
+  };
+};
+
+const appendBoundedLog = (current, chunk) => {
+  const next = `${current}${String(chunk ?? '')}`;
+  return next.length > 6000 ? next.slice(-6000) : next;
+};
+
+const waitForHttp = async (url, timeoutMs = 45000) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok || response.status < 500) return;
+    } catch {
+      // keep polling until timeout
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timeout aguardando ${url}`);
+};
+
+const resolveLicenseHmacSecret = () =>
+  String(process.env.POS_LICENSE_HMAC_SECRET || process.env.LICENSE_HMAC_SECRET || '').trim();
+
+const allowUnsignedLicenseFallback = () => {
+  const raw = String(process.env.POS_LICENSE_ALLOW_UNSIGNED || '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y'].includes(raw);
+};
+
+const buildCanonicalLicensePayload = (payload) => ({
+  tenant_id: String(payload?.tenant_id ?? '').trim(),
+  machine_id: String(payload?.machine_id ?? '').trim(),
+  expiration: String(payload?.expiration ?? payload?.expires_at ?? '').trim(),
+});
+
+const signCanonicalLicensePayload = (canonicalPayload, secret) =>
+  crypto
+    .createHmac('sha256', secret)
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex');
+
+const timingSafeEqualHex = (a, b) => {
+  const left = Buffer.from(String(a ?? ''), 'utf8');
+  const right = Buffer.from(String(b ?? ''), 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+};
+
+const verifyLicenseSignature = (payload) => {
+  const signature = String(payload?.signature ?? '').trim();
+  const secret = resolveLicenseHmacSecret();
+  const allowUnsigned = allowUnsignedLicenseFallback();
+
+  if (!signature) {
+    if (allowUnsigned) return { ok: true, mode: 'unsigned-fallback' };
+    return { ok: false, reason: 'Licença sem assinatura (signature).' };
+  }
+  if (!secret) {
+    return { ok: false, reason: 'POS_LICENSE_HMAC_SECRET não configurado para validar assinatura.' };
+  }
+
+  const canonicalPayload = buildCanonicalLicensePayload(payload);
+  const expectedSignature = signCanonicalLicensePayload(canonicalPayload, secret);
+  if (!timingSafeEqualHex(signature, expectedSignature)) {
+    return { ok: false, reason: 'Assinatura da licença inválida (tampering detectado).' };
+  }
+
+  return { ok: true, mode: 'signed' };
+};
+
+const ACTIVATION_VOUCHER_KIND = 'pos_activation_v1';
+
+const buildCanonicalVoucherPayload = (payload) => ({
+  kind: ACTIVATION_VOUCHER_KIND,
+  tenant_id: String(payload?.tenant_id ?? '').trim(),
+  expiration: String(payload?.expiration ?? payload?.expires_at ?? '').trim(),
+  nonce: String(payload?.nonce ?? '').trim(),
+});
+
+const signCanonicalVoucherPayload = (canonicalPayload, secret) =>
+  crypto
+    .createHmac('sha256', secret)
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex');
+
+const verifyVoucherPayload = (payload) => {
+  const secret = resolveLicenseHmacSecret();
+  if (!secret) {
+    return { ok: false, reason: 'POS_LICENSE_HMAC_SECRET não configurado para validar o código.' };
+  }
+  if (String(payload?.kind ?? '').trim() !== ACTIVATION_VOUCHER_KIND) {
+    return { ok: false, reason: 'Código de ativação inválido.' };
+  }
+  const signature = String(payload?.signature ?? '').trim();
+  if (!signature) {
+    return { ok: false, reason: 'Código de ativação sem assinatura.' };
+  }
+  const canonical = buildCanonicalVoucherPayload(payload);
+  if (!canonical.tenant_id || !canonical.expiration || !canonical.nonce) {
+    return { ok: false, reason: 'Código de ativação incompleto.' };
+  }
+  const expectedSignature = signCanonicalVoucherPayload(canonical, secret);
+  if (!timingSafeEqualHex(signature, expectedSignature)) {
+    return { ok: false, reason: 'Assinatura do código de ativação inválida.' };
+  }
+  const expiresAt = new Date(canonical.expiration);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return { ok: false, reason: 'Data de expiração do código inválida.' };
+  }
+  if (Date.now() > expiresAt.getTime()) {
+    return { ok: false, reason: 'Este código de ativação já expirou.' };
+  }
+  return {
+    ok: true,
+    tenantId: canonical.tenant_id,
+    expirationIso: expiresAt.toISOString(),
+    nonce: canonical.nonce,
+  };
+};
+
+const materializeLicenseFromVerifiedVoucher = (payload, localMachineId, expirationIso) => {
+  const secret = resolveLicenseHmacSecret();
+  if (!secret) {
+    throw new Error('missing_license_secret');
+  }
+  const tenantId = String(payload?.tenant_id ?? '').trim();
+  const canonicalPayload = buildCanonicalLicensePayload({
+    tenant_id: tenantId,
+    machine_id: localMachineId,
+    expiration: expirationIso,
+  });
+  const signature = signCanonicalLicensePayload(canonicalPayload, secret);
+  return {
+    tenant_id: canonicalPayload.tenant_id,
+    machine_id: canonicalPayload.machine_id,
+    expiration: canonicalPayload.expiration,
+    signature,
+  };
+};
+
+const redeemReactivationTokenFromIssuer = async (rawInput, machineId) => {
+  const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
+  if (!issuerBaseUrl) {
+    return {
+      ok: false,
+      error:
+        'POS_LICENSE_ISSUER_BASE_URL não definido — não é possível validar o token de reativação.',
+    };
+  }
+  const url = `${issuerBaseUrl.replace(/\/$/, '')}/api/license-issuer/reactivate`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: normalizeReactivationTokenInput(rawInput) ?? String(rawInput ?? '').trim(),
+        machine_id: machineId,
+      }),
+      signal: ctrl.signal,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body?.success) {
+      return { ok: false, error: body?.error || `${res.status} ${res.statusText}` };
+    }
+    const licenseKey = String(body.license_key ?? '').trim();
+    if (!licenseKey) {
+      return { ok: false, error: 'Resposta da consola sem license_key.' };
+    }
+    return { ok: true, licenseKey, license: body.license ?? null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const parseLicenseInput = (rawInput) => {
+  const raw = String(rawInput ?? '').trim();
+  if (!raw) return { payload: null, error: 'Chave de licença vazia.' };
+
+  const normalizedInput = raw.startsWith('LICENSE_KEY=')
+    ? raw.slice('LICENSE_KEY='.length).trim()
+    : raw;
+
+  try {
+    const parsed = JSON.parse(normalizedInput);
+    if (parsed && typeof parsed === 'object') {
+      return { payload: parsed, error: null };
+    }
+  } catch {
+    // try base64(JSON)
+  }
+
+  try {
+    const base64Normalized = normalizedInput.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64Normalized.padEnd(Math.ceil(base64Normalized.length / 4) * 4, '=');
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+    const parsed = JSON.parse(decoded);
+    if (parsed && typeof parsed === 'object') {
+      return { payload: parsed, error: null };
+    }
+  } catch {
+    // ignore and fallback error
+  }
+
+  if (isReactivationTokenInput(rawInput)) {
+    return {
+      payload: null,
+      error:
+        'Token de 12 dígitos: reinicie a app POS (fecha e volta a abrir o Electron) ou use «Revalidar» após prolongar na consola. Confirme POS_LICENSE_ISSUER_BASE_URL no .env.local.',
+    };
+  }
+
+  return {
+    payload: null,
+    error: 'Formato de licença inválido. Use JSON ou base64(JSON), ou o token de 12 dígitos da consola.',
+  };
+};
+
+const buildActivationCode = (machineId) => {
+  const payload = {
+    machine_id: String(machineId ?? '').trim(),
+  };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+};
+
+const validateLicensePayload = ({ payload, expectedTenantId = null }) => {
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, reason: 'Licença inválida ou corrompida.' };
+  }
+
+  const signatureCheck = verifyLicenseSignature(payload);
+  if (!signatureCheck.ok) {
+    return { ok: false, reason: signatureCheck.reason || 'Assinatura inválida.' };
+  }
+
+  const canonicalPayload = buildCanonicalLicensePayload(payload);
+  const tenantId = canonicalPayload.tenant_id;
+  const machineId = canonicalPayload.machine_id;
+  const expiration = canonicalPayload.expiration;
+
+  if (!tenantId) return { ok: false, reason: 'Licença sem tenant_id.' };
+  if (!machineId) return { ok: false, reason: 'Licença sem machine_id.' };
+  if (!expiration) return { ok: false, reason: 'Licença sem data de expiração.' };
+
+  if (expectedTenantId && tenantId !== String(expectedTenantId).trim()) {
+    return { ok: false, reason: 'Licença não pertence ao tenant desta instalação.' };
+  }
+
+  const localMachineId = machineIdSync({ original: true });
+  if (machineId !== localMachineId) {
+    return { ok: false, reason: 'Licença vinculada a outra máquina.' };
+  }
+
+  const expiresAt = new Date(expiration);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return { ok: false, reason: 'Data de expiração inválida na licença.' };
+  }
+  if (Date.now() > expiresAt.getTime()) {
+    return {
+      ok: false,
+      reason: `Licença expirada em ${expiresAt.toLocaleString()}.`,
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId,
+    machineId,
+    expiration: expiresAt.toISOString(),
+  };
+};
+
+const resolveExpectedTenantId = async () => {
+  const status = await fetchSetupStatusReliable();
+  if (!status || typeof status !== 'object') return null;
+  // Antes da licença estar registada na BD, não comparar com o tenant seed (ex.: tenant-1):
+  // o tenant correcto vem da licença / voucher de ativação.
+  const licenseActivated = Boolean(
+    status.licenseActivated ?? status.license_activated
+  );
+  if (!licenseActivated) return null;
+  const id = status.tenantId ?? status.tenant_id;
+  return id ? String(id).trim() : null;
+};
+
+const getActivationStateInternal = async () => {
+  const machineId = machineIdSync({ original: true });
+  const activationCode = buildActivationCode(machineId);
+  const { licensePath } = getRuntimePaths();
+  const expectedTenantId = await resolveExpectedTenantId();
+
+  if (!(await fileExists(licensePath))) {
+    return {
+      success: true,
+      isActivated: false,
+      machineId,
+      activationCode,
+      licensePath,
+      reason: 'Licença não encontrada nesta instalação.',
+    };
+  }
+
+  try {
+    const raw = await fs.readFile(licensePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const validation = validateLicensePayload({ payload: parsed, expectedTenantId });
+    if (!validation.ok) {
+      return {
+        success: true,
+        isActivated: false,
+        machineId,
+        activationCode,
+        licensePath,
+        reason: validation.reason || 'Licença inválida.',
+      };
+    }
+
+    const setup = await fetchSetupStatusReliable();
+    // Só considerar activado quando a API confirma license_activated. Nunca assumir "ok" em dev
+    // quando setup é null — isso saltava o ecrã de ativação e deixava o assistente com licença pendente.
+    const licenseAckedInDb = Boolean(setup?.licenseActivated);
+    if (!licenseAckedInDb) {
+      const reason = setup
+        ? 'Introduza de novo o código ou a chave de licença para registar nesta base de dados (instalação nova ou base reposta).'
+        : 'API local indisponível. Aguarde uns segundos ou reinicie a aplicação; depois introduza o código de ativação se for pedido.';
+      return {
+        success: true,
+        isActivated: false,
+        machineId,
+        activationCode,
+        licensePath,
+        reason,
+      };
+    }
+
+    return {
+      success: true,
+      isActivated: true,
+      machineId,
+      activationCode,
+      licensePath,
+    };
+  } catch {
+    return {
+      success: true,
+      isActivated: false,
+      machineId,
+      activationCode,
+      licensePath,
+      reason: 'Falha ao ler licença local.',
+    };
+  }
+};
+
+const tryOfflineReactivationInElectron = async (
+  rawLicenseKey,
+  machineId,
+  licensePath,
+  expectedTenantId,
+) => {
+  const tokenDigits = normalizeReactivationTokenInput(rawLicenseKey);
+  if (!tokenDigits) return { ok: false, skipped: true };
+
+  const secret = resolveLicenseHmacSecret();
+  if (!secret) {
+    return { ok: false, error: 'POS_LICENSE_HMAC_SECRET não configurado para validação offline.' };
+  }
+
+  let localPayload;
+  try {
+    const raw = await fs.readFile(licensePath, 'utf8');
+    const parsed = parseLicenseInput(raw);
+    if (!parsed.payload) {
+      return { ok: false, offlineInvalid: true, error: 'Licença local não encontrada.' };
+    }
+    localPayload = parsed.payload;
+  } catch {
+    return { ok: false, offlineInvalid: true, error: 'Licença local não encontrada.' };
+  }
+
+  const verified = verifyOfflineReactivationToken(tokenDigits, {
+    secret,
+    tenantId: localPayload.tenant_id,
+    expectedMachineId: machineId,
+    licenseMachineId: localPayload.machine_id,
+    voucherNonce: localPayload.voucher_nonce,
+  });
+  if (!verified.ok) {
+    return { ok: false, offlineInvalid: true, error: verified.error || 'Token offline inválido.' };
+  }
+
+  const licenseToWrite = resignMachineLicensePayload(localPayload, verified.expirationIso, secret);
+  const validation = validateLicensePayload({
+    payload: licenseToWrite,
+    expectedTenantId,
+  });
+  if (!validation.ok) {
+    return { ok: false, error: validation.reason || 'Licença inválida após reativação offline.' };
+  }
+
+  await ensureDir(path.dirname(licensePath));
+  await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
+  return { ok: true, offline: true };
+};
+
+const activateLicenseInternal = async (rawLicenseKey) => {
+  const machineId = machineIdSync({ original: true });
+  const activationCode = buildActivationCode(machineId);
+  const { licensePath } = getRuntimePaths();
+  const expectedTenantId = await resolveExpectedTenantId();
+
+  if (isReactivationTokenInput(rawLicenseKey)) {
+    const offline = await tryOfflineReactivationInElectron(
+      rawLicenseKey,
+      machineId,
+      licensePath,
+      expectedTenantId,
+    );
+    if (offline.ok) {
+      return {
+        success: true,
+        machineId,
+        activationCode,
+        licensePath,
+        offline: true,
+      };
+    }
+
+    const redeem = await redeemReactivationTokenFromIssuer(rawLicenseKey, machineId);
+    if (!redeem.ok) {
+      const offlineHint = offline.offlineInvalid && offline.error ? `${offline.error} ` : '';
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: `${offlineHint}${redeem.error || 'Token de reativação inválido.'}`.trim(),
+      };
+    }
+    const parsedInput = parseLicenseInput(redeem.licenseKey);
+    if (!parsedInput.payload) {
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: parsedInput.error || 'Licença devolvida pela consola inválida.',
+      };
+    }
+    const validation = validateLicensePayload({
+      payload: parsedInput.payload,
+      expectedTenantId,
+    });
+    if (!validation.ok) {
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: validation.reason || 'Licença inválida.',
+      };
+    }
+    const licenseToWrite = redeem.license && typeof redeem.license === 'object'
+      ? redeem.license
+      : { ...parsedInput.payload, activated_at: new Date().toISOString() };
+    await ensureDir(path.dirname(licensePath));
+    await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
+    return {
+      success: true,
+      machineId,
+      activationCode,
+      licensePath,
+    };
+  }
+
+  const parsedInput = parseLicenseInput(rawLicenseKey);
+  if (!parsedInput.payload) {
+    return {
+      success: false,
+      machineId,
+      activationCode,
+      licensePath,
+      error: parsedInput.error || 'Chave de licença inválida.',
+    };
+  }
+
+  const rawPayload = parsedInput.payload;
+  const isActivationVoucher =
+    rawPayload &&
+    typeof rawPayload === 'object' &&
+    String(rawPayload.kind ?? '').trim() === ACTIVATION_VOUCHER_KIND;
+
+  if (isActivationVoucher) {
+    const voucherCheck = verifyVoucherPayload(rawPayload);
+    if (!voucherCheck.ok) {
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: voucherCheck.reason || 'Código de ativação inválido.',
+      };
+    }
+    if (expectedTenantId && voucherCheck.tenantId !== String(expectedTenantId).trim()) {
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: 'Este código não corresponde ao tenant desta instalação.',
+      };
+    }
+    let finalLicense;
+    try {
+      finalLicense = materializeLicenseFromVerifiedVoucher(
+        rawPayload,
+        machineId,
+        voucherCheck.expirationIso
+      );
+    } catch {
+      return {
+        success: false,
+        machineId,
+        activationCode,
+        licensePath,
+        error: 'Falha ao gerar licença para esta máquina.',
+      };
+    }
+    await ensureDir(path.dirname(licensePath));
+    await fs.writeFile(
+      licensePath,
+      JSON.stringify(
+        {
+          ...finalLicense,
+          activated_at: new Date().toISOString(),
+          voucher_nonce: voucherCheck.nonce,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    return {
+      success: true,
+      machineId,
+      activationCode,
+      licensePath,
+    };
+  }
+
+  const validation = validateLicensePayload({
+    payload: parsedInput.payload,
+    expectedTenantId,
+  });
+  if (!validation.ok) {
+    return {
+      success: false,
+      machineId,
+      activationCode,
+      licensePath,
+      error: validation.reason || 'Licença inválida.',
+    };
+  }
+
+  await ensureDir(path.dirname(licensePath));
+  await fs.writeFile(
+    licensePath,
+    JSON.stringify(
+      {
+        ...parsedInput.payload,
+        activated_at: new Date().toISOString(),
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  return {
+    success: true,
+    machineId,
+    activationCode,
+    licensePath,
+  };
+};
+
+const readAndValidateLicenseFromFile = async (expectedTenantId) => {
+  const { licensePath } = getRuntimePaths();
+  if (!(await fileExists(licensePath))) {
+    return { ok: false, reason: 'Ficheiro local de licença não encontrado.' };
+  }
+
+  try {
+    const raw = await fs.readFile(licensePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return validateLicensePayload({ payload: parsed, expectedTenantId });
+  } catch {
+    return { ok: false, reason: 'Ficheiro local de licença está inválido.' };
+  }
+};
+
+/** Alinha o processo Node da API com o tenant da licença (ficheiro escrito pelo Electron). */
+const licenseEnvForBackend = async () => {
+  if (!app.isPackaged) return {};
+  const v = await readAndValidateLicenseFromFile(null);
+  if (!v.ok || !v.tenantId) return {};
+  const { licensePath } = getRuntimePaths();
+  let storeName = '';
+  try {
+    const raw = await fs.readFile(licensePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    storeName = String(parsed?.store_name ?? parsed?.tenant_name ?? parsed?.storeName ?? '').trim();
+  } catch {
+    // ignore
+  }
+  return {
+    DEFAULT_TENANT_ID: String(v.tenantId).trim(),
+    DEFAULT_TENANT_NAME: storeName || 'Loja',
+  };
+};
+
+/** Raiz lógica do app (app.asar) — resolução de `node_modules` no pacote. */
+const resolvePackagedAppRoot = () => app.getAppPath();
+
+/** Diretório real para `cwd` do processo filho (não usar o ficheiro .asar no Windows). */
+const resolvePackagedCwd = () => {
+  const appPath = app.getAppPath();
+  if (appPath.endsWith('.asar')) {
+    return path.dirname(appPath);
+  }
+  return appPath;
+};
+
+const resolveNodeBinaryForChild = () => {
+  const candidates = [process.execPath, process.argv[0]].filter(Boolean).map((p) => path.normalize(p));
+  for (const candidate of candidates) {
+    try {
+      fsSync.accessSync(candidate, fsSync.constants.F_OK);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return path.normalize(process.execPath);
+};
+
+const resolveBackendEntry = async () => {
+  if (app.isPackaged) {
+    const appRoot = resolvePackagedAppRoot();
+    const candidates = [
+      path.join(appRoot, 'api', 'server.js'),
+      path.join(process.resourcesPath, 'app.asar', 'api', 'server.js'),
+      path.join(process.resourcesPath, 'api', 'server.js'),
+    ];
+    for (const candidate of candidates) {
+      if (await fileExists(candidate)) return candidate;
+    }
+    throw new Error('Backend não encontrado (api/server.js no app.asar).');
+  }
+
+  return path.join(__dirname, '..', 'api', 'server.js');
+};
+
+const resolveWebEntry = async () => {
+  if (!app.isPackaged) return null;
+  const webEntry = path.join(process.resourcesPath, 'web', 'server.js');
+  if (!(await fileExists(webEntry))) {
+    throw new Error('Frontend standalone não encontrado em resources/web/server.js.');
+  }
+  return webEntry;
+};
+
+const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
+  const nodeBin = resolveNodeBinaryForChild();
+  const workDir =
+    cwd ||
+    (app.isPackaged && String(entryPath).includes('.asar')
+      ? resolvePackagedCwd()
+      : path.dirname(entryPath));
+
+  const childEnv = {
+    ...process.env,
+    ...env,
+    ELECTRON_RUN_AS_NODE: '1',
+    NODE_ENV: app.isPackaged ? 'production' : process.env.NODE_ENV || 'development',
+    ...(app.isPackaged
+      ? {
+          POS_APP_MODE: 'pos',
+          NODE_PATH: resolvePackagedAppRoot(),
+        }
+      : {}),
+  };
+
+  const options = {
+    cwd: workDir,
+    env: childEnv,
+    stdio: 'pipe',
+    windowsHide: process.platform === 'win32',
+  };
+
+  const child =
+    process.platform === 'win32'
+      ? execFile(nodeBin, [entryPath], options)
+      : spawn(nodeBin, [entryPath], options);
+
+  child.stdout?.on('data', (chunk) => onLog(chunk));
+  child.stderr?.on('data', (chunk) => onLog(chunk));
+  child.on('exit', (code, signal) => {
+    onLog(`\n[${onExitLogPrefix} exited code=${code ?? 'null'} signal=${signal ?? 'null'}]\n`);
+  });
+  child.on('error', (error) => {
+    onLog(`\n[${onExitLogPrefix} spawn error: ${String(error?.message ?? error)}]\n`);
+  });
+
+  return child;
+};
+
+const isExternalApiReachable = async () => {
+  try {
+    const response = await fetch(`http://127.0.0.1:${APP_API_PORT}/`, { signal: AbortSignal.timeout(2000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+const startBackend = async () => {
+  if (!app.isPackaged) {
+    const useExternal =
+      String(process.env.POS_ELECTRON_USE_EXTERNAL_API ?? '').trim() === '1' ||
+      (await isExternalApiReachable());
+    if (useExternal) {
+      console.log('[electron] API já activa em :3001 — reutiliza instância existente (ex.: npm run dev:full).');
+      return;
+    }
+  }
+
+  const paths = getRuntimePaths();
+  await ensureDir(path.dirname(paths.databasePath));
+
+  const dbExistedBeforeBoot = await fileExists(paths.databasePath);
+  const backendEntry = await resolveBackendEntry();
+  const licenseEnv = await licenseEnvForBackend();
+  const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
+  const licenseHmacSecret = String(
+    process.env.POS_LICENSE_HMAC_SECRET ?? process.env.LICENSE_HMAC_SECRET ?? '',
+  ).trim();
+
+  backendStartupLogs = '';
+  backendProcess = spawnNodeService({
+    entryPath: backendEntry,
+    env: {
+      POS_API_PORT: String(APP_API_PORT),
+      POS_DB_PATH: paths.databasePath,
+      POS_USER_DATA_PATH: paths.userDataPath,
+      POS_CONFIG_PATH: paths.configPath,
+      POS_LICENSE_PATH: paths.licensePath,
+      POS_DB_EXISTED_BEFORE_BOOT: dbExistedBeforeBoot ? 'true' : 'false',
+      ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
+      ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
+      ...licenseEnv,
+      ...(app.isPackaged
+        ? {
+            // Desktop: login UI chama GET /users antes de existir sessão. Em produção a API
+            // desliga o fallback localhost por defeito → 401 e lista vazia. Só escuta em
+            // 127.0.0.1, por isso reativar o fallback aqui é aceitável.
+            AUTH_ALLOW_LEGACY_LOCAL: '1',
+            POS_API_BIND: '127.0.0.1',
+          }
+        : {}),
+    },
+    onLog: (chunk) => {
+      backendStartupLogs = appendBoundedLog(backendStartupLogs, chunk);
+    },
+    onExitLogPrefix: 'api',
+  });
+
+  try {
+    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`);
+  } catch (error) {
+    const details = backendStartupLogs.trim();
+    const suffix = details ? `\n\n${details}` : '';
+    throw new Error(`Falha ao iniciar backend.${suffix || ` ${String(error?.message ?? error)}`}`);
+  }
+};
+
+const startStandaloneWeb = async () => {
+  if (!app.isPackaged) return;
+
+  const webEntry = await resolveWebEntry();
+  webStartupLogs = '';
+  webProcess = spawnNodeService({
+    entryPath: webEntry,
+    env: {
+      PORT: String(APP_WEB_PORT),
+      POS_API_URL: `http://127.0.0.1:${APP_API_PORT}`,
+      NEXT_PUBLIC_POS_API_URL: `http://127.0.0.1:${APP_API_PORT}`,
+      NEXT_PUBLIC_POS_API_DIRECT_URL: `http://127.0.0.1:${APP_API_PORT}`,
+    },
+    onLog: (chunk) => {
+      webStartupLogs = appendBoundedLog(webStartupLogs, chunk);
+    },
+    onExitLogPrefix: 'web',
+  });
+
+  try {
+    await waitForHttp(`http://127.0.0.1:${APP_WEB_PORT}`);
+  } catch (error) {
+    const details = webStartupLogs.trim();
+    const suffix = details ? `\n\n${details}` : '';
+    throw new Error(`Falha ao iniciar frontend standalone.${suffix || ` ${String(error?.message ?? error)}`}`);
+  }
+};
+
+const stopServices = () => {
+  if (webProcess && !webProcess.killed) webProcess.kill();
+  if (backendProcess && !backendProcess.killed) backendProcess.kill();
+  webProcess = null;
+  backendProcess = null;
+};
+
+const fetchSetupStatus = async () => {
+  try {
+    const response = await fetch(`http://127.0.0.1:${APP_API_PORT}/setup/status`);
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => null);
+    if (payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object') {
+      return payload.data;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
+/** Evita falso "licença não ack" / "precisa reintroduzir" quando a API ainda não respondeu ao primeiro fetch. */
+const fetchSetupStatusReliable = async (attempts = 6, delayMs = 250) => {
+  for (let i = 0; i < attempts; i += 1) {
+    const row = await fetchSetupStatus();
+    if (row && typeof row === 'object') return row;
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return null;
+};
+
+const buildLicenseBlockedHtml = (reason) => `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Licença inválida</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Segoe UI, sans-serif;
+        background: #0f0f10;
+        color: #f4f4f5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      .card {
+        width: min(560px, 92vw);
+        background: #18181b;
+        border: 1px solid #27272a;
+        border-radius: 14px;
+        padding: 24px;
+        box-shadow: 0 20px 80px rgba(0, 0, 0, 0.45);
+      }
+      h1 {
+        margin: 0 0 10px;
+        color: #f87171;
+        font-size: 28px;
+      }
+      p {
+        margin: 0;
+        line-height: 1.55;
+        color: #d4d4d8;
+      }
+      code {
+        display: block;
+        margin-top: 12px;
+        padding: 10px;
+        border-radius: 8px;
+        background: #09090b;
+        color: #fef08a;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Licença inválida</h1>
+      <p>Não foi possível iniciar o POS porque a licença local não passou na validação.</p>
+      <code>${String(reason ?? 'Erro desconhecido').replace(/</g, '&lt;')}</code>
+    </div>
+  </body>
+</html>
+`;
+
+const createWindow = async (opts = {}) => {
+  const { blockedReason = null } = opts;
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    icon: path.join(__dirname, '../assets/icon.ico'),
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  Menu.setApplicationMenu(null);
+  win.setMenuBarVisibility(false);
+  mainWindow = win;
+
+  if (blockedReason) {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(blockedReason))}`);
+    return;
+  }
+
+  if (!app.isPackaged) {
+    const targetUrl = resolveDevWebUrl();
+    try {
+      await waitForHttp(targetUrl, 90_000);
+    } catch (error) {
+      const hint = isLicenseConsoleMode()
+        ? ' Arranque antes: npm run dev (ou npm run electron-dev) e depois npm run license-console.'
+        : ' Confirme que "npm run dev" está activo na porta ' + String(resolveDevWebPort()) + '.';
+      await win.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(`${String(error?.message ?? error)}${hint}`))}`,
+      );
+      return;
+    }
+    try {
+      await win.loadURL(targetUrl);
+    } catch (error) {
+      console.error('[electron] loadURL failed:', error);
+      await win.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(String(error?.message ?? error)))}`,
+      );
+    }
+    return;
+  }
+  await win.loadURL(`http://127.0.0.1:${APP_WEB_PORT}`);
+};
+
+ipcMain.handle('dialog:selectFolder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Selecionar pasta de backup',
+  });
+
+  if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0] ?? null;
+});
+
+ipcMain.handle('app:getPaths', async () => {
+  const paths = getRuntimePaths();
+  return {
+    userDataPath: paths.userDataPath,
+    databasePath: paths.databasePath,
+    configPath: paths.configPath,
+    licensePath: paths.licensePath,
+    databaseExists: await fileExists(paths.databasePath),
+    configExists: await fileExists(paths.configPath),
+    licenseExists: await fileExists(paths.licensePath),
+  };
+});
+
+ipcMain.handle('system:getMachineId', async () => {
+  try {
+    return {
+      success: true,
+      machineId: machineIdSync({ original: true }),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao obter machine ID.'),
+    };
+  }
+});
+
+ipcMain.handle('activation:getState', async () => {
+  try {
+    return await getActivationStateInternal();
+  } catch (error) {
+    return {
+      success: false,
+      isActivated: false,
+      machineId: '',
+      activationCode: '',
+      reason: String(error?.message ?? error ?? 'Falha ao obter estado de ativação.'),
+    };
+  }
+});
+
+ipcMain.handle('activation:activate', async (_event, payload) => {
+  try {
+    const licenseKey = String(payload?.licenseKey ?? '').trim();
+    if (!licenseKey) {
+      return { success: false, error: 'Chave de licença é obrigatória.' };
+    }
+    return await activateLicenseInternal(licenseKey);
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao ativar licença.'),
+    };
+  }
+});
+
+ipcMain.handle('app:restart', async () => {
+  try {
+    app.relaunch();
+    app.exit(0);
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao reiniciar aplicação.'),
+    };
+  }
+});
+
+ipcMain.handle('print:receipt', async (_event, payload) => {
+  const html = String(payload?.html ?? '');
+  if (!html.trim()) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+    },
+  });
+
+  try {
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const printers = await printWindow.webContents.getPrintersAsync();
+    const defaultPrinter = printers.find((printer) => printer.isDefault) ?? null;
+    if (!defaultPrinter) {
+      return { success: false, error: 'Nenhuma impressora padrão definida no Windows.' };
+    }
+
+    const printResult = await new Promise((resolve) => {
+      printWindow.webContents.print(
+        {
+          silent: true,
+          printBackground: true,
+          deviceName: defaultPrinter.name,
+        },
+        (success, failureReason) => {
+          resolve({
+            success,
+            failureReason: failureReason ? String(failureReason) : null,
+          });
+        }
+      );
+    });
+
+    if (!printResult.success) {
+      return {
+        success: false,
+        error: printResult.failureReason || 'Falha na impressão silenciosa.',
+      };
+    }
+    return { success: true, printer: defaultPrinter.name };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha desconhecida de impressão.'),
+    };
+  } finally {
+    if (!printWindow.isDestroyed()) {
+      printWindow.destroy();
+    }
+  }
+});
+
+const isBenignUpdateCheckFailure = (error) => {
+  const msg = String(error?.message ?? error ?? '');
+  return (
+    /\b404\b/.test(msg) ||
+    msg.includes('Not Found') ||
+    msg.includes('net::ERR_') ||
+    msg.includes('ENOTFOUND')
+  );
+};
+
+/**
+ * Canal GitHub (electron-updater): `POS_UPDATE_CHANNEL=beta` ou `test` → pré-releases;
+ * omitido ou `stable` → apenas releases finais. Definir no arranque (ex.: atalho / variável de sistema no Windows).
+ */
+const resolveAutoUpdaterChannel = () => {
+  const original = String(process.env.POS_UPDATE_CHANNEL ?? '').trim();
+  const raw = original.toLowerCase();
+  if (raw === 'beta' || raw === 'test') {
+    return { allowPrerelease: true, label: 'beta' };
+  }
+  if (!raw || raw === 'stable') {
+    return { allowPrerelease: false, label: 'stable' };
+  }
+  console.warn(
+    `[autoUpdater] POS_UPDATE_CHANNEL desconhecido (${JSON.stringify(original)}); a usar stable.`
+  );
+  return { allowPrerelease: false, label: 'stable' };
+};
+
+const safeCheckForUpdates = () => {
+  void autoUpdater.checkForUpdates().catch((error) => {
+    if (isBenignUpdateCheckFailure(error)) {
+      console.warn(
+        '[autoUpdater] Verificação ignorada (feed indisponível ou sem releases).',
+        String(error?.message ?? error ?? '')
+      );
+      return;
+    }
+    console.warn('[autoUpdater]', error);
+  });
+};
+
+const setupAutoUpdates = () => {
+  if (!app.isPackaged) return;
+  if (process.platform !== 'win32') return;
+  if (process.env.PORTABLE_EXECUTABLE_FILE) return;
+  if (String(process.env.POS_DISABLE_AUTO_UPDATE ?? '').trim() === '1') return;
+
+  const channel = resolveAutoUpdaterChannel();
+  autoUpdater.allowPrerelease = channel.allowPrerelease;
+  console.log(
+    `[autoUpdater] Canal: ${channel.label} (allowPrerelease=${String(channel.allowPrerelease)})`
+  );
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-available', async (info) => {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['Atualizar agora', 'Depois'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Atualização disponível',
+      message: `Nova versão disponível (${info.version}).`,
+      detail: 'Deseja baixar e instalar agora?',
+    });
+
+    if (result.response === 0) {
+      autoUpdater.downloadUpdate();
+    }
+  });
+
+  autoUpdater.on('update-downloaded', async () => {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['Reiniciar e instalar', 'Mais tarde'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Atualização pronta',
+      message: 'A atualização foi baixada com sucesso.',
+      detail: 'Reiniciar o app agora para concluir a instalação?',
+    });
+
+    if (result.response === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  });
+
+  autoUpdater.on('error', async (error) => {
+    if (isBenignUpdateCheckFailure(error)) {
+      console.warn('[autoUpdater]', String(error?.message ?? error ?? ''));
+      return;
+    }
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['OK'],
+      defaultId: 0,
+      title: 'Erro ao atualizar',
+      message: 'Não foi possível verificar/baixar atualização.',
+      detail: String(error?.message ?? error ?? 'Erro desconhecido'),
+    });
+  });
+
+  safeCheckForUpdates();
+  setInterval(() => {
+    safeCheckForUpdates();
+  }, 15 * 60 * 1000);
+};
+
+app.whenReady().then(async () => {
+  try {
+    if (!isLicenseConsoleMode()) {
+      await startBackend();
+    } else {
+      console.log('[electron] Modo consola de licenças — API local (3001) não é iniciada.');
+    }
+    await startStandaloneWeb();
+  } catch (error) {
+    dialog.showErrorBox('Falha ao iniciar', String(error?.message ?? error ?? 'Erro desconhecido'));
+    stopServices();
+    app.quit();
+    return;
+  }
+
+  await createWindow();
+  setupAutoUpdates();
+});
+
+app.on('window-all-closed', () => {
+  stopServices();
+  if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  stopServices();
+});
