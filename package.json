@@ -1,25 +1,34 @@
 {
   "name": "ai-studio-applet",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "api:dev": "node api/server.js",
     "dev:full": "concurrently --names \"API,WEB\" --prefix-colors \"blue.bold,magenta.bold\" \"npm run api:dev\" \"npm run dev\"",
-    "dev:tenant:default": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item Env:POS_DB_PATH -ErrorAction SilentlyContinue; Remove-Item Env:POS_CONFIG_PATH -ErrorAction SilentlyContinue; Remove-Item Env:POS_LICENSE_PATH -ErrorAction SilentlyContinue; npm run dev:full\"",
-    "dev:tenant:qa02": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root='C:\\Users\\Nicol\\Documents\\POS system\\.dev-tenants\\tenant-qa-02'; New-Item -ItemType Directory -Force -Path $root, ($root + '\\data') | Out-Null; $env:POS_DB_PATH=($root + '\\data\\pos.db'); $env:POS_CONFIG_PATH=($root + '\\config.json'); $env:POS_LICENSE_PATH=($root + '\\license.json'); $env:DEFAULT_TENANT_ID='tenant-qa-02'; $env:DEFAULT_TENANT_NAME='Tenant QA 02'; npm run dev:full\"",
-    "dev:tenant:qa01": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root='C:\\Users\\Nicol\\Documents\\POS system\\.dev-tenants\\tenant-qa-01'; New-Item -ItemType Directory -Force -Path $root, ($root + '\\data') | Out-Null; $env:POS_DB_PATH=($root + '\\data\\pos.db'); $env:POS_CONFIG_PATH=($root + '\\config.json'); $env:POS_LICENSE_PATH=($root + '\\license.json'); $env:DEFAULT_TENANT_ID='tenant-qa-01'; $env:DEFAULT_TENANT_NAME='Tenant QA 01'; npm run dev:full\"",
+    "licensing:ensure-env": "node scripts/ensure-licensing-env.mjs",
+    "dev:licensing": "node scripts/ensure-licensing-env.mjs && npm run dev:full",
+    "license-console": "cross-env POS_APP_MODE=license-console POS_ELECTRON_USE_EXTERNAL_API=1 electron .",
+    "dev:licensing:electron": "node scripts/ensure-licensing-env.mjs && concurrently --names \"API,WEB,POS,CONSOLE\" --prefix-colors \"blue.bold,magenta.bold,green.bold,yellow.bold\" \"npm run api:dev\" \"npm run dev\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001 && cross-env POS_ELECTRON_USE_EXTERNAL_API=1 npm run electron\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001 && npm run license-console\"",
+    "dev:tenant:default": "node scripts/dev-tenant.mjs default",
+    "dev:tenant": "node scripts/dev-tenant.mjs",
+    "dev:tenant:qa01": "node scripts/dev-tenant.mjs qa01",
+    "dev:tenant:qa02": "node scripts/dev-tenant.mjs qa02",
+    "dev:tenant:qa03": "node scripts/dev-tenant.mjs qa03",
     "build": "next build",
     "electron:clean": "node scripts/clean-electron-dist.mjs",
     "electron": "electron .",
     "electron-dev": "concurrently \"npm run dev\" \"npm run electron\"",
-    "electron-pack": "npm run electron:clean && electron-builder --win nsis --dir",
-    "electron-dist": "npm run build && npm run electron:clean && electron-builder --win nsis",
+    "electron:prepare-pos-build": "node scripts/prepare-pos-desktop-build.mjs exclude",
+    "electron:restore-pos-build": "node scripts/prepare-pos-desktop-build.mjs restore",
+    "electron-pack": "node scripts/electron-dist-pos.mjs --dir",
+    "electron-dist": "node scripts/electron-dist-pos.mjs",
+    "electron-dist:pos": "npm run electron-dist",
     "test:e2e": "playwright test",
     "sync:revive-dead-sales": "node api/scripts/revive-dead-sale-queue.mjs",
     "sync:reset-sale-queue": "node api/scripts/reset-sale-queue.mjs",
     "stock:audit": "node api/scripts/stock-flow-audit.mjs",
-    "license:tool": "node api/scripts/license-tool.mjs",
+    "license:import-sqlite": "node scripts/migrate-sqlite-licenses-to-supabase.mjs",
     "icon:win": "node scripts/generate-windows-icon.mjs"
   },
   "dependencies": {
@@ -57,6 +66,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
     "electron": "^41.0.4",
     "electron-builder": "^26.0.12",
     "eslint": "^10.1.0",
@@ -72,22 +82,20 @@
   "description": "POS System desktop application",
   "build": {
     "appId": "com.nicol.possystem",
-    "productName": "POS System",
+    "productName": "POSly",
     "npmRebuild": false,
     "files": [
       "electron/**/*",
       "api/**/*",
       "assets/**/*",
+      "lib/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "**/node_modules/sqlite3/**",
+      "**/node_modules/@mapbox/node-pre-gyp/**"
+    ],
     "extraResources": [
-      {
-        "from": "api",
-        "to": "api",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": ".next/standalone/server.js",
         "to": "web/server.js"
@@ -121,17 +129,18 @@
     ],
     "win": {
       "icon": "assets/icon.ico",
-      "executableName": "POS System",
+      "executableName": "POSly",
       "target": [
         "nsis"
       ]
     },
     "nsis": {
+      "artifactName": "POSly Setup ${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "POS System",
+      "shortcutName": "POSly",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico"

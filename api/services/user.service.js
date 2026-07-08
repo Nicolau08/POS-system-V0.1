@@ -160,6 +160,24 @@ export async function authenticateLogin({ userId, enteredPin }) {
   };
 }
 
+export async function listLoginUsers() {
+  const rows = await allDb(
+    `SELECT id, name, surname, email, role, access_level, active
+     FROM users
+     WHERE active = 1
+     ORDER BY name ASC`
+  );
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    surname: row.surname != null ? String(row.surname) : null,
+    email: row.email != null ? String(row.email) : null,
+    role: String(row.role ?? 'user'),
+    access_level: Number(row.access_level ?? 0),
+    active: true,
+  }));
+}
+
 export async function listUsers(filters = {}) {
   const pagination = parsePagination(filters);
   const search = parseSearchTerm(filters.search);

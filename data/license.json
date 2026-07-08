@@ -1,0 +1,8 @@
+{
+  "tenant_id": "hp-pvd",
+  "machine_id": "496f8de2-a08f-4868-ae73-12e9ffdccc34",
+  "expiration": "2027-07-05T06:00:00.000Z",
+  "signature": "7044f1079f200b70f080397a32ab6559a5f30aa4196d602da0f3d6cbe3d2cf50",
+  "voucher_nonce": "d1219073-38f1-40ce-a4ae-e7c25d9db10b",
+  "activated_at": "2026-06-04T12:04:11.446Z"
+}

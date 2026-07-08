@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+/* Hide arrows in Chrome, Safari, Edge, Opera */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Hide arrows in Firefox */
+input[type=number] {
+  -moz-appearance: textfield;
+}
+
+@theme {
+  --font-sans: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --animate-spin-slow: spin 3s linear infinite;
+}
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+body {
+  background-color: #121212;
+  color: #ffffff;
+}
+
+/**
+ * Logo no recibo: térmica = preto. Só grayscale + contraste leve —
+ * contrast/brightness extremos viram cinzas de anti-alias/sombra em blocos pretos.
+ */
+.receipt-thermal-logo {
+  filter: grayscale(1) contrast(1.2);
+  -webkit-filter: grayscale(1) contrast(1.2);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #receipt-print-area, #receipt-print-area * {
+    visibility: visible;
+  }
+  #receipt-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background: white;
+    color: black;
+  }
+  #receipt-print-area img.receipt-thermal-logo {
+    filter: grayscale(1) contrast(1.2);
+    -webkit-filter: grayscale(1) contrast(1.2);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

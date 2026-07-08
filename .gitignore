@@ -13,6 +13,7 @@ Thumbs.db
 # --- Segredos (manter só o exemplo) ---
 .env*
 !.env.example
+electron/.build-secrets.json
 
 # --- Bases de dados e backups locais ---
 api/*.db
@@ -23,6 +24,7 @@ data/license-issuer-store.json
 
 # --- Ambiente de desenvolvimento local ---
 .dev-tenants/
+.build-skip/
 
 # --- Testes (só na máquina local) ---
 tests/
