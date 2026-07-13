@@ -48,6 +48,12 @@ function defaultVoucherExpirationIso() {
 
 type LicensePeriod = 'monthly' | 'annual';
 
+type DatePickerTarget = {
+  kind: 'voucher-edit';
+  voucherId: string;
+  iso: string;
+};
+
 /** Validade a partir de agora: mensal (+1 mês) ou anual (+1 ano), às 08:00. */
 function expirationIsoForPeriod(period: LicensePeriod, from = new Date()): string {
   const d = new Date(from);

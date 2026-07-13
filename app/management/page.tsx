@@ -519,7 +519,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                             <p className="text-[11px] text-zinc-500">Só entradas de dinheiro (VD, RC e FT pagas no momento)</p>
                           </div>
                           <div className="flex items-center gap-4 text-zinc-500">
-                            <button onClick={fetchDashboardData} className="hover:text-zinc-300 transition-colors"><RotateCcw size={16} /></button>
+                            <button onClick={() => void fetchDashboardData()} className="hover:text-zinc-300 transition-colors"><RotateCcw size={16} /></button>
                             <button className="hover:text-zinc-300 transition-colors"><ChevronLeft size={16} /></button>
                             <button className="hover:text-zinc-300 transition-colors"><ChevronRight size={16} /></button>
                           </div>

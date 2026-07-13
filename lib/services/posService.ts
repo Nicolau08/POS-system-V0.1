@@ -271,8 +271,8 @@ export const lookupSerialStores = async (serial: string): Promise<{
 export const initializeFromSerial = async (payload: {
   serial: string;
   tenantId: string;
-  adminName: string;
-  adminPin: string;
+  adminName?: string;
+  adminPin?: string;
   printerType?: string;
 }) => {
   return fetchJSON('/setup/initialize-from-serial', {
@@ -281,8 +281,8 @@ export const initializeFromSerial = async (payload: {
     body: JSON.stringify({
       serial: String(payload.serial ?? '').trim(),
       tenantId: String(payload.tenantId ?? '').trim(),
-      adminName: String(payload.adminName ?? '').trim(),
-      adminPin: String(payload.adminPin ?? '').trim(),
+      adminName: payload.adminName ? String(payload.adminName).trim() : undefined,
+      adminPin: payload.adminPin ? String(payload.adminPin).trim() : undefined,
       printerType: payload.printerType ? String(payload.printerType).trim() : undefined,
     }),
   });

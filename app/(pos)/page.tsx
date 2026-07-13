@@ -86,6 +86,7 @@ import { buildThermalPrintPageCss, resolveThermalWidthMm } from '@/lib/thermalPr
 import { useProducts } from '@/hooks/useProducts';
 import { useAuth } from '@/hooks/useAuth';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 import {
   createOrder,
   deleteCustomer,
@@ -101,6 +102,7 @@ import {
   fetchDocuments,
   PosApiError,
   saveCustomer,
+  setupAdminPassword,
   syncNextVDNumber as posSyncNextVDNumber,
   type SetupStatusPayload,
 } from '@/lib/services/posService';
@@ -276,7 +278,9 @@ function LoginScreen({
   password, 
   setPassword, 
   onLogin, 
-  error 
+  error,
+  requiresAdminPasswordSetup = false,
+  onAdminPasswordConfigured,
 }: { 
   users: PosUser[], 
   selectedUser: PosUser | null, 
@@ -284,19 +288,81 @@ function LoginScreen({
   password: string, 
   setPassword: React.Dispatch<React.SetStateAction<string>>, 
   onLogin: () => void | Promise<unknown>, 
-  error: boolean 
+  error: boolean,
+  requiresAdminPasswordSetup?: boolean,
+  onAdminPasswordConfigured?: () => void | Promise<void>,
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isResettingAdminPin, setIsResettingAdminPin] = useState(false);
   const [isQuitConfirmOpen, setIsQuitConfirmOpen] = useState(false);
+  const [isSetupMode, setIsSetupMode] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [activeField, setActiveField] = useState<'pin' | 'confirm'>('pin');
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const isPackagedDesktop = useIsPackagedDesktop();
+  const allowAdminPinReset =
+    process.env.NODE_ENV !== 'production' && !isPackagedDesktop;
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setPassword('');
+    setConfirmPassword('');
+    setActiveField('pin');
+    setSetupError(null);
+    setIsSetupMode(false);
+  };
+
+  const handleSaveAdminPassword = async () => {
+    const pin = password.trim();
+    const confirm = confirmPassword.trim();
+    if (pin.length < 4) {
+      setSetupError('O PIN deve conter pelo menos 4 caracteres.');
+      return;
+    }
+    if (pin !== confirm) {
+      setSetupError('A confirmação do PIN não confere.');
+      return;
+    }
+
+    setIsSavingPassword(true);
+    setSetupError(null);
+    try {
+      await setupAdminPassword(pin);
+      await onAdminPasswordConfigured?.();
+      setIsSetupMode(false);
+      setConfirmPassword('');
+      setActiveField('pin');
+      setPassword('');
+      setSetupError(null);
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : 'Falha ao configurar a senha.');
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
 
   const handleKeyClick = (key: string) => {
     if (key === 'enter') {
-      void onLogin();
-    } else if (key === 'back') {
-      setPassword(prev => prev.slice(0, -1));
+      if (isSetupMode) {
+        void handleSaveAdminPassword();
+      } else {
+        void onLogin();
+      }
+      return;
+    }
+    if (key === 'back') {
+      if (isSetupMode && activeField === 'confirm') {
+        setConfirmPassword((prev) => prev.slice(0, -1));
+      } else {
+        setPassword((prev) => prev.slice(0, -1));
+      }
+      return;
+    }
+    if (isSetupMode && activeField === 'confirm') {
+      setConfirmPassword((prev) => prev + key);
     } else {
-      setPassword(prev => prev + key);
+      setPassword((prev) => prev + key);
     }
   };
 
@@ -306,18 +372,29 @@ function LoginScreen({
       if (!isModalOpen) return;
       
       if (e.key === 'Enter') {
-        void onLogin();
+        if (isSetupMode) {
+          void handleSaveAdminPassword();
+        } else {
+          void onLogin();
+        }
       } else if (e.key === 'Backspace') {
-        setPassword(prev => prev.slice(0, -1));
+        if (isSetupMode && activeField === 'confirm') {
+          setConfirmPassword((prev) => prev.slice(0, -1));
+        } else {
+          setPassword((prev) => prev.slice(0, -1));
+        }
       } else if (e.key.length === 1) {
-        // Allow all single characters (letters, numbers, symbols)
-        setPassword(prev => prev + e.key);
+        if (isSetupMode && activeField === 'confirm') {
+          setConfirmPassword((prev) => prev + e.key);
+        } else {
+          setPassword((prev) => prev + e.key);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onLogin, setPassword, isModalOpen]);
+  }, [onLogin, setPassword, isModalOpen, isSetupMode, activeField, password, confirmPassword]);
 
   const keypad = [
     ['1', '2', '3'],
@@ -367,11 +444,19 @@ function LoginScreen({
       <div className="relative z-10 flex flex-1 flex-col items-center justify-center min-h-0">
         {/* User Grid */}
         <div className="flex flex-wrap justify-center gap-6 max-w-7xl">
-          {users.slice().sort((a, b) => a.name.localeCompare(b.name)).map((user, idx) => (
+          {users.slice().sort((a, b) => a.name.localeCompare(b.name)).map((user) => (
             <button
               key={user.id}
               onClick={() => {
                 onSelectUser(user);
+                const needsSetup =
+                  requiresAdminPasswordSetup &&
+                  String(user.role ?? '').toLowerCase() === 'admin';
+                setIsSetupMode(needsSetup);
+                setConfirmPassword('');
+                setActiveField('pin');
+                setSetupError(null);
+                setPassword('');
                 setIsModalOpen(true);
               }}
               className={`
@@ -403,10 +488,7 @@ function LoginScreen({
         {isModalOpen && (
           <div 
             className="fixed inset-0 flex items-center justify-center z-50 bg-black/80 backdrop-blur-sm"
-            onClick={() => {
-              setIsModalOpen(false);
-              setPassword('');
-            }}
+            onClick={closeModal}
           >
             <motion.div 
               initial={{ opacity: 0, scale: 0.9 }}
@@ -416,22 +498,64 @@ function LoginScreen({
               onClick={(e) => e.stopPropagation()}
             >
               {/* Modal Header */}
-              <div className="bg-zinc-800 px-4 py-3 flex items-center justify-center border-b border-zinc-700">
-                <span className="text-xl text-zinc-100 font-medium">Senha</span>
+              <div className="bg-zinc-800 px-4 py-3 flex flex-col items-center justify-center border-b border-zinc-700 gap-1">
+                <span className="text-xl text-zinc-100 font-medium">
+                  {isSetupMode ? 'Configurar senha' : 'Senha'}
+                </span>
+                {isSetupMode ? (
+                  <span className="text-xs text-zinc-400">Defina o PIN do Administrador</span>
+                ) : null}
               </div>
 
               {/* Modal Content */}
               <div className="p-4 flex flex-col gap-4">
-                <div className="flex gap-2">
-                  <div className={`flex-grow h-16 bg-zinc-800 border rounded flex items-center px-4 transition-all duration-200 ${error ? 'border-red-500 animate-shake' : 'border-zinc-700'}`}>
-                    <input 
-                      type="password"
-                      value={password ?? ''}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full text-3xl tracking-widest focus:outline-none bg-transparent text-white text-center"
-                    />
+                {isSetupMode ? (
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveField('pin')}
+                      className={`h-14 bg-zinc-800 border rounded flex items-center px-4 transition-all ${
+                        activeField === 'pin' ? 'border-[#0001fb]' : 'border-zinc-700'
+                      }`}
+                    >
+                      <span className="w-full text-center text-2xl tracking-widest text-white">
+                        {password ? '•'.repeat(password.length) : (
+                          <span className="text-sm tracking-normal text-zinc-500">Nova senha</span>
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveField('confirm')}
+                      className={`h-14 bg-zinc-800 border rounded flex items-center px-4 transition-all ${
+                        activeField === 'confirm' ? 'border-[#0001fb]' : 'border-zinc-700'
+                      }`}
+                    >
+                      <span className="w-full text-center text-2xl tracking-widest text-white">
+                        {confirmPassword ? '•'.repeat(confirmPassword.length) : (
+                          <span className="text-sm tracking-normal text-zinc-500">Confirmar senha</span>
+                        )}
+                      </span>
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <div className={`flex-grow h-16 bg-zinc-800 border rounded flex items-center px-4 transition-all duration-200 ${error ? 'border-red-500 animate-shake' : 'border-zinc-700'}`}>
+                      <input 
+                        type="password"
+                        value={password ?? ''}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full text-3xl tracking-widest focus:outline-none bg-transparent text-white text-center"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {setupError ? (
+                  <div className="rounded border border-red-700/50 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+                    {setupError}
+                  </div>
+                ) : null}
 
                 {/* Keypad */}
                 <div className="grid grid-cols-3 gap-2">
@@ -439,18 +563,29 @@ function LoginScreen({
                     <button
                       key={key}
                       onClick={() => handleKeyClick(key)}
+                      disabled={isSavingPassword}
                       className={`
-                        h-16 text-xl font-medium flex items-center justify-center transition-colors rounded
-                        ${key === 'enter' ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700'}
+                        h-16 text-xl font-medium flex items-center justify-center transition-colors rounded disabled:opacity-50
+                        ${key === 'enter' ? 'bg-[#0001fb] text-white hover:bg-[#1a1cff]' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700'}
                         ${key === 'back' ? 'text-lg' : ''}
                       `}
                     >
-                      {key === 'enter' ? 'Entrar' : key === 'back' ? 'Apagar' : key}
+                      {key === 'enter'
+                        ? isSetupMode
+                          ? isSavingPassword
+                            ? '...'
+                            : 'Guardar'
+                          : 'Entrar'
+                        : key === 'back'
+                          ? 'Apagar'
+                          : key}
                     </button>
                   ))}
                 </div>
 
-                {String(selectedUser?.role ?? '').toLowerCase() === 'admin' && (
+                {!isSetupMode &&
+                  allowAdminPinReset &&
+                  String(selectedUser?.role ?? '').toLowerCase() === 'admin' && (
                   <button
                     type="button"
                     onClick={() => void handleResetAdminPin()}
@@ -2550,10 +2685,12 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       <SetupWizard
         status={setupStatus}
         onCompleted={async () => {
+          logout();
           await acknowledgeLicenseFileOnServer();
           await handleRevalidateSetup();
           await refreshSetupStatus();
           await refreshActivationState();
+          await fetchUsers({ bypassLicenseBlock: true });
         }}
       />
     );
@@ -2594,7 +2731,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     );
   }
 
-  if (!isLoggedIn) {
+  if (!isLoggedIn || (setupStatus && !setupStatus.adminPasswordSet)) {
     return (
       <LoginScreen 
         users={users}
@@ -2604,6 +2741,11 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         setPassword={setLoginPassword}
         onLogin={login}
         error={loginError}
+        requiresAdminPasswordSetup={Boolean(setupStatus && !setupStatus.adminPasswordSet)}
+        onAdminPasswordConfigured={async () => {
+          await refreshSetupStatus({ skipRegistrySync: true });
+          await fetchUsers({ bypassLicenseBlock: true });
+        }}
       />
     );
   }
