@@ -1,11 +1,17 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, ChevronsUpDown, Package, Plus, Printer, Trash2, Users, Truck, X } from 'lucide-react';
+import { Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileSpreadsheet, Package, Printer, RefreshCcw, Users, Truck, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
+import { formatDocumentReferenceDisplay } from '@/lib/documents/documentReference';
+import { saveSalesDocumentAsPdf } from '@/lib/documents/salesDocumentPrint';
+import { printSalesDocumentThermalSecondCopy } from '@/lib/documents/thermalReceiptPrint';
+import { fetchCompanyProfile } from '@/lib/services/posService';
 import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
+import type { CompanyProfile } from '@/app/pos/types';
+import PosSelect from '@/components/PosSelect';
 
 type OrderRow = {
   id: number | string;
@@ -56,6 +62,8 @@ const INVENTORY_DOCUMENT_FILTER: Record<string, string> = {
 
 type PartyMenuKind = 'clientes' | 'fornecedores' | 'inventario';
 
+const SUPPLIER_MENU_ITEMS = ['Despesas do funcionário', 'Produtos', 'Fornecedores'] as const;
+
 type DocumentsViewState = {
   selectedOrderId: string | null;
   query: string;
@@ -64,6 +72,7 @@ type DocumentsViewState = {
   selectedUser: string;
   selectedDocType: string;
   selectedStatus: string;
+  periodFilterActive: boolean;
   dateFrom: string;
   dateTo: string;
 };
@@ -77,8 +86,9 @@ function loadDocumentsViewState(): DocumentsViewState {
     selectedUser: 'all',
     selectedDocType: 'all',
     selectedStatus: 'all',
-    dateFrom: todayInput(),
-    dateTo: todayInput(),
+    periodFilterActive: false,
+    dateFrom: '',
+    dateTo: '',
   };
   if (typeof window === 'undefined') return fallback;
   try {
@@ -93,8 +103,9 @@ function loadDocumentsViewState(): DocumentsViewState {
       selectedUser: String(parsed.selectedUser ?? 'all'),
       selectedDocType: String(parsed.selectedDocType ?? 'all'),
       selectedStatus: String(parsed.selectedStatus ?? 'all'),
-      dateFrom: String(parsed.dateFrom ?? fallback.dateFrom),
-      dateTo: String(parsed.dateTo ?? fallback.dateTo),
+      periodFilterActive: Boolean(parsed.periodFilterActive),
+      dateFrom: String(parsed.dateFrom ?? ''),
+      dateTo: String(parsed.dateTo ?? ''),
     };
   } catch {
     return fallback;
@@ -117,6 +128,7 @@ function resolveManagementDocumentTitle(order: OrderRow) {
     if (rawDocTypeUpper === 'GT') return 'Guia de transporte';
     if (rawDocTypeUpper === 'GR') return 'Guia de remessa';
     if (rawDocType.toLowerCase().includes('entrada de stock')) return 'Entrada de stock';
+    if (rawDocType.toLowerCase().includes('compra') || rawDocTypeUpper === 'PUR' || rawDocTypeUpper === 'EN/ST') return 'Compra';
     if (rawDocTypeUpper === 'INV' || rawDocType.toLowerCase().includes('invent')) return 'Inventário Físico';
     if (rawDocTypeUpper === 'PERDAS' || rawDocType.toLowerCase().includes('desperd') || rawDocType.toLowerCase().includes('quebra')) {
       return 'Desperdícios';
@@ -125,6 +137,7 @@ function resolveManagementDocumentTitle(order: OrderRow) {
   }
 
   if (number.startsWith('WH/IN/')) return 'Entrada de stock';
+  if (number.startsWith('EN/ST/') || number.startsWith('PUR/')) return 'Compra';
   if (number.startsWith('INV/') || String(order.id ?? '').toLowerCase().startsWith('inv:')) return 'Inventário Físico';
   if (number.startsWith('WH/LOSS/')) return 'Desperdícios';
   return 'Fatura';
@@ -302,6 +315,7 @@ export default function DocumentsManager() {
   const [selectedUser, setSelectedUser] = useState(initialViewState.selectedUser);
   const [selectedDocType, setSelectedDocType] = useState(initialViewState.selectedDocType);
   const [selectedStatus, setSelectedStatus] = useState(initialViewState.selectedStatus);
+  const [periodFilterActive, setPeriodFilterActive] = useState(initialViewState.periodFilterActive);
   const [dateFrom, setDateFrom] = useState(initialViewState.dateFrom);
   const [dateTo, setDateTo] = useState(initialViewState.dateTo);
   const [tempDateFrom, setTempDateFrom] = useState(initialViewState.dateFrom || firstDayOfCurrentMonth());
@@ -312,6 +326,8 @@ export default function DocumentsManager() {
   const [partyView, setPartyView] = useState<PartyMenuKind | null>(null);
   const [openPartyMenu, setOpenPartyMenu] = useState<PartyMenuKind | null>(null);
   const [partyMenuPosition, setPartyMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
+  const [actionMessage, setActionMessage] = useState('');
 
   const getCustomerName = (order: OrderRow) => String(order.client_name || 'Consumidor final');
   const getUserName = (order: OrderRow) => String(order.user_name || '-');
@@ -453,6 +469,9 @@ export default function DocumentsManager() {
 
   useEffect(() => {
     void fetchData();
+    void fetchCompanyProfile()
+      .then(setCompanyProfile)
+      .catch(() => setCompanyProfile(null));
   }, []);
 
   useEffect(() => {
@@ -465,11 +484,12 @@ export default function DocumentsManager() {
       selectedUser,
       selectedDocType,
       selectedStatus,
+      periodFilterActive,
       dateFrom,
       dateTo,
     };
     window.localStorage.setItem(DOCS_VIEW_STATE_STORAGE_KEY, JSON.stringify(viewState));
-  }, [selectedOrderId, query, selectedProduct, selectedClient, selectedUser, selectedDocType, selectedStatus, dateFrom, dateTo]);
+  }, [selectedOrderId, query, selectedProduct, selectedClient, selectedUser, selectedDocType, selectedStatus, periodFilterActive, dateFrom, dateTo]);
 
   const productOptions = useMemo(() => {
     return registeredProductNames;
@@ -506,8 +526,10 @@ export default function DocumentsManager() {
       const status = String(order.status || '-');
 
       const orderDate = createdAt.slice(0, 10);
-      if (dateFrom && orderDate && orderDate < dateFrom) return false;
-      if (dateTo && orderDate && orderDate > dateTo) return false;
+      if (periodFilterActive) {
+        if (dateFrom && orderDate && orderDate < dateFrom) return false;
+        if (dateTo && orderDate && orderDate > dateTo) return false;
+      }
 
       if (selectedClient !== 'all' && customerName !== selectedClient) return false;
       if (selectedUser !== 'all' && userName !== selectedUser) return false;
@@ -544,6 +566,7 @@ export default function DocumentsManager() {
     selectedDocType,
     selectedStatus,
     selectedProduct,
+    periodFilterActive,
     dateFrom,
     dateTo,
     itemsByOrderId,
@@ -591,6 +614,43 @@ export default function DocumentsManager() {
     return itemsByOrderId[selectedOrderId] ?? [];
   }, [itemsByOrderId, selectedOrderId]);
 
+  const selectedOrder = useMemo(() => {
+    if (!selectedOrderId) return null;
+    return orders.find((order) => String(order.id) === selectedOrderId) ?? null;
+  }, [orders, selectedOrderId]);
+
+  const handleRefresh = () => {
+    setActionMessage('');
+    void fetchData();
+  };
+
+  const handlePrint = () => {
+    if (!selectedOrder) {
+      setActionMessage('Selecione um documento para imprimir.');
+      return;
+    }
+    void printSalesDocumentThermalSecondCopy(selectedOrder, selectedItems, companyProfile).then((opened) => {
+      if (!opened) {
+        setActionMessage('Não foi possível abrir a impressão térmica. Verifique se o browser permite pop-ups.');
+        return;
+      }
+      setActionMessage('');
+    });
+  };
+
+  const handleSavePdf = () => {
+    if (!selectedOrder) {
+      setActionMessage('Selecione um documento para guardar como PDF.');
+      return;
+    }
+    const opened = saveSalesDocumentAsPdf(selectedOrder, selectedItems, companyProfile);
+    if (!opened) {
+      setActionMessage('Não foi possível abrir a janela de PDF. Verifique se o browser permite pop-ups.');
+      return;
+    }
+    setActionMessage('');
+  };
+
   const handleClearFilters = () => {
     setQuery('');
     setSelectedProduct('all');
@@ -598,12 +658,13 @@ export default function DocumentsManager() {
     setSelectedUser('all');
     setSelectedDocType('all');
     setSelectedStatus('all');
-    setDateFrom(todayInput());
-    setDateTo(todayInput());
+    setPeriodFilterActive(false);
+    setDateFrom('');
+    setDateTo('');
   };
 
   const openPeriodModal = () => {
-    const start = dateFrom || todayInput();
+    const start = dateFrom || firstDayOfCurrentMonth();
     const end = dateTo || todayInput();
     setTempDateFrom(start);
     setTempDateTo(end);
@@ -615,6 +676,14 @@ export default function DocumentsManager() {
   const applyPeriod = () => {
     setDateFrom(tempDateFrom);
     setDateTo(tempDateTo);
+    setPeriodFilterActive(true);
+    setIsPeriodModalOpen(false);
+  };
+
+  const clearPeriodFilter = () => {
+    setPeriodFilterActive(false);
+    setDateFrom('');
+    setDateTo('');
     setIsPeriodModalOpen(false);
   };
 
@@ -721,15 +790,6 @@ export default function DocumentsManager() {
     }
   };
 
-  const handleNewDocument = () => {
-    if (typeof window === 'undefined') return;
-    window.dispatchEvent(
-      new CustomEvent('management:navigate-tab', {
-        detail: { tabId: 'gerenciamento', preserveSidebarSelection: true },
-      }),
-    );
-  };
-
   const handleClientDocumentMenuSelect = (item: string) => {
     const filter = CLIENT_DOCUMENT_FILTER[item];
     if (!filter) {
@@ -763,9 +823,12 @@ export default function DocumentsManager() {
     >
       <div className="relative z-40 h-16 bg-[#1a1a1a] border-b border-zinc-800 px-2 overflow-visible">
         <div className="h-full flex items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
-          <ToolbarButton icon={<Plus size={20} />} label="Novo" onClick={handleNewDocument} />
-          <ToolbarButton icon={<Trash2 size={20} />} label="Deletar" />
-          <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
+          <ToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
+          <ToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
+          <ToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
+
+          <ToolbarDivider />
+
           <div data-party-trigger>
             <ToolbarButton
               icon={<Users size={20} />}
@@ -805,6 +868,7 @@ export default function DocumentsManager() {
               }}
             />
           </div>
+
         </div>
       </div>
 
@@ -817,7 +881,7 @@ export default function DocumentsManager() {
               ? ['Venda a dinheiro', 'Fatura', 'Notas de crédito', 'Recibo', 'Cotações']
               : openPartyMenu === 'inventario'
                 ? ['Inventário Físico', 'Desperdícios']
-                : ['Contas', 'Reembolsos', 'Pagamentos', 'Pagamentos em lote', 'Despesas do funcionário', 'Produtos', 'Fornecedores']
+                : [...SUPPLIER_MENU_ITEMS]
           }
           onSelect={(item) => {
             if (openPartyMenu === 'clientes') {
@@ -833,7 +897,7 @@ export default function DocumentsManager() {
         />
       )}
 
-      <div className="relative z-10 border-b border-zinc-800 bg-[#181818] px-3 py-2">
+      <div className="relative z-30 border-b border-zinc-800 bg-[#181818] px-3 py-2 overflow-visible">
         <div className="space-y-2">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
             <FilterSelect label="Produto" value={selectedProduct} onChange={setSelectedProduct} options={['all', ...productOptions]} />
@@ -852,12 +916,15 @@ export default function DocumentsManager() {
             <div>
               <label className="block text-[11px] text-zinc-400 mb-1">Período</label>
               <button
+                type="button"
                 onClick={openPeriodModal}
-                className="w-full h-8 bg-[#121212] border border-zinc-700 rounded px-3 flex items-center gap-2 hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+                className="pos-select-trigger h-8 w-full gap-2 px-3"
               >
-                <CalendarDays size={14} className="text-zinc-400 shrink-0" />
-                <span className="text-xs text-zinc-200 font-medium flex-1 text-center whitespace-nowrap">
-                  {`${formatInputDateLabel(dateFrom)} - ${formatInputDateLabel(dateTo)}`}
+                <CalendarDays size={14} className="shrink-0 text-zinc-400" />
+                <span className="flex-1 whitespace-nowrap text-center text-xs font-medium text-zinc-200">
+                  {periodFilterActive
+                    ? `${formatInputDateLabel(dateFrom)} - ${formatInputDateLabel(dateTo)}`
+                    : 'Todos os períodos'}
                 </span>
               </button>
             </div>
@@ -876,6 +943,7 @@ export default function DocumentsManager() {
               <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
                 <tr className="text-zinc-400">
                   <Th>Número</Th>
+                  <Th>Referência</Th>
                   <Th>Cliente</Th>
                   <Th>Data da fatura</Th>
                   <Th>Data de vencimento</Th>
@@ -888,13 +956,13 @@ export default function DocumentsManager() {
               <tbody>
                   {loading ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-8 text-center text-zinc-500">
+                    <td colSpan={9} className="px-3 py-8 text-center text-zinc-500">
                       Carregando documentos...
                     </td>
                   </tr>
                 ) : filteredOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-8 text-center text-zinc-500">
+                    <td colSpan={9} className="px-3 py-8 text-center text-zinc-500">
                       {'Sem documentos para os filtros selecionados.'}
                     </td>
                   </tr>
@@ -911,12 +979,14 @@ export default function DocumentsManager() {
                       docTypeNormalized.includes('proforma') ||
                       docTypeNormalized.includes('cotação') ||
                       docTypeNormalized.includes('cotacao');
-                    const approvedReferenceNumber = String(row.approved_document_number ?? '').trim();
-                    const approvedReferenceType = String(row.approved_document_type ?? '').trim().toUpperCase();
-                    const approvedReference =
-                      approvedReferenceNumber ||
-                      (approvedReferenceType ? `${approvedReferenceType}` : '');
-                    const settled = paid || approved;
+                    const quotationConverted =
+                      isQuotationOrProforma &&
+                      String(row.approved_document_type ?? '').trim().toUpperCase() === 'VD' &&
+                      Boolean(String(row.approved_document_number ?? '').trim());
+                    const isApprovedQuotation = isQuotationOrProforma && (approved || quotationConverted);
+                    const docFilterCode = resolveOrderDocTypeFilterCode(row);
+                    const referenceLabel = formatDocumentReferenceDisplay(row, docFilterCode);
+                    const settled = paid || approved || quotationConverted;
                     const due = dueDateMeta(row.created_at, row.doc_type);
                     const dueClass = settled
                       ? 'text-zinc-200'
@@ -925,19 +995,20 @@ export default function DocumentsManager() {
                         : due.tone === 'warning'
                           ? 'text-amber-300'
                           : 'text-zinc-300';
-                    const statusLabel = approved
+                    const statusLabel = isApprovedQuotation || approved
                       ? 'Aprovado'
                       : paid
                         ? 'Pago'
                         : isQuotationOrProforma
                           ? 'Lançado'
                           : 'Não pago';
-                    const statusDisplay = approved && approvedReference ? `${statusLabel} · ${approvedReference}` : statusLabel;
-                    const statusClass = approved
+                    const statusClass = isApprovedQuotation || approved
                       ? 'bg-blue-600 text-white'
                       : paid
                         ? 'bg-green-600 text-white'
-                        : 'bg-red-600 text-white';
+                        : isQuotationOrProforma
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-red-600 text-white';
                     return (
                       <tr
                         key={rowId}
@@ -954,6 +1025,7 @@ export default function DocumentsManager() {
                         }`}
                       >
                         <Td>{row.document_number || `DOC-${rowId}`}</Td>
+                        <Td className="text-[11px] text-zinc-400">{referenceLabel || '—'}</Td>
                         <Td>{getCustomerName(row)}</Td>
                         <Td>{formatInvoiceShortDate(row.created_at)}</Td>
                         <Td className={dueClass}>{due.label}</Td>
@@ -963,9 +1035,7 @@ export default function DocumentsManager() {
                           {formatMoney(settled ? 0 : Number(row.total ?? 0))}
                         </Td>
                         <Td>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${statusClass}`}>
-                            {statusDisplay}
-                          </span>
+                          <DocumentStatusBadge label={statusLabel} className={statusClass} hint={referenceLabel || undefined} />
                         </Td>
                       </tr>
                     );
@@ -1034,6 +1104,9 @@ export default function DocumentsManager() {
       {errorMessage && (
         <div className="px-3 py-2 text-xs border-t border-rose-500/30 bg-rose-950/30 text-rose-200">{errorMessage}</div>
       )}
+      {actionMessage ? (
+        <div className="px-3 py-2 text-xs border-t border-emerald-500/30 bg-emerald-950/20 text-emerald-200">{actionMessage}</div>
+      ) : null}
 
       {isPeriodModalOpen && (
         <div
@@ -1041,31 +1114,31 @@ export default function DocumentsManager() {
           onClick={() => setIsPeriodModalOpen(false)}
         >
           <div
-            className="w-full max-w-[820px] bg-[#1f1f1f] border border-zinc-700 rounded shadow-2xl overflow-hidden"
+            className="w-full max-w-[820px] overflow-hidden rounded-[0.55rem] border border-zinc-700 bg-[#1f1f1f] shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="px-6 py-5 text-center">
               <h3 className="text-[18px] text-white">Período</h3>
-              <div className="mt-4 inline-flex items-center rounded border border-zinc-700 bg-[#1a1a1a] px-4 py-2 text-white font-bold">
+              <div className="mt-4 inline-flex items-center rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-4 py-2 font-bold text-white">
                 {formatInputDateLabel(tempDateFrom)} - {formatInputDateLabel(tempDateTo)}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_280px] gap-6 p-6">
+            <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1fr_1fr_280px]">
               <div>
-                <p className="text-sm text-zinc-100 mb-3 text-center">Início</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <p className="mb-3 text-center text-sm text-zinc-100">Início</p>
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronLeft size={16} />
                     </button>
-                    <div className="text-white font-bold">{monthLabel(calendarStartMonth)}</div>
+                    <div className="font-bold text-white">{monthLabel(calendarStartMonth)}</div>
                     <button
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -1076,18 +1149,18 @@ export default function DocumentsManager() {
 
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Fim</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronLeft size={16} />
                     </button>
-                    <div className="text-white font-bold">{monthLabel(calendarEndMonth)}</div>
+                    <div className="font-bold text-white">{monthLabel(calendarEndMonth)}</div>
                     <button
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -1107,6 +1180,7 @@ export default function DocumentsManager() {
                   <PresetButton label="Mês passado" onClick={() => applyPresetPeriod('lastMonth')} />
                   <PresetButton label="Este ano" onClick={() => applyPresetPeriod('thisYear')} />
                   <PresetButton label="Ano passado" onClick={() => applyPresetPeriod('lastYear')} />
+                  <PresetButton label="Todos os períodos" onClick={clearPeriodFilter} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mt-5">
@@ -1127,7 +1201,35 @@ export default function DocumentsManager() {
           </div>
         </div>
       )}
+
     </div>
+  );
+}
+
+function ToolbarDivider() {
+  return <div className="mx-1 h-10 w-px shrink-0 self-center bg-zinc-700" aria-hidden="true" />;
+}
+
+function DocumentStatusBadge({
+  label,
+  className,
+  hint,
+}: {
+  label: string;
+  className: string;
+  hint?: string;
+}) {
+  if (!hint) {
+    return <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${className}`}>{label}</span>;
+  }
+
+  return (
+    <span className="relative inline-flex group/status">
+      <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${className}`}>{label}</span>
+      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#00a3e0]/30 bg-[#00364b] px-3 py-1.5 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl transition-all duration-150 group-hover/status:translate-y-0 group-hover/status:opacity-100">
+        {hint}
+      </span>
+    </span>
   );
 }
 
@@ -1169,7 +1271,7 @@ function PartyDropdownMenu({
   return (
     <div
       data-party-dropdown
-      className="fixed z-[9999] min-w-[190px] rounded border border-zinc-700 bg-[#1a1a1a] p-2 shadow-2xl"
+      className="pos-dropdown fixed z-[9999]"
       style={{ left, top }}
     >
       {items.map((item) => (
@@ -1177,7 +1279,7 @@ function PartyDropdownMenu({
           key={item}
           type="button"
           onClick={() => onSelect(item)}
-          className="block w-full rounded px-3 py-1.5 text-left text-[13px] text-zinc-300 hover:bg-zinc-800"
+          className="pos-dropdown-item"
         >
           {item}
         </button>
@@ -1198,30 +1300,16 @@ function FilterSelect({
   options: string[];
 }) {
   return (
-    <div>
-      <label className="block text-[11px] text-zinc-400 mb-1">{label}</label>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onClick={(event) => {
-            const target = event.currentTarget as HTMLSelectElement & { showPicker?: () => void };
-            target.showPicker?.();
-          }}
-          className="w-full h-8 appearance-none cursor-pointer bg-[#121212] border border-zinc-700 rounded px-2 pr-8 text-xs text-zinc-200 outline-none focus:border-blue-500"
-        >
-          {options.map((option) => (
-            <option key={option} value={option}>
-              {option === 'all' ? `Todos` : option}
-            </option>
-          ))}
-        </select>
-        <ChevronsUpDown
-          size={13}
-          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500"
-        />
-      </div>
-    </div>
+    <PosSelect
+      label={label}
+      value={value}
+      onChange={onChange}
+      size="sm"
+      options={options.map((option) => ({
+        value: option,
+        label: option === 'all' ? 'Todos' : option,
+      }))}
+    />
   );
 }
 
@@ -1252,7 +1340,7 @@ function ModalActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex items-center justify-center gap-2 min-h-11 px-3 py-3 border rounded text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed border-zinc-700 bg-[#131314] hover:bg-zinc-800 hover:border-zinc-600"
+      className="flex min-h-11 items-center justify-center gap-2 rounded-[0.4rem] border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {icon}
       <span className="text-sm">{label}</span>
@@ -1270,7 +1358,7 @@ function PresetButton({
   return (
     <button
       onClick={onClick}
-      className="min-h-11 px-3 py-3 border border-zinc-700 rounded bg-[#1a1a1a] text-white text-sm hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+      className="min-h-11 rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
     >
       {label}
     </button>

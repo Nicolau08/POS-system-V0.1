@@ -94,9 +94,15 @@ export function ReceiptPreview({
               </div>
 
               <div className="border-t border-dashed border-black pt-2">
-                <div className="flex justify-between text-[10px] font-bold">
-                  <span>Data: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</span>
-                  <span>Atendido por: {currentUserName || 'Admin'}</span>
+                <div className="flex justify-between gap-3 text-[10px] font-bold">
+                  <div className="min-w-0">
+                    <div>Data: {new Date().toLocaleDateString()}</div>
+                    <div>{new Date().toLocaleTimeString()}</div>
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <div>Atendido por:</div>
+                    <div className="font-black">{currentUserName || 'Admin'}</div>
+                  </div>
                 </div>
                 <div className="text-[12px] font-bold mt-1">
                   {isSaleFinalized ? docType : 'Cons. Doc'} nº: {currentReceiptNumber || formatDocumentNumber(nextVDNumber)}

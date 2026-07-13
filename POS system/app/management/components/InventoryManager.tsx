@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   RotateCcw, History, Printer, FileText, FileSpreadsheet, 
-  ClipboardCheck, Zap, HelpCircle, Search, ChevronRight, ChevronLeft,
+  PackagePlus, Zap, HelpCircle, Search, ChevronRight, ChevronLeft,
   ChevronDown, Folder, Loader2, AlertCircle, Delete, CornerDownLeft, X,
   CalendarDays, Check
 } from 'lucide-react';
@@ -12,6 +12,7 @@ import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { setStockCountedQuantity } from '@/lib/services/posService';
+import PurchaseStockModal from '@/app/management/components/PurchaseStockModal';
 
 interface Product {
   id: string;
@@ -24,6 +25,7 @@ interface Product {
   final_price?: number;
   unit?: string;
   stock_quantity: number;
+  is_service?: boolean;
   categories?: {
     name: string;
   };
@@ -76,6 +78,7 @@ export default function InventoryManager() {
   const [calendarEndMonth, setCalendarEndMonth] = useState(`${historyTo.slice(0, 7)}-01`);
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
+  const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
   const [quickValue, setQuickValue] = useState('0');
   const [quickOverwrite, setQuickOverwrite] = useState(true);
   const [quickSaving, setQuickSaving] = useState(false);
@@ -359,6 +362,10 @@ export default function InventoryManager() {
 
   const openQuickModal = () => {
     if (!selectedProduct) return;
+    if (selectedProduct.is_service) {
+      window.alert('Este produto está marcado como serviço (sem controlo de estoque).');
+      return;
+    }
     setQuickValue(String(selectedProduct.stock_quantity ?? 0));
     setQuickOverwrite(true);
     setQuickError('');
@@ -467,6 +474,8 @@ export default function InventoryManager() {
 
   const movementLabel = (type: string) => {
     switch (String(type).toLowerCase()) {
+      case 'compra':
+        return 'Compra';
       case 'entrada':
         return 'Entrada de stock';
       case 'devolucao':
@@ -496,12 +505,16 @@ export default function InventoryManager() {
           onClick={() => void openHistoryModal()}
           disabled={!selectedProductId}
         />
-        <ToolbarButton icon={<ClipboardCheck size={20} />} label="Contagem" />
+        <ToolbarButton
+          icon={<PackagePlus size={20} />}
+          label="Compra"
+          onClick={() => setIsPurchaseOpen(true)}
+        />
         <ToolbarButton
           icon={<Zap size={20} />}
           label="Rápido"
           onClick={openQuickModal}
-          disabled={!selectedProductId}
+          disabled={!selectedProductId || Boolean(selectedProduct?.is_service)}
         />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
         <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
@@ -660,11 +673,28 @@ export default function InventoryManager() {
                       <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 whitespace-nowrap truncate">{p.code || '---'}</td>
                       <td className="px-4 py-2.5 text-zinc-200 font-medium border-r border-zinc-800/80 whitespace-nowrap truncate">
                         <div className="flex items-center gap-2">
-                          <div className={`w-2 h-2 rounded-full ${p.stock_quantity > 0 ? 'bg-emerald-500' : p.stock_quantity < 0 ? 'bg-red-500' : 'bg-zinc-500'}`} />
+                          <div
+                            className={`w-2 h-2 rounded-full ${
+                              p.is_service
+                                ? 'bg-zinc-600'
+                                : p.stock_quantity > 0
+                                  ? 'bg-emerald-500'
+                                  : p.stock_quantity < 0
+                                    ? 'bg-red-500'
+                                    : 'bg-zinc-500'
+                            }`}
+                          />
                           {p.name}
+                          {p.is_service ? (
+                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-400">
+                              Sem stock
+                            </span>
+                          ) : null}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">{p.stock_quantity}</td>
+                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">
+                        {p.is_service ? '—' : p.stock_quantity}
+                      </td>
                       <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap">{p.unit || 'un'}</td>
                       <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
                       <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
@@ -705,6 +735,16 @@ export default function InventoryManager() {
           </div>
         </div>
       </div>
+
+      <PurchaseStockModal
+        isOpen={isPurchaseOpen}
+        onClose={() => setIsPurchaseOpen(false)}
+        products={products}
+        initialProductId={selectedProductId}
+        onSaved={async () => {
+          await fetchData();
+        }}
+      />
 
       {isQuickOpen && selectedProduct && (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/60 p-4">
@@ -841,10 +881,10 @@ export default function InventoryManager() {
                 <button
                   type="button"
                   onClick={openPeriodModal}
-                  className="flex h-8 w-full items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-3 text-left transition-colors hover:border-zinc-600 hover:bg-zinc-800"
+                  className="pos-select-trigger h-8 w-full gap-2 px-3 text-left"
                 >
                   <CalendarDays size={14} className="shrink-0 text-zinc-400" />
-                  <span className="flex-1 text-center text-xs font-medium text-zinc-200 whitespace-nowrap">
+                  <span className="flex-1 whitespace-nowrap text-center text-xs font-medium text-zinc-200">
                     {formatPeriodDate(historyFrom)} - {formatPeriodDate(historyTo)}
                   </span>
                 </button>
@@ -870,7 +910,7 @@ export default function InventoryManager() {
                   <tr className="text-zinc-400">
                     <HistoryTh>Tipo de documento</HistoryTh>
                     <HistoryTh>Documento</HistoryTh>
-                    <HistoryTh>Cliente</HistoryTh>
+                    <HistoryTh>Entidade</HistoryTh>
                     <HistoryTh>Data</HistoryTh>
                     <HistoryTh className="text-right">Quantidade</HistoryTh>
                     <HistoryTh className="text-right">Stock antes</HistoryTh>
@@ -974,20 +1014,20 @@ export default function InventoryManager() {
           onClick={() => setIsPeriodModalOpen(false)}
         >
           <div
-            className="w-full max-w-[820px] bg-[#1f1f1f] border border-zinc-700 rounded shadow-2xl overflow-hidden"
+            className="w-full max-w-[820px] overflow-hidden rounded-[0.55rem] border border-zinc-700 bg-[#1f1f1f] shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="px-6 py-5 text-center">
               <h3 className="text-[18px] text-white">Período</h3>
-              <div className="mt-4 inline-flex items-center rounded border border-zinc-700 bg-[#1a1a1a] px-4 py-2 text-white font-bold">
+              <div className="mt-4 inline-flex items-center rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-4 py-2 font-bold text-white">
                 {formatPeriodDate(tempHistoryFrom)} - {formatPeriodDate(tempHistoryTo)}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_280px] gap-6 p-6">
+            <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1fr_1fr_280px]">
               <div>
-                <p className="text-sm text-zinc-100 mb-3 text-center">Início</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <p className="mb-3 text-center text-sm text-zinc-100">Início</p>
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
@@ -1015,20 +1055,20 @@ export default function InventoryManager() {
 
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Fim</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronLeft size={16} />
                     </button>
-                    <div className="text-white font-bold">{monthLabel(calendarEndMonth)}</div>
+                    <div className="font-bold text-white">{monthLabel(calendarEndMonth)}</div>
                     <button
                       type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -1205,7 +1245,7 @@ function HistoryPresetButton({ label, onClick }: { label: string; onClick: () =>
     <button
       type="button"
       onClick={onClick}
-      className="min-h-11 px-3 py-3 border border-zinc-700 rounded bg-[#1a1a1a] text-white text-sm hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+      className="min-h-11 rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
     >
       {label}
     </button>

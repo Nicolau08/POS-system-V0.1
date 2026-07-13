@@ -87,8 +87,8 @@ export async function putCompanyProfile(payload = {}) {
     logoDataUrl = existing?.logo_data_url ?? null;
   } else if (logoRaw === null || logoRaw === '') {
     logoDataUrl = null;
-  } else if (typeof logoRaw === 'string' && logoRaw.length > 10 * 1024 * 1024) {
-    throw new HttpError(400, 'logo muito grande (máx. ~10MB em base64)');
+  } else if (typeof logoRaw === 'string' && logoRaw.length > 2 * 1024 * 1024) {
+    throw new HttpError(400, 'logo muito grande (máx. ~2MB em base64; o cliente deve comprimir antes de guardar)');
   } else {
     logoDataUrl = String(logoRaw);
   }

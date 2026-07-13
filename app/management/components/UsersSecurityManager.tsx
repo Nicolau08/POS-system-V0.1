@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type ManagedUser = {
@@ -60,6 +60,7 @@ const PERMISSION_RULES_KEYS = [
   'painel.taxas_impostos',
   'painel.minha_empresa',
   'painel.emitir_serie',
+  'painel.logs_sistema',
 
   'estoque.inventario_rapido',
   'estoque.ver_preco_custo',
@@ -97,11 +98,13 @@ const OP_LABELS: Record<string, string> = {
   'painel.relatorios': 'Relatórios',
   'painel.clientes_fornecedores': 'Clientes & Fornecedores',
   'painel.promocoes_acoes': 'Promoções & Ações',
-  'painel.usuarios_seguranca': 'Usuários & Segurança',
+  'painel.usuarios_seguranca': 'Usuários & Acesso',
   'painel.meios_pagamento': 'Meios de pagamento',
   'painel.paises': 'Países',
   'painel.taxas_impostos': 'Taxas de impostos',
   'painel.minha_empresa': 'Minha Empresa',
+  'painel.emitir_serie': 'Emitir série',
+  'painel.logs_sistema': 'Logs do sistema',
 
   'estoque.inventario_rapido': 'Inventário rápido',
   'estoque.ver_preco_custo': 'Ver preços de custo',
@@ -183,6 +186,8 @@ const SECURITY_GROUPS: SecurityGroup[] = [
       'painel.paises',
       'painel.taxas_impostos',
       'painel.minha_empresa',
+      'painel.logs_sistema',
+      'painel.emitir_serie',
     ],
   },
   {
@@ -263,7 +268,9 @@ export default function UsersSecurityManager() {
   const fetchRules = async () => {
     setRulesLoading(true);
     try {
-      const res = await fetch(`${getPosApiBase()}/permission-rules`);
+      const res = await fetch(`${getPosApiBase()}/permission-rules`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
       if (!res.ok) throw new Error('Falha ao carregar regras de permissão');
       const data = (unwrapApiSuccessPayload<unknown[]>(await res.json()) ?? []);
       const normalized: Record<string, PermissionRule> = {};
@@ -427,11 +434,17 @@ export default function UsersSecurityManager() {
       }));
       const res = await fetch(`${getPosApiBase()}/permission-rules`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({ rules: rulesArray }),
       });
-      if (!res.ok) throw new Error('Falha ao salvar permissão');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(String(payload?.error ?? 'Falha ao salvar permissão'));
+      }
       await fetchRules();
+      pushToast('Níveis de acesso guardados.', 'success');
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : 'Falha ao salvar permissão', 'error');
     } finally {
       setRulesSaving(false);
     }
@@ -492,7 +505,7 @@ export default function UsersSecurityManager() {
           className={tabBtn(subTab === 'security')}
           onClick={() => setSubTab('security')}
         >
-          Segurança
+          Acesso
         </button>
       </div>
 

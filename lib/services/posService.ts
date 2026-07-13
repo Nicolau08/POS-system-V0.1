@@ -480,6 +480,44 @@ export const fetchCompanyProfile = async () => {
   const data = await fetchJSON('/company-profile');
   const base = emptyCompanyProfile();
   if (!data || typeof data !== 'object') return base;
+
+  const rawLogo =
+    data.logoDataUrl != null && data.logoDataUrl !== '' ? String(data.logoDataUrl) : null;
+  let logoDataUrl = rawLogo;
+  if (typeof window !== 'undefined' && rawLogo) {
+    try {
+      const { ensureCompactReceiptLogo } = await import('@/lib/compressReceiptLogo');
+      logoDataUrl = await ensureCompactReceiptLogo(rawLogo);
+      // Migrar logos antigos/grandes na BD para não atrasar cada impressão.
+      if (logoDataUrl && logoDataUrl.length < rawLogo.length * 0.9) {
+        void saveCompanyProfile({
+          name: String(data.name ?? ''),
+          taxId: String(data.taxId ?? ''),
+          street: String(data.street ?? ''),
+          buildingNumber: String(data.buildingNumber ?? ''),
+          additionalStreet: String(data.additionalStreet ?? ''),
+          plotIdentification: String(data.plotIdentification ?? ''),
+          district: String(data.district ?? ''),
+          city: String(data.city ?? ''),
+          state: String(data.state ?? ''),
+          country: String(data.country ?? ''),
+          phone: String(data.phone ?? ''),
+          email: String(data.email ?? ''),
+          bankAccountNumber: String(data.bankAccountNumber ?? ''),
+          bankDetails: String(data.bankDetails ?? ''),
+          logoDataUrl,
+          voidReasons: Array.isArray(data.voidReasons)
+            ? data.voidReasons.map((x: unknown) => String(x ?? ''))
+            : [],
+        }).catch(() => {
+          /* migração best-effort */
+        });
+      }
+    } catch {
+      logoDataUrl = rawLogo;
+    }
+  }
+
   return {
     name: String(data.name ?? ''),
     taxId: String(data.taxId ?? ''),
@@ -495,7 +533,7 @@ export const fetchCompanyProfile = async () => {
     email: String(data.email ?? ''),
     bankAccountNumber: String(data.bankAccountNumber ?? ''),
     bankDetails: String(data.bankDetails ?? ''),
-    logoDataUrl: data.logoDataUrl != null && data.logoDataUrl !== '' ? String(data.logoDataUrl) : null,
+    logoDataUrl,
     voidReasons: Array.isArray(data.voidReasons) ? data.voidReasons.map((x: unknown) => String(x ?? '')) : [],
     updatedAt: data.updatedAt ?? null,
   };
@@ -503,10 +541,22 @@ export const fetchCompanyProfile = async () => {
 
 export const saveCompanyProfile = async (profile: Record<string, unknown>) => {
   const direct = getPosApiDirectBase().replace(/\/$/, '');
+  let payload = { ...profile };
+  if (typeof window !== 'undefined' && payload.logoDataUrl != null && payload.logoDataUrl !== '') {
+    try {
+      const { ensureCompactReceiptLogo } = await import('@/lib/compressReceiptLogo');
+      payload = {
+        ...payload,
+        logoDataUrl: await ensureCompactReceiptLogo(String(payload.logoDataUrl)),
+      };
+    } catch {
+      /* keep original */
+    }
+  }
   return fetchJSON(`${direct}/company-profile`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(profile),
+    body: JSON.stringify(payload),
   });
 };
 

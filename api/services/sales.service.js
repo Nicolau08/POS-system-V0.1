@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import db from '../database.js';
 import { enqueueSync } from '../syncQueue.js';
-import { logAudit } from '../utils/logger.js';
+import { logAudit, logEvent } from '../utils/logger.js';
 import { assertTenantWrite, requireTenantId } from '../utils/tenant.js';
 import {
   parseDateFilter,
@@ -656,10 +656,25 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
   await logAudit('SALE_CREATE', auditUser, {
     entity: 'sale',
     entity_id: String(usedSaleId),
-    description: 'Sale created',
+    description: `Venda ${usedDocumentNumber || usedSaleId} criada (${normalizedDocType}) — total ${totalNumber}`,
     total: totalNumber,
     document_number: usedDocumentNumber,
     document_type: normalizedDocType,
+  });
+
+  logEvent('info', 'sale.created', `Venda ${usedDocumentNumber || usedSaleId} concluída com sucesso`, {
+    source: 'api',
+    module: 'sales.service',
+    action: 'createSale',
+    reason: 'Checkout gravado na base local e enfileirado para sync (se aplicável)',
+    who: auditUser,
+    entity: 'sale',
+    entity_id: String(usedSaleId),
+    document_number: usedDocumentNumber,
+    document_type: normalizedDocType,
+    total: totalNumber,
+    tenant_id: tenantId,
+    item_count: Array.isArray(payload?.cart) ? payload.cart.length : null,
   });
 
   if (stockAdjustments.length > 0) {

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Copy, KeyRound, Loader2, RefreshCw } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import PosSelect from '@/components/PosSelect';
 
 type TenantRow = {
   id: string;
@@ -270,19 +271,19 @@ export default function LicenseSerialManager() {
           <form onSubmit={(ev) => void emitForExisting(ev)} className="mt-4 space-y-3">
             <label className="block text-sm text-zinc-400">
               Cliente (tenant)
-              <select
-                value={existingTenantId}
-                onChange={(ev) => setExistingTenantId(ev.target.value)}
-                disabled={tenantsLoading || tenants.length === 0}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-600 disabled:opacity-50"
-              >
-                <option value="">{tenantsLoading ? 'A carregar…' : 'Selecione…'}</option>
-                {tenants.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name || t.id}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-1">
+                <PosSelect
+                  value={existingTenantId}
+                  onChange={setExistingTenantId}
+                  disabled={tenantsLoading || tenants.length === 0}
+                  size="md"
+                  placeholder={tenantsLoading ? 'A carregar…' : 'Selecione…'}
+                  options={[
+                    { value: '', label: tenantsLoading ? 'A carregar…' : 'Selecione…' },
+                    ...tenants.map((t) => ({ value: t.id, label: t.name || t.id })),
+                  ]}
+                />
+              </div>
             </label>
             <label className="block text-sm text-zinc-400">
               Plano

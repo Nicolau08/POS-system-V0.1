@@ -182,3 +182,41 @@ export function requireRole(role) {
 }
 
 export const requireAdmin = requireRole('admin');
+
+/**
+ * Exige access_level >= required_level da regra em permission_rules.
+ * Se a regra não existir, usa fallbackRequired (default 0).
+ */
+export function requirePermission(permissionKey, fallbackRequired = 0) {
+  const key = String(permissionKey ?? '').trim();
+  return async (req, res, next) => {
+    try {
+      if (!req.user) return sendError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
+
+      let required = Number(fallbackRequired);
+      if (key) {
+        const row = await new Promise((resolve, reject) => {
+          db.get(
+            `SELECT required_level FROM permission_rules WHERE key = ? LIMIT 1`,
+            [key],
+            (err, result) => (err ? reject(err) : resolve(result ?? null))
+          );
+        });
+        if (row) required = Number(row.required_level ?? fallbackRequired);
+      }
+
+      const level = Number(req.user.access_level ?? req.user.accessLevel ?? 0);
+      if (!Number.isFinite(level) || level < required) {
+        return sendError(
+          res,
+          403,
+          `Sem permissão (${key || 'operacao'}). Nível necessário: ${required}.`,
+          'FORBIDDEN'
+        );
+      }
+      return next();
+    } catch {
+      return sendError(res, 500, 'falha ao validar permissao', 'PERMISSION_CHECK_FAILED');
+    }
+  };
+}

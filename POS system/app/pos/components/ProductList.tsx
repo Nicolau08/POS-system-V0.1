@@ -179,7 +179,7 @@ export function ProductList({
                 onClick={() => onAddToCart(product)}
                 className="relative flex flex-col items-start justify-between h-28 p-4 rounded border border-zinc-800 transition-all bg-zinc-900/30 group text-left"
               >
-                {product.stock_quantity !== undefined && (
+                {!product.is_service && product.stock_quantity !== undefined && (
                   <span className={`absolute top-2 right-2 text-xs font-bold ${product.stock_quantity > 0 ? 'text-emerald-500/80' : 'text-red-500/80'}`}>
                     {product.stock_quantity}
                   </span>

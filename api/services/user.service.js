@@ -161,12 +161,26 @@ export async function authenticateLogin({ userId, enteredPin }) {
 }
 
 export async function listLoginUsers() {
-  const rows = await allDb(
-    `SELECT id, name, surname, email, role, access_level, active
-     FROM users
-     WHERE active = 1
-     ORDER BY name ASC`
-  );
+  const installationTenantId = String(
+    process.env.DEFAULT_TENANT_ID || process.env.POS_DEV_TENANT || ''
+  ).trim();
+
+  const rows = installationTenantId
+    ? await allDb(
+        `SELECT id, name, surname, email, role, access_level, active
+         FROM users
+         WHERE active = 1
+           AND tenant_id = ?
+         ORDER BY name ASC`,
+        [installationTenantId]
+      )
+    : await allDb(
+        `SELECT id, name, surname, email, role, access_level, active
+         FROM users
+         WHERE active = 1
+         ORDER BY name ASC`
+      );
+
   return rows.map((row) => ({
     id: String(row.id),
     name: String(row.name ?? ''),

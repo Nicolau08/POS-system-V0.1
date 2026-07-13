@@ -40,6 +40,8 @@ type SaleRow = {
   created_at?: string | null;
   client_name?: string | null;
   user_name?: string | null;
+  approved_document_type?: string | null;
+  approved_document_number?: string | null;
 };
 
 type SaleItemRow = {

@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt, moneyFieldLabel, POS_MONEY_PLACEHOLDER } from '@/lib/currency';
+import PosSelect from '@/components/PosSelect';
 
 function parseMoneyInput(raw: string): number {
   const n = Number(String(raw).replace(',', '.'));
@@ -579,11 +580,8 @@ export default function ProductsManager() {
         <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
         <ToolbarButton icon={<FileText size={20} />} label="Salvar como PDF" />
         <ToolbarButton icon={<Hash size={20} />} label="Etiquetas de preço" />
-        <ToolbarButton icon={<Sliders size={20} />} label="Classificação" />
-        <ToolbarButton icon={<ArrowDownUp size={20} />} label="Mov. med. preço" />
         <ToolbarButton icon={<Download size={20} />} label="Importar" />
         <ToolbarButton icon={<Upload size={20} />} label="Exportar" />
-        <ToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -771,20 +769,17 @@ export default function ProductsManager() {
 
               <div className="space-y-2">
                 <label className="text-xs text-zinc-400">Grupo</label>
-                <select
+                <PosSelect
                   value={categoryForm.parent_id}
-                  onChange={(e) => setCategoryForm((prev) => ({ ...prev, parent_id: e.target.value }))}
-                  className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none transition-colors appearance-none"
-                >
-                  <option value="">Produtos</option>
-                  {categories
-                    .filter((cat) => categoryModalMode !== 'edit' || String(cat.id) !== String(selectedCategoryData?.id))
-                    .map((cat) => (
-                      <option key={cat.id} value={cat.id}>
-                        {cat.name}
-                      </option>
-                    ))}
-                </select>
+                  onChange={(v) => setCategoryForm((prev) => ({ ...prev, parent_id: v }))}
+                  size="md"
+                  options={[
+                    { value: '', label: 'Produtos' },
+                    ...categories
+                      .filter((cat) => categoryModalMode !== 'edit' || String(cat.id) !== String(selectedCategoryData?.id))
+                      .map((cat) => ({ value: String(cat.id), label: cat.name })),
+                  ]}
+                />
               </div>
             </form>
 
@@ -905,16 +900,15 @@ export default function ProductsManager() {
 
                   <div className="space-y-2">
                     <label className="text-xs text-zinc-400 mr-2">Grupo</label>
-                    <select 
+                    <PosSelect
                       value={newProduct.category_id ?? ''}
-                      onChange={(e) => setNewProduct({...newProduct, category_id: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors appearance-none"
-                    >
-                      <option value="">Produtos</option>
-                      {categories.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.name}</option>
-                      ))}
-                    </select>
+                      onChange={(v) => setNewProduct({ ...newProduct, category_id: v })}
+                      size="md"
+                      options={[
+                        { value: '', label: 'Produtos' },
+                        ...categories.map((cat) => ({ value: String(cat.id), label: cat.name })),
+                      ]}
+                    />
                   </div>
 
                   <div className="space-y-3 pt-2">
@@ -948,7 +942,7 @@ export default function ProductsManager() {
                       >
                         <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${newProduct.is_service ? 'right-0.5' : 'left-0.5'}`} />
                       </button>
-                      <span className="text-xs text-zinc-200">Serviço (não usa estoque)</span>
+                      <span className="text-xs text-zinc-200">Não controlar estoque (serviço)</span>
                     </div>
                   </div>
 
@@ -1216,16 +1210,15 @@ export default function ProductsManager() {
 
                   <div className="space-y-2">
                     <label className="text-xs text-zinc-400 mr-2">Grupo</label>
-                    <select 
+                    <PosSelect
                       value={editingProduct.category_id ?? ''}
-                      onChange={(e) => setEditingProduct({...editingProduct, category_id: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors appearance-none"
-                    >
-                      <option value="">Produtos</option>
-                      {categories.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.name}</option>
-                      ))}
-                    </select>
+                      onChange={(v) => setEditingProduct({ ...editingProduct, category_id: v })}
+                      size="md"
+                      options={[
+                        { value: '', label: 'Produtos' },
+                        ...categories.map((cat) => ({ value: String(cat.id), label: cat.name })),
+                      ]}
+                    />
                   </div>
 
                   <div className="space-y-3 pt-2">
@@ -1259,7 +1252,7 @@ export default function ProductsManager() {
                       >
                         <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${editingProduct.is_service ? 'right-0.5' : 'left-0.5'}`} />
                       </button>
-                      <span className="text-xs text-zinc-200">Serviço (não usa estoque)</span>
+                      <span className="text-xs text-zinc-200">Não controlar estoque (serviço)</span>
                     </div>
                   </div>
 

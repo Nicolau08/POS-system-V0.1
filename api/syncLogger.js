@@ -1,4 +1,5 @@
 import { run } from './dbUtils.js';
+import { logError, logEvent, logWarn } from './utils/logger.js';
 
 async function logSyncError({ queueId = null, type = 'unknown', payload = null, error }) {
   const safeStringify = (value) => {
@@ -39,27 +40,64 @@ async function logSyncError({ queueId = null, type = 'unknown', payload = null, 
     (error == null ? 'unknown sync error' : '[unknown sync error]');
   const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim() || null;
   const payloadString = payload == null ? null : JSON.stringify(payload);
+  const syncType = String(type ?? 'unknown');
 
   try {
     await run(
       `INSERT INTO sync_logs (queue_id, tenant_id, type, payload, error_message) VALUES (?, ?, ?, ?, ?)`,
-      [queueId, tenantId, type, payloadString, errorMessage]
+      [queueId, tenantId, syncType, payloadString, errorMessage]
     );
   } catch (logErr) {
     console.error('[sync] failed to persist sync log:', logErr.message);
   }
 
-  console.error('[sync] error:', {
-    queueId,
-    tenantId,
-    type,
-    message: errorMessage,
+  logError('sync_error', {
+    event: `sync.${syncType}`,
+    message: `Falha de sincronismo (${syncType}): ${errorMessage}`,
+    module: 'sync',
+    action: syncType,
+    reason: 'Erro ao sincronizar dados com a cloud / fila local',
+    tenant_id: tenantId,
+    queue_id: queueId,
+    entity: 'sync',
+    entity_id: queueId != null ? String(queueId) : null,
+    error: errorObj ?? errorMessage,
     code: errorObj?.code ?? null,
     details: errorObj?.details ?? null,
-    hint: errorObj?.hint ?? null,
-    errorRaw: error ?? null,
-    payload,
   });
 }
 
-export { logSyncError };
+/**
+ * Operações de sync (sucesso/aviso) → sync_logs + app_logs legível.
+ */
+async function logSyncOperation(type, payload, message, { level = 'info' } = {}) {
+  const syncType = String(type ?? 'event');
+  const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim() || null;
+  const text = String(message ?? `Evento de sincronismo: ${syncType}`);
+
+  try {
+    await run(
+      `INSERT INTO sync_logs (queue_id, tenant_id, type, payload, error_message) VALUES (?, ?, ?, ?, ?)`,
+      [null, tenantId, syncType, payload == null ? null : JSON.stringify(payload), text],
+    );
+  } catch (error) {
+    console.error('[sync] failed to persist sync operation log:', error.message);
+  }
+
+  const meta = {
+    event: `sync.${syncType}`,
+    message: text,
+    module: 'sync',
+    action: syncType,
+    reason: 'Operação de sincronização com a cloud',
+    tenant_id: tenantId,
+    entity: 'sync',
+    ...(payload && typeof payload === 'object' ? { sync_payload: payload } : {}),
+  };
+
+  if (level === 'warn') logWarn('sync_operation', meta);
+  else if (level === 'error') logError('sync_operation', meta);
+  else logEvent('info', `sync.${syncType}`, text, meta);
+}
+
+export { logSyncError, logSyncOperation };

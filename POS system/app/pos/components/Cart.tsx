@@ -111,7 +111,7 @@ export function Cart({
                   placeholder="Nome do cliente..."
                 />
                 {customerName.length > 0 && (
-                  <div className="absolute top-full left-0 w-full mt-1 bg-zinc-900 border border-zinc-800 rounded shadow-2xl z-50 overflow-hidden py-1">
+                  <div className="pos-dropdown absolute top-full left-0 z-50 mt-1 w-full">
                     {customers
                       .filter((c) => c.name.toLowerCase().includes(customerName.toLowerCase()))
                       .slice(0, 3)
@@ -119,7 +119,7 @@ export function Cart({
                         <button
                           key={c.id}
                           onClick={() => onSelectCustomer(c)}
-                          className="w-full px-3 py-2 text-left hover:bg-zinc-800 flex items-center gap-2 transition-colors"
+                          className="pos-dropdown-item flex items-center gap-2"
                         >
                           <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-white">
                             <User size={10} />
@@ -134,7 +134,7 @@ export function Cart({
                     {!customers.some((c) => c.name.toLowerCase() === customerName.toLowerCase()) && (
                       <button
                         onClick={onCreateCustomerFromName}
-                        className="w-full px-3 py-2 text-left hover:bg-emerald-500/10 text-emerald-500 flex items-center gap-2 transition-colors border-t border-zinc-800/50 mt-1"
+                        className="pos-dropdown-item mt-0.5 flex items-center gap-2 text-emerald-400 hover:!bg-emerald-500/10"
                       >
                         <Plus size={12} />
                         <span className="text-[10px] font-bold capitalize tracking-tight">Cadastrar &quot;{customerName}&quot;</span>

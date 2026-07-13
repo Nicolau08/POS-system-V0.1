@@ -3,7 +3,7 @@ import { enqueueSync } from '../syncQueue.js';
 import { HttpError } from '../utils/response.js';
 import { assertTenantWrite, requireTenantId } from '../utils/tenant.js';
 import {
-  parseDateFilter,
+  parseDateOnly,
   parsePagination,
   parseSearchTerm,
   withPaginationPayload,
@@ -31,9 +31,21 @@ import {
   listDocumentosPaginated,
   rollbackTransaction,
   updateOrderApproval,
+  updateOrderDocumentPayment,
   updateOrderPaymentStatus,
   updateVendaApproval,
+  updateVendaDocumentPayment,
+  findOrderByDocumentNumber,
+  findOrderByDocumentParts,
+  findVendaByDocumentNumber,
+  getOrderPaymentContext,
+  getVendaPaymentContext,
+  insertVendaRecord,
+  listOrderItemsByDocumentId,
+  updateOrderSourceReference,
 } from '../repositories/documentos.repository.js';
+
+import { filterCashInflowDocuments } from '../utils/revenueDocuments.js';
 
 const DASHBOARD_SUMMARY_CACHE_TTL_MS = Math.max(1000, Number(process.env.DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 8000));
 const dashboardSummaryCache = new Map();
@@ -155,8 +167,8 @@ export async function getDocumentos(query = {}, user = null) {
   const tenantId = resolveTenantIdStrict(user?.tenant_id);
   const pagination = parsePagination(query);
   const search = parseSearchTerm(query.search);
-  const dateFrom = parseDateFilter(query.dateFrom ?? query.from);
-  const dateTo = parseDateFilter(query.dateTo ?? query.to);
+  const dateFromRaw = parseDateOnly(query.dateFrom ?? query.from);
+  const dateToRaw = parseDateOnly(query.dateTo ?? query.to);
   const docsBaseSql = buildDocumentosBaseSql();
 
   const where = ['1=1'];
@@ -171,13 +183,13 @@ export async function getDocumentos(query = {}, user = null) {
     )`);
     params.push(token, token, token, token);
   }
-  if (dateFrom) {
-    where.push(`datetime(created_at) >= datetime(?)`);
-    params.push(dateFrom);
+  if (dateFromRaw) {
+    where.push(`date(created_at) >= date(?)`);
+    params.push(dateFromRaw);
   }
-  if (dateTo) {
-    where.push(`datetime(created_at) <= datetime(?)`);
-    params.push(dateTo);
+  if (dateToRaw) {
+    where.push(`date(created_at) <= date(?)`);
+    params.push(dateToRaw);
   }
   const whereSql = ` WHERE ${where.join(' AND ')}`;
   const orderedSql = `SELECT id, doc_type, document_number, payment_method, status, approved_document_type, approved_document_number, discount, subtotal, tax, total, created_at, customer_id, local_sale_id, user_name, client_name ${docsBaseSql}${whereSql} ORDER BY datetime(created_at) DESC, id DESC`;
@@ -329,9 +341,12 @@ export async function postDocumento(payload = {}, user = null) {
   const normalizedDocType = String(documentType).trim().toLowerCase();
   const shouldIncreaseStock =
     prefix === 'WH/IN' ||
+    prefix === 'EN/ST' ||
+    prefix === 'PUR' ||
     normalizedDocType === 'entrada de stock' ||
     normalizedDocType === 'entrada de armazem' ||
-    normalizedDocType === 'entrada de armazém';
+    normalizedDocType === 'entrada de armazém' ||
+    normalizedDocType === 'compra';
 
   const dateObj = new Date(documentDate);
   const year = Number.isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
@@ -391,18 +406,29 @@ export async function postDocumento(payload = {}, user = null) {
       ]);
 
       if (shouldIncreaseStock && productId) {
-        await increaseProductStock([quantity, Number.isFinite(unitPrice) ? unitPrice : 0, now, productId, tenantId]);
-        touchedProductIds.add(String(productId));
-        await insertStockMovement([
-          crypto.randomUUID(),
-          tenantId,
-          Number(productId),
-          'restock',
-          quantity,
-          `WH/IN:${documentNumber}`,
-          now,
-          now,
-        ]);
+        const productRow = await getProductForSync(productId, tenantId);
+        const isService = Number(productRow?.is_service ?? 0) !== 0;
+        // Serviço / sem controlo de stock: mantém o documento, não altera quantidade.
+        if (!isService) {
+          await increaseProductStock([
+            quantity,
+            Number.isFinite(unitPrice) ? unitPrice : 0,
+            now,
+            productId,
+            tenantId,
+          ]);
+          touchedProductIds.add(String(productId));
+          await insertStockMovement([
+            crypto.randomUUID(),
+            tenantId,
+            Number(productId),
+            'restock',
+            quantity,
+            `${prefix}:${documentNumber}`,
+            now,
+            now,
+          ]);
+        }
       }
     }
 
@@ -462,7 +488,7 @@ export async function getDashboardSummary(query = {}, user = null) {
   const tenantId = resolveTenantIdStrict(user?.tenant_id);
   const yearFromQuery = Number(query.year);
   const targetYear = Number.isFinite(yearFromQuery) ? yearFromQuery : new Date().getFullYear();
-  const cacheKey = `${tenantId}:${targetYear}`;
+  const cacheKey = `${tenantId}:${targetYear}:cash-v2`;
   const forceRefresh = String(query.refresh ?? '').toLowerCase() === 'true';
 
   if (!forceRefresh) {
@@ -475,10 +501,16 @@ export async function getDashboardSummary(query = {}, user = null) {
   const orderRows = await listDashboardOrderRows(tenantId);
   const saleRows = await listDashboardSaleRows(tenantId);
   const documents = [...(orderRows ?? []), ...(saleRows ?? [])];
-  const completedDocs = (documents ?? []).filter((doc) => String(doc?.status ?? '').toLowerCase() === 'completed');
-  const currentYearDocs = completedDocs.filter((doc) => {
+  const cashInflowDocs = filterCashInflowDocuments(documents, 'all');
+  const currentYearDocs = cashInflowDocs.filter((doc) => {
     const date = new Date(doc?.created_at ?? '');
     return !Number.isNaN(date.getTime()) && date.getFullYear() === targetYear;
+  });
+
+  const monthNow = new Date().getMonth();
+  const currentMonthDocs = currentYearDocs.filter((doc) => {
+    const date = new Date(doc?.created_at ?? '');
+    return !Number.isNaN(date.getTime()) && date.getMonth() === monthNow;
   });
 
   const monthlySalesData = Array.from({ length: 12 }, (_, i) => ({
@@ -502,7 +534,11 @@ export async function getDashboardSummary(query = {}, user = null) {
     }
   }
 
-  const validOrderIds = new Set(completedDocs.map((doc) => String(doc?.id ?? '')));
+  const validOrderIds = new Set(currentMonthDocs.map((doc) => String(doc?.id ?? '')));
+  for (const doc of currentMonthDocs) {
+    const id = String(doc?.id ?? '');
+    if (id.startsWith('venda:')) validOrderIds.add(id.slice('venda:'.length));
+  }
   const itemRows = await listDashboardOrderItems(tenantId);
   const productMap = {};
   for (const item of itemRows ?? []) {
@@ -534,7 +570,7 @@ export async function getDashboardSummary(query = {}, user = null) {
   }
 
   const customerTotals = {};
-  for (const doc of completedDocs) {
+  for (const doc of currentMonthDocs) {
     const customerId = doc?.customer_id != null ? String(doc.customer_id) : '';
     const fallbackName = String(doc?.client_name ?? '').trim();
     const customerName =
@@ -573,4 +609,341 @@ export async function getNextVd(user = null) {
   const tenantId = resolveTenantIdStrict(user?.tenant_id);
   const row = await getNextVdSequence(tenantId);
   return { next: Number(row?.next ?? 1) };
+}
+
+function parseDocumentNumberParts(documentNumber) {
+  const match = String(documentNumber ?? '')
+    .trim()
+    .toUpperCase()
+    .match(/^([A-Z]+)\/(\d{4})\/(\d+)$/);
+  if (!match) return null;
+  return {
+    prefix: match[1],
+    year: Number(match[2]),
+    sequence: Number(match[3]),
+  };
+}
+
+function formatGeneratedDocumentNumber(prefix, year, sequence) {
+  const padSize = prefix === 'FP' || prefix === 'VD' ? 4 : 5;
+  return `${prefix}/${year}/${String(sequence).padStart(padSize, '0')}`;
+}
+
+function resolvePayableDocumentKind(row, sourceType) {
+  const docType = String(row?.doc_type ?? '').trim().toUpperCase();
+  const docPrefix =
+    sourceType === 'order'
+      ? String(row?.doc_prefix ?? '').trim().toUpperCase()
+      : docType;
+  const number = String(row?.document_number ?? '').trim().toUpperCase();
+  const parts = parseDocumentNumberParts(number);
+
+  if (docPrefix === 'FP' || docType === 'FP' || docType.includes('PROFORMA') || parts?.prefix === 'FP') {
+    return 'FP';
+  }
+  if (
+    docPrefix === 'FT' ||
+    docType === 'FT' ||
+    docType === 'FATURA' ||
+    parts?.prefix === 'FT' ||
+    String(row?.payment_method ?? '')
+      .toLowerCase()
+      .includes('conta corrente')
+  ) {
+    return 'FT';
+  }
+  return null;
+}
+
+function isDocumentAlreadyPaid(row) {
+  const status = String(row?.status ?? '').trim().toLowerCase();
+  if (status === 'completed' || status === 'approved' || status === 'pago') return true;
+  if (String(row?.approved_document_number ?? '').trim()) return true;
+  return false;
+}
+
+async function loadPayableDocument(documentNumber, tenantId) {
+  const normalized = String(documentNumber ?? '').trim();
+  let order = await findOrderByDocumentNumber(normalized, tenantId);
+  let sale = null;
+
+  if (!order) {
+    sale = await findVendaByDocumentNumber(normalized, tenantId);
+  }
+  if (!order && !sale) {
+    const parts = parseDocumentNumberParts(normalized);
+    if (parts) {
+      order = await findOrderByDocumentParts(parts.prefix, parts.year, parts.sequence, tenantId);
+    }
+  }
+  if (!order && !sale) return null;
+
+  const sourceType = order ? 'order' : 'sale';
+  const sourceRow = order ?? sale;
+  const payableKind = resolvePayableDocumentKind(sourceRow, sourceType);
+  return { sourceType, sourceRow, payableKind };
+}
+
+export async function previewDocumentPayment(query = {}, user = null) {
+  const tenantId = resolveTenantIdStrict(user?.tenant_id);
+  const documentNumber = String(query.documentNumber ?? '').trim();
+  if (!documentNumber) throw new HttpError(400, 'documentNumber obrigatorio');
+
+  const loaded = await loadPayableDocument(documentNumber, tenantId);
+  if (!loaded) throw new HttpError(404, 'documento nao encontrado');
+  if (!loaded.payableKind) {
+    throw new HttpError(400, 'apenas faturas (FT) ou cotacoes (FP) podem ser pagas por este ecran');
+  }
+
+  const alreadyPaid = isDocumentAlreadyPaid(loaded.sourceRow);
+  const generatedDocumentType = loaded.payableKind === 'FP' ? 'VD' : 'RC';
+  const resolvedDocumentNumber = String(loaded.sourceRow.document_number ?? documentNumber).trim();
+
+  return {
+    documentNumber: resolvedDocumentNumber,
+    clientName: String(loaded.sourceRow.client_name ?? 'Consumidor final'),
+    total: Number(loaded.sourceRow.total ?? 0),
+    payableKind: loaded.payableKind,
+    generatedDocumentType,
+    generatedDocumentLabel: generatedDocumentType === 'VD' ? 'Venda a dinheiro (VD)' : 'Recibo (RC)',
+    alreadyPaid,
+    canPay: !alreadyPaid,
+  };
+}
+
+async function loadPayableDocumentDetails(sourceType, sourceRow, tenantId) {
+  if (sourceType === 'order') {
+    const order = await getOrderPaymentContext(sourceRow.id, tenantId);
+    if (!order?.id) throw new HttpError(404, 'documento nao encontrado');
+    const items = await listOrderItemsByDocumentId(order.id, tenantId);
+    return {
+      sourceDocumentNumber: String(order.document_number ?? sourceRow.document_number ?? '').trim(),
+      customerId: order.customer_id == null ? null : String(order.customer_id),
+      customerName: String(order.client_name ?? 'Consumidor final'),
+      userId: order.user_id == null ? null : String(order.user_id),
+      userName: order.user_name == null ? null : String(order.user_name),
+      total: Number(order.total ?? 0),
+      subtotal: Number(order.subtotal ?? order.total ?? 0),
+      tax: Number(order.tax ?? 0),
+      discount: Number(order.discount ?? 0),
+      items: items ?? [],
+    };
+  }
+
+  const sale = await getVendaPaymentContext(sourceRow.id, tenantId);
+  if (!sale?.id) throw new HttpError(404, 'documento nao encontrado');
+  const items = await listOrderItemsByDocumentId(String(sale.id), tenantId);
+  return {
+    sourceDocumentNumber: String(sale.document_number ?? sourceRow.document_number ?? '').trim(),
+    customerId: sale.customer_id == null ? null : String(sale.customer_id),
+    customerName: String(sale.client_name ?? sale.customer_name ?? 'Consumidor final'),
+    userId: sale.user_id == null ? null : String(sale.user_id),
+    userName: sale.user_name == null ? null : String(sale.user_name),
+    total: Number(sale.total ?? 0),
+    subtotal: Number(sale.total ?? 0),
+    tax: 0,
+    discount: 0,
+    items: items ?? [],
+  };
+}
+
+async function copyDocumentItemsToTarget(targetDocumentId, items, tenantId, now) {
+  for (const rawItem of items ?? []) {
+    const quantity = Number(rawItem?.quantity ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    const unitPrice = Number(rawItem?.price ?? 0);
+    const discountAmount = Number(rawItem?.discount_amount ?? 0);
+    await insertOrderItem([
+      crypto.randomUUID(),
+      String(targetDocumentId),
+      tenantId,
+      rawItem?.product_id != null ? String(rawItem.product_id) : null,
+      String(rawItem?.product_name ?? 'Item'),
+      quantity,
+      Number.isFinite(unitPrice) ? unitPrice : 0,
+      Number.isFinite(discountAmount) ? discountAmount : 0,
+      now,
+      now,
+    ]);
+  }
+}
+
+async function createReceiptDocument({
+  sourceDocumentNumber,
+  sourceDocType,
+  generatedDocumentNumber,
+  paymentMethod,
+  details,
+  tenantId,
+  now,
+}) {
+  const parts = parseDocumentNumberParts(generatedDocumentNumber);
+  const year = parts?.year ?? new Date().getFullYear();
+  const sequence = parts?.sequence ?? 1;
+  const orderId = crypto.randomUUID();
+
+  await insertOrder([
+    orderId,
+    details.customerId,
+    details.userId,
+    details.userName,
+    details.total,
+    details.subtotal,
+    details.tax,
+    details.discount,
+    paymentMethod,
+    'completed',
+    'Recibo',
+    'RC',
+    year,
+    sequence,
+    generatedDocumentNumber,
+    now,
+    now,
+    tenantId,
+  ]);
+
+  await updateOrderSourceReference(orderId, sourceDocType, sourceDocumentNumber, now, tenantId);
+  await copyDocumentItemsToTarget(orderId, details.items, tenantId, now);
+  return orderId;
+}
+
+async function createVendaDocument({
+  sourceDocumentNumber,
+  sourceDocType,
+  generatedDocumentNumber,
+  paymentMethod,
+  details,
+  tenantId,
+  now,
+}) {
+  const parts = parseDocumentNumberParts(generatedDocumentNumber);
+  const sequence = parts?.sequence ?? 1;
+  const insertResult = await insertVendaRecord([
+    details.total,
+    now,
+    'VD',
+    sequence,
+    'completed',
+    details.customerId,
+    details.customerName,
+    paymentMethod,
+    details.userId,
+    details.userName,
+    sourceDocType,
+    sourceDocumentNumber,
+    tenantId,
+  ]);
+  const saleId = Number(insertResult?.lastID ?? 0);
+  if (!Number.isFinite(saleId) || saleId <= 0) {
+    throw new HttpError(500, 'falha ao criar venda a dinheiro');
+  }
+  await copyDocumentItemsToTarget(String(saleId), details.items, tenantId, now);
+  return saleId;
+}
+
+export async function registerDocumentPayment(payload = {}, user = null) {
+  const tenantId = resolveTenantIdStrict(user?.tenant_id);
+  assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
+  const documentNumber = String(payload.documentNumber ?? '').trim();
+  const paymentMethod = String(payload.paymentMethod ?? '').trim();
+  if (!documentNumber) throw new HttpError(400, 'documentNumber obrigatorio');
+  if (!paymentMethod) throw new HttpError(400, 'paymentMethod obrigatorio');
+
+  const loaded = await loadPayableDocument(documentNumber, tenantId);
+  if (!loaded) throw new HttpError(404, 'documento nao encontrado');
+
+  const { sourceType, sourceRow, payableKind } = loaded;
+  if (!payableKind) {
+    throw new HttpError(400, 'apenas faturas (FT) ou cotacoes (FP) podem ser pagas por este ecran');
+  }
+  if (isDocumentAlreadyPaid(sourceRow)) {
+    throw new HttpError(409, 'documento ja se encontra pago');
+  }
+
+  const now = new Date().toISOString();
+  const year = new Date().getFullYear();
+  const generatedDocumentType = payableKind === 'FP' ? 'VD' : 'RC';
+  let generatedDocumentNumber = '';
+  const details = await loadPayableDocumentDetails(sourceType, sourceRow, tenantId);
+  const sourceDocumentNumber = String(details.sourceDocumentNumber || documentNumber).trim();
+  const sourceDocType = payableKind === 'FP' ? 'FP' : 'FT';
+
+  try {
+    await beginImmediateTransaction();
+
+    if (payableKind === 'FP') {
+      const nextVd = await getNextVdSequence(tenantId);
+      const sequence = Number(nextVd?.next ?? 1);
+      generatedDocumentNumber = formatGeneratedDocumentNumber('VD', year, sequence);
+      await createVendaDocument({
+        sourceDocumentNumber,
+        sourceDocType,
+        generatedDocumentNumber,
+        paymentMethod,
+        details,
+        tenantId,
+        now,
+      });
+    } else {
+      const nextRc = await getNextOrderSequence('RC', year, tenantId);
+      const sequence = Number(nextRc?.next ?? 1);
+      generatedDocumentNumber = formatGeneratedDocumentNumber('RC', year, sequence);
+      await createReceiptDocument({
+        sourceDocumentNumber,
+        sourceDocType,
+        generatedDocumentNumber,
+        paymentMethod,
+        details,
+        tenantId,
+        now,
+      });
+    }
+
+    const sourcePaymentStatus = payableKind === 'FP' ? 'approved' : 'completed';
+
+    if (sourceType === 'order') {
+      const result = await updateOrderDocumentPayment(
+        String(sourceRow.id),
+        {
+          paymentMethod,
+          status: sourcePaymentStatus,
+          approvedDocType: generatedDocumentType,
+          approvedDocumentNumber: generatedDocumentNumber,
+          updatedAt: now,
+        },
+        tenantId
+      );
+      if (Number(result?.changes ?? 0) === 0) throw new HttpError(404, 'documento nao encontrado');
+    } else {
+      const result = await updateVendaDocumentPayment(
+        Number(sourceRow.id),
+        {
+          paymentMethod,
+          status: sourcePaymentStatus,
+          approvedDocType: generatedDocumentType,
+          approvedDocumentNumber: generatedDocumentNumber,
+        },
+        tenantId
+      );
+      if (Number(result?.changes ?? 0) === 0) throw new HttpError(404, 'documento nao encontrado');
+    }
+
+    await commitTransaction();
+  } catch (error) {
+    await rollbackTransaction();
+    throw error;
+  }
+
+  return {
+    success: true,
+    sourceType,
+    sourceId: sourceType === 'order' ? String(sourceRow.id) : String(sourceRow.id),
+    sourceDocumentNumber,
+    payableKind,
+    generatedDocumentType,
+    generatedDocumentNumber,
+    paymentMethod,
+    status: payableKind === 'FP' ? 'approved' : 'completed',
+  };
 }

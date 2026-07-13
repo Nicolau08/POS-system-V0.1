@@ -16,6 +16,7 @@ import {
   resignMachineLicensePayload,
   verifyOfflineReactivationToken,
 } from '../lib/licensing/offlineReactivationToken.js';
+import { electronLogError, electronLogInfo, electronLogWarn } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
@@ -24,9 +25,29 @@ dotenv.config({ path: path.join(projectRoot, '.env.local'), override: true });
 const APP_WEB_PORT = 3000;
 const APP_API_PORT = 3001;
 
+/**
+ * Em Windows o launcher de dev usa POSly.exe (cópia do electron.exe com ícone).
+ * Electron trata qualquer EXE ≠ electron.exe como empacotado — isso quebrava o
+ * arranque em busca de resources/web/server.js. Detectamos o dist de node_modules.
+ */
+const isPackagedBuild = () => {
+  const forced = String(process.env.POS_ELECTRON_DEV || '').trim().toLowerCase();
+  if (forced === '1' || forced === 'true' || forced === 'yes') return false;
+  try {
+    const exec = path.normalize(process.execPath).toLowerCase();
+    const marker = path
+      .normalize(path.join('node_modules', 'electron', 'dist'))
+      .toLowerCase();
+    if (exec.includes(marker)) return false;
+  } catch {
+    /* ignore */
+  }
+  return app.isPackaged;
+};
+
 const resolvePosAppMode = () => {
   // Instalador desktop = sempre caixa POSly (consola de licenças corre no browser em dev/cloud).
-  if (app.isPackaged) return 'pos';
+  if (isPackagedBuild()) return 'pos';
   const raw = String(process.env.POS_APP_MODE || 'pos').trim().toLowerCase();
   if (raw === 'license-console' || raw === 'license-admin' || raw === 'console') {
     return 'license-console';
@@ -385,6 +406,32 @@ const getActivationStateInternal = async () => {
   const { licensePath } = getRuntimePaths();
   const expectedTenantId = await resolveExpectedTenantId();
 
+  // Electron + npm run dev:tenant (API externa): confiar na licença da BD do tenant.
+  if (shouldSkipLocalLicenseGate()) {
+    const setup = await fetchSetupStatusReliable();
+    if (setup?.licenseActivated) {
+      console.log('[electron] Licença local ignorada (API externa / skip) — BD do tenant activa.');
+      return {
+        success: true,
+        isActivated: true,
+        machineId,
+        activationCode,
+        licensePath,
+        reason: 'dev-external-api',
+      };
+    }
+    return {
+      success: true,
+      isActivated: false,
+      machineId,
+      activationCode,
+      licensePath,
+      reason: setup
+        ? 'A base do tenant ainda não tem licença activada.'
+        : 'API do tenant indisponível. Arranque npm run dev:tenant antes do Electron.',
+    };
+  }
+
   if (!(await fileExists(licensePath))) {
     return {
       success: true,
@@ -697,7 +744,7 @@ const readAndValidateLicenseFromFile = async (expectedTenantId) => {
 
 /** Alinha o processo Node da API com o tenant da licença (ficheiro escrito pelo Electron). */
 const licenseEnvForBackend = async () => {
-  if (!app.isPackaged) return {};
+  if (!isPackagedBuild()) return {};
   const v = await readAndValidateLicenseFromFile(null);
   if (!v.ok || !v.tenantId) return {};
   const { licensePath } = getRuntimePaths();
@@ -741,7 +788,7 @@ const resolveNodeBinaryForChild = () => {
 };
 
 const resolveBackendEntry = async () => {
-  if (app.isPackaged) {
+  if (isPackagedBuild()) {
     const appRoot = resolvePackagedAppRoot();
     const candidates = [
       path.join(appRoot, 'api', 'server.js'),
@@ -758,7 +805,7 @@ const resolveBackendEntry = async () => {
 };
 
 const resolveWebEntry = async () => {
-  if (!app.isPackaged) return null;
+  if (!isPackagedBuild()) return null;
   const webEntry = path.join(process.resourcesPath, 'web', 'server.js');
   if (!(await fileExists(webEntry))) {
     throw new Error('Frontend standalone não encontrado em resources/web/server.js.');
@@ -770,7 +817,7 @@ const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
   const nodeBin = resolveNodeBinaryForChild();
   const workDir =
     cwd ||
-    (app.isPackaged && String(entryPath).includes('.asar')
+    (isPackagedBuild() && String(entryPath).includes('.asar')
       ? resolvePackagedCwd()
       : path.dirname(entryPath));
 
@@ -778,8 +825,8 @@ const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
     ...process.env,
     ...env,
     ELECTRON_RUN_AS_NODE: '1',
-    NODE_ENV: app.isPackaged ? 'production' : process.env.NODE_ENV || 'development',
-    ...(app.isPackaged
+    NODE_ENV: isPackagedBuild() ? 'production' : process.env.NODE_ENV || 'development',
+    ...(isPackagedBuild()
       ? {
           POS_APP_MODE: 'pos',
           NODE_PATH: resolvePackagedAppRoot(),
@@ -811,7 +858,36 @@ const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
   return child;
 };
 
+const useExternalApi = () => {
+  const raw = String(process.env.POS_ELECTRON_USE_EXTERNAL_API || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+};
+
+/** Dev com API do tenant (ex.: qa02): não bloquear pelo license.json antigo do AppData. */
+const shouldSkipLocalLicenseGate = () => {
+  const raw = String(process.env.POS_ELECTRON_SKIP_LICENSE || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y'].includes(raw)) return true;
+  return useExternalApi() && !isPackagedBuild();
+};
+
+const isApiAlreadyUp = async (timeoutMs = 1500) => {
+  try {
+    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const startBackend = async () => {
+  if (useExternalApi() || (await isApiAlreadyUp())) {
+    console.log(
+      `[electron] A usar API externa em http://127.0.0.1:${APP_API_PORT} (não inicia api/server.js).`,
+    );
+    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`, 10_000);
+    return;
+  }
+
   const paths = getRuntimePaths();
   await ensureDir(path.dirname(paths.databasePath));
 
@@ -836,7 +912,7 @@ const startBackend = async () => {
       ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
       ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
       ...licenseEnv,
-      ...(app.isPackaged
+      ...(isPackagedBuild()
         ? {
             // Desktop: login UI chama GET /users antes de existir sessão. Em produção a API
             // desliga o fallback localhost por defeito → 401 e lista vazia. Só escuta em
@@ -862,7 +938,7 @@ const startBackend = async () => {
 };
 
 const startStandaloneWeb = async () => {
-  if (!app.isPackaged) return;
+  if (!isPackagedBuild()) return;
 
   const webEntry = await resolveWebEntry();
   webStartupLogs = '';
@@ -979,10 +1055,15 @@ const buildLicenseBlockedHtml = (reason) => `
 
 const createWindow = async (opts = {}) => {
   const { blockedReason = null } = opts;
+  if (typeof app.setName === 'function') {
+    app.setName('POSly');
+  }
+  const winIcon = path.join(projectRoot, 'assets', 'icon.ico');
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: path.join(__dirname, '../assets/icon.ico'),
+    title: 'POSly',
+    icon: winIcon,
     webPreferences: {
       contextIsolation: true,
       sandbox: false,
@@ -992,6 +1073,12 @@ const createWindow = async (opts = {}) => {
 
   Menu.setApplicationMenu(null);
   win.setMenuBarVisibility(false);
+  win.setTitle('POSly');
+  try {
+    if (fsSync.existsSync(winIcon)) win.setIcon(winIcon);
+  } catch {
+    /* ignore */
+  }
   mainWindow = win;
 
   if (blockedReason) {
@@ -999,7 +1086,7 @@ const createWindow = async (opts = {}) => {
     return;
   }
 
-  if (!app.isPackaged) {
+  if (!isPackagedBuild()) {
     const targetUrl = resolveDevWebUrl();
     try {
       await waitForHttp(targetUrl, 90_000);
@@ -1106,61 +1193,488 @@ ipcMain.handle('app:restart', async () => {
   }
 });
 
-ipcMain.handle('print:receipt', async (_event, payload) => {
-  const html = String(payload?.html ?? '');
-  if (!html.trim()) {
-    return { success: false, error: 'Conteúdo de impressão vazio.' };
+ipcMain.handle('window:toggleMaximize', async (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!win || win.isDestroyed()) {
+      return { success: false, maximized: false, error: 'Janela não disponível.' };
+    }
+    // Botão "maximizar" no desktop = ecrã inteiro (fullscreen).
+    if (win.isFullScreen()) {
+      win.setFullScreen(false);
+      return { success: true, maximized: false };
+    }
+    win.setFullScreen(true);
+    return { success: true, maximized: true };
+  } catch (error) {
+    return {
+      success: false,
+      maximized: false,
+      error: String(error?.message ?? error ?? 'Falha ao alternar ecrã inteiro.'),
+    };
   }
+});
 
-  const printWindow = new BrowserWindow({
+ipcMain.handle('window:isMaximized', async (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!win || win.isDestroyed()) {
+      return { success: false, maximized: false };
+    }
+    return { success: true, maximized: win.isFullScreen() };
+  } catch (error) {
+    return {
+      success: false,
+      maximized: false,
+      error: String(error?.message ?? error ?? 'Falha ao consultar estado da janela.'),
+    };
+  }
+});
+
+ipcMain.handle('app:quit', async () => {
+  try {
+    app.quit();
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao fechar aplicação.'),
+    };
+  }
+});
+
+ipcMain.handle('serial:listPorts', async () => {
+  try {
+    const { listSerialPorts } = await import('./customerDisplay.js');
+    const ports = await listSerialPorts();
+    return { success: true, ports };
+  } catch (error) {
+    return {
+      success: false,
+      ports: [],
+      error: String(error?.message ?? error ?? 'Falha ao listar portas.'),
+    };
+  }
+});
+
+ipcMain.handle('customerDisplay:write', async (_event, payload) => {
+  try {
+    const { writeCustomerDisplay } = await import('./customerDisplay.js');
+    return await writeCustomerDisplay(payload ?? {});
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao escrever no display.'),
+    };
+  }
+});
+
+ipcMain.handle('print:listPrinters', async () => {
+  const probe = new BrowserWindow({
     show: false,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
     },
   });
+  try {
+    await probe.loadURL('data:text/html,<html></html>');
+    const printers = await probe.webContents.getPrintersAsync();
+    return {
+      success: true,
+      printers: (printers ?? []).map((printer) => ({
+        name: String(printer.name ?? ''),
+        displayName: String(printer.displayName || printer.name || ''),
+        isDefault: Boolean(printer.isDefault),
+        status: printer.status,
+      })),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      printers: [],
+      error: String(error?.message ?? error ?? 'Falha ao listar impressoras.'),
+    };
+  } finally {
+    if (!probe.isDestroyed()) probe.destroy();
+  }
+});
+
+ipcMain.handle('print:openDrawer', async (_event, payload) => {
+  try {
+    const { openCashDrawer } = await import('./rawPrinter.js');
+    return await openCashDrawer({
+      printer: payload?.printer,
+      command: payload?.command,
+      tryBothPins: payload?.tryBothPins !== false,
+    });
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao abrir gaveta.'),
+    };
+  }
+});
+
+ipcMain.handle('print:raw', async (_event, payload) => {
+  try {
+    const { parseEscPosHexCommand, sendRawToWindowsPrinter } = await import('./rawPrinter.js');
+    const bytes = payload?.bytesBase64
+      ? Buffer.from(String(payload.bytesBase64), 'base64')
+      : parseEscPosHexCommand(payload?.command);
+    if (!bytes?.length) {
+      return { success: false, error: 'Comando RAW inválido.' };
+    }
+    return await sendRawToWindowsPrinter(payload?.printer, bytes);
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha no envio RAW.'),
+    };
+  }
+});
+
+/** Janela oculta reutilizada — criar BrowserWindow a cada recibo atrasava a impressão. */
+let receiptPrintWindow = null;
+/** Serializa uso da janela de impressão. */
+let receiptPrintMutex = Promise.resolve();
+let cachedReceiptPrinterName = '';
+/** Recibo já carregado na janela (pré-montado no ecrã de pagamento). */
+let receiptHtmlPrepared = false;
+let receiptPreparedOpts = {
+  copies: 1,
+  widthMm: 72,
+  heightMm: 200,
+  printer: '',
+};
+
+function getOrCreateReceiptPrintWindow(widthMm, heightMm) {
+  const width = Math.max(120, Math.round(widthMm * 3.78));
+  const height = Math.max(200, Math.round(heightMm * 3.78));
+  if (receiptPrintWindow && !receiptPrintWindow.isDestroyed()) {
+    try {
+      receiptPrintWindow.setSize(width, height);
+    } catch {
+      /* ignore */
+    }
+    return receiptPrintWindow;
+  }
+  receiptPrintWindow = new BrowserWindow({
+    show: false,
+    width,
+    height,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      backgroundThrottling: false,
+    },
+  });
+  try {
+    receiptPrintWindow.webContents.setBackgroundThrottling(false);
+  } catch {
+    /* ignore */
+  }
+  receiptPrintWindow.on('closed', () => {
+    receiptPrintWindow = null;
+    receiptHtmlPrepared = false;
+  });
+  return receiptPrintWindow;
+}
+
+function destroyReceiptPrintWindow() {
+  if (receiptPrintWindow && !receiptPrintWindow.isDestroyed()) {
+    try {
+      receiptPrintWindow.destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+  receiptPrintWindow = null;
+  receiptHtmlPrepared = false;
+}
+
+function receiptPrintTempPath() {
+  return path.join(app.getPath('temp'), 'posly-receipt-print.html');
+}
+
+function resolvePrintGeometry(payload) {
+  const copies = Math.max(1, Math.min(5, Number(payload?.copies) || 1));
+  const rollMm = Number(payload?.widthMm) === 58 ? 58 : 80;
+  const widthMm = rollMm === 58 ? 58 : 72;
+  const heightMm = Math.max(80, Math.min(2000, Number(payload?.heightMm) || 200));
+  return { copies, widthMm, heightMm };
+}
+
+async function resolvePrintDeviceName(printWindow, preferredName) {
+  const printers = await printWindow.webContents.getPrintersAsync();
+  if (!Array.isArray(printers) || printers.length === 0) return null;
+
+  const preferred = String(preferredName || cachedReceiptPrinterName || '').trim();
+  if (preferred) {
+    const preferredLower = preferred.toLowerCase();
+    const match =
+      printers.find((p) => String(p.name ?? '') === preferred) ||
+      printers.find((p) => String(p.displayName ?? '') === preferred) ||
+      printers.find((p) => String(p.name ?? '').toLowerCase() === preferredLower) ||
+      printers.find((p) => String(p.displayName ?? '').toLowerCase() === preferredLower) ||
+      printers.find((p) => String(p.name ?? '').toLowerCase().includes(preferredLower)) ||
+      printers.find((p) => String(p.displayName ?? '').toLowerCase().includes(preferredLower));
+    if (match?.name) {
+      cachedReceiptPrinterName = String(match.name);
+      return cachedReceiptPrinterName;
+    }
+  }
+
+  // Sem preferência ou impressora removida do Windows → usar a padrão do SO.
+  const selected = printers.find((printer) => printer.isDefault) ?? printers[0] ?? null;
+  if (!selected?.name) return null;
+  cachedReceiptPrinterName = String(selected.name);
+  return cachedReceiptPrinterName;
+}
+
+function acquireReceiptPrintMutex() {
+  let releaseMutex = () => {};
+  const previous = receiptPrintMutex;
+  receiptPrintMutex = new Promise((resolve) => {
+    releaseMutex = resolve;
+  });
+  return { previous, releaseMutex };
+}
+
+async function loadReceiptHtml(printWindow, html) {
+  const tmpPath = receiptPrintTempPath();
+  fsSync.writeFileSync(tmpPath, html, 'utf8');
+  await printWindow.loadFile(tmpPath);
+  await printWindow.webContents
+    .executeJavaScript('document.body ? document.body.offsetHeight : 0', true)
+    .catch(() => null);
+}
+
+function buildSilentPrintOptions({ deviceName, copies, widthMm, heightMm, useNativePageSize }) {
+  const options = {
+    silent: true,
+    printBackground: false,
+    deviceName,
+    copies,
+    margins: { marginType: 'none' },
+    scaleFactor: 100,
+  };
+  // pageSize custom (térmico) pode falhar em drivers Windows genéricos —
+  // nesse caso usamos o tamanho nativo da impressora do SO.
+  if (!useNativePageSize) {
+    options.pageSize = {
+      width: widthMm * 1000,
+      height: heightMm * 1000,
+    };
+  }
+  return options;
+}
+
+function startSilentPrint(printWindow, opts, onDone) {
+  const tryPrint = (useNativePageSize) => {
+    printWindow.webContents.print(
+      buildSilentPrintOptions({ ...opts, useNativePageSize }),
+      (success, failureReason) => {
+        if (!success && !useNativePageSize) {
+          console.warn(
+            '[print:receipt] pageSize térmico rejeitado; a repetir com tamanho nativo do Windows:',
+            failureReason || 'unknown',
+          );
+          tryPrint(true);
+          return;
+        }
+        if (!success) {
+          console.error(
+            '[print:receipt]',
+            failureReason || 'Falha na impressão silenciosa.',
+          );
+        }
+        if (typeof onDone === 'function') onDone(success);
+      },
+    );
+  };
+  tryPrint(Boolean(opts.useNativePageSize));
+}
+
+async function runReceiptPrintJob(payload) {
+  const html = String(payload?.html ?? '');
+  if (!html.trim()) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  const preferredName = String(payload?.printer ?? '').trim();
+  const { copies, widthMm, heightMm } = resolvePrintGeometry(payload);
+  const { previous, releaseMutex } = acquireReceiptPrintMutex();
+  await previous;
 
   try {
-    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    const printers = await printWindow.webContents.getPrintersAsync();
-    const defaultPrinter = printers.find((printer) => printer.isDefault) ?? null;
-    if (!defaultPrinter) {
-      return { success: false, error: 'Nenhuma impressora padrão definida no Windows.' };
+    receiptHtmlPrepared = false;
+    const printWindow = getOrCreateReceiptPrintWindow(widthMm, heightMm);
+    await loadReceiptHtml(printWindow, html);
+
+    const deviceName = await resolvePrintDeviceName(printWindow, preferredName);
+    if (!deviceName) {
+      releaseMutex();
+      return {
+        success: false,
+        error: 'Nenhuma impressora disponível no Windows. Instale uma impressora ou defina a padrão do sistema.',
+      };
     }
 
-    const printResult = await new Promise((resolve) => {
-      printWindow.webContents.print(
-        {
-          silent: true,
-          printBackground: true,
-          deviceName: defaultPrinter.name,
-        },
-        (success, failureReason) => {
-          resolve({
-            success,
-            failureReason: failureReason ? String(failureReason) : null,
-          });
-        }
+    await new Promise((resolve) => {
+      startSilentPrint(
+        printWindow,
+        { deviceName, copies, widthMm, heightMm },
+        () => resolve(undefined),
       );
     });
 
-    if (!printResult.success) {
-      return {
-        success: false,
-        error: printResult.failureReason || 'Falha na impressão silenciosa.',
-      };
-    }
-    return { success: true, printer: defaultPrinter.name };
+    releaseMutex();
+    return { success: true, printer: deviceName };
   } catch (error) {
+    destroyReceiptPrintWindow();
+    releaseMutex();
     return {
       success: false,
       error: String(error?.message ?? error ?? 'Falha desconhecida de impressão.'),
     };
-  } finally {
-    if (!printWindow.isDestroyed()) {
-      printWindow.destroy();
-    }
   }
+}
+
+/** Pré-carrega o HTML do recibo (ecrã de pagamento) — Finalizar só imprime. */
+ipcMain.handle('print:prepareReceipt', async (_event, payload) => {
+  const html = String(payload?.html ?? '');
+  if (!html.trim()) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  const preferredName = String(payload?.printer ?? '').trim();
+  const { copies, widthMm, heightMm } = resolvePrintGeometry(payload);
+  const { previous, releaseMutex } = acquireReceiptPrintMutex();
+  await previous;
+
+  try {
+    const printWindow = getOrCreateReceiptPrintWindow(widthMm, heightMm);
+    await loadReceiptHtml(printWindow, html);
+    const deviceName = await resolvePrintDeviceName(printWindow, preferredName);
+    if (!deviceName) {
+      receiptHtmlPrepared = false;
+      releaseMutex();
+      return {
+        success: false,
+        error: 'Nenhuma impressora disponível no Windows. Instale uma impressora ou defina a padrão do sistema.',
+      };
+    }
+
+    receiptPreparedOpts = { copies, widthMm, heightMm, printer: deviceName };
+    receiptHtmlPrepared = true;
+    releaseMutex();
+    return { success: true, printer: deviceName, prepared: true };
+  } catch (error) {
+    receiptHtmlPrepared = false;
+    destroyReceiptPrintWindow();
+    releaseMutex();
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao preparar recibo.'),
+    };
+  }
+});
+
+/** Imprime o recibo já pré-carregado (opcionalmente atualiza o nº do documento). */
+ipcMain.handle('print:commitReceipt', async (_event, payload) => {
+  const preferredName = String(
+    payload?.printer || receiptPreparedOpts.printer || cachedReceiptPrinterName || '',
+  ).trim();
+  const copies = Math.max(
+    1,
+    Math.min(5, Number(payload?.copies) || receiptPreparedOpts.copies || 1),
+  );
+  const widthMm = Number(payload?.widthMm) || receiptPreparedOpts.widthMm || 72;
+  const heightMm = Number(payload?.heightMm) || receiptPreparedOpts.heightMm || 200;
+  const docLine = payload?.patch?.docLine != null ? String(payload.patch.docLine) : '';
+
+  // Esperar prepare em curso — NÃO devolver needFullPrint antes do mutex
+  // (senão Finalizar durante o prepare força reload completo).
+  const { previous, releaseMutex } = acquireReceiptPrintMutex();
+  await previous;
+
+  try {
+    if (
+      !receiptHtmlPrepared ||
+      !receiptPrintWindow ||
+      receiptPrintWindow.isDestroyed()
+    ) {
+      releaseMutex();
+      return { success: false, error: 'not_prepared', needFullPrint: true };
+    }
+
+    const printWindow = receiptPrintWindow;
+
+    // Resolver sempre contra a lista real do Windows (impressora pode ter sido removida).
+    const deviceName = await resolvePrintDeviceName(
+      printWindow,
+      preferredName || receiptPreparedOpts.printer,
+    );
+    if (!deviceName) {
+      receiptHtmlPrepared = false;
+      releaseMutex();
+      return {
+        success: false,
+        error: 'Nenhuma impressora disponível no Windows. Instale ou defina a impressora padrão.',
+        needFullPrint: true,
+      };
+    }
+
+    if (docLine) {
+      await printWindow.webContents
+        .executeJavaScript(
+          `(() => {
+            const el = document.querySelector('[data-receipt-doc]');
+            if (!el) return false;
+            if (el.textContent === ${JSON.stringify(docLine)}) return true;
+            el.textContent = ${JSON.stringify(docLine)};
+            return true;
+          })()`,
+          true,
+        )
+        .catch(() => null);
+    }
+
+    receiptHtmlPrepared = false;
+    startSilentPrint(printWindow, { deviceName, copies, widthMm, heightMm }, () => {});
+    releaseMutex();
+
+    return { success: true, printer: deviceName };
+  } catch (error) {
+    receiptHtmlPrepared = false;
+    releaseMutex();
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao imprimir recibo preparado.'),
+      needFullPrint: true,
+    };
+  }
+});
+
+ipcMain.handle('print:receipt', async (_event, payload) => {
+  const html = String(payload?.html ?? '');
+  if (!html.trim()) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  const preferredName = String(payload?.printer ?? '').trim();
+  // Responder já — a notificação do UI não deve esperar load/spooler.
+  void runReceiptPrintJob(payload).then((result) => {
+    if (result && result.success === false) {
+      console.error('[print:receipt]', result.error || 'Falha na impressão.');
+    }
+  });
+
+  return {
+    success: true,
+    printer: preferredName || cachedReceiptPrinterName || undefined,
+  };
 });
 
 const isBenignUpdateCheckFailure = (error) => {
@@ -1206,7 +1720,7 @@ const safeCheckForUpdates = () => {
 };
 
 const setupAutoUpdates = () => {
-  if (!app.isPackaged) return;
+  if (!isPackagedBuild()) return;
   if (process.platform !== 'win32') return;
   if (process.env.PORTABLE_EXECUTABLE_FILE) return;
   if (String(process.env.POS_DISABLE_AUTO_UPDATE ?? '').trim() === '1') return;
@@ -1273,15 +1787,45 @@ const setupAutoUpdates = () => {
   }, 15 * 60 * 1000);
 };
 
+// Windows: tem de ser ANTES do ready — caso contrário a taskbar fica com o
+// ícone Atom em cache associado ao AppUserModelId antigo.
+if (typeof app.setName === 'function') {
+  app.setName('POSly');
+}
+if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
+  app.setAppUserModelId('com.nicol.posly');
+}
+
 app.whenReady().then(async () => {
+  electronLogInfo('electron.app_ready', 'Electron pronto — a iniciar serviços', {
+    module: 'main',
+    action: 'whenReady',
+    reason: 'Arranque normal da aplicação desktop',
+    packaged: isPackagedBuild(),
+    mode: resolvePosAppMode(),
+  });
   try {
     if (!isLicenseConsoleMode()) {
       await startBackend();
+      electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
+        module: 'main',
+        action: 'startBackend',
+      });
     } else {
-      console.log('[electron] Modo consola de licenças — API local (3001) não é iniciada.');
+      electronLogInfo('electron.license_console_mode', 'Modo consola de licenças — API local não iniciada', {
+        module: 'main',
+        action: 'startBackend',
+        reason: 'POS_APP_MODE=license-console',
+      });
     }
     await startStandaloneWeb();
   } catch (error) {
+    electronLogError('electron.boot_failed', 'Falha ao iniciar serviços do Electron', {
+      module: 'main',
+      action: 'whenReady',
+      reason: 'Erro ao subir API/web antes da janela',
+      error: String(error?.message ?? error),
+    });
     dialog.showErrorBox('Falha ao iniciar', String(error?.message ?? error ?? 'Erro desconhecido'));
     stopServices();
     app.quit();
@@ -1289,6 +1833,10 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
+  electronLogInfo('electron.window_created', 'Janela principal criada', {
+    module: 'main',
+    action: 'createWindow',
+  });
   setupAutoUpdates();
 });
 

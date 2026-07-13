@@ -26,18 +26,20 @@ import {
   Percent,
   Building2,
   Loader2,
-  KeyRound
+  KeyRound,
+  ScrollText,
 } from 'lucide-react';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
 import ReportsManager from './components/ReportsManager';
-import { getPosApiBase, getPosUserAuthHeaders, clearPosAuthSession } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import SyncStatusPanel from './components/SyncStatusPanel';
 import CustomersSuppliersManager from './components/CustomersSuppliersManager';
 import PaymentMethodsManager from './components/PaymentMethodsManager';
 import UsersSecurityManager from './components/UsersSecurityManager';
 import MyCompanyManager from './components/MyCompanyManager';
+import SystemLogsManager from './components/SystemLogsManager';
 import DocumentsManager from './components/DocumentsManager';
 import GerenciamentoManager from './components/GerenciamentoManager';
 import LicenseSerialManager from './components/LicenseSerialManager';
@@ -144,18 +146,11 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
     try {
       const apiBase = getPosApiBase();
       const yearNow = new Date().getFullYear();
-      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}`, {
+      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}&refresh=true`, {
         headers: { ...getPosUserAuthHeaders() },
       });
       const summaryText = await summaryRes.text();
       if (!summaryRes.ok) {
-        if (summaryRes.status === 401) {
-          clearPosAuthSession();
-          setIsLoggedIn(false);
-          setCurrentUser(null);
-          router.replace('/');
-          return;
-        }
         throw new Error(
           `dashboard-summary HTTP ${summaryRes.status}: ${summaryText.slice(0, 280) || summaryRes.statusText || 'sem corpo'}`
         );
@@ -297,7 +292,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
     { id: 'reports', icon: <BarChart3 size={18} />, label: 'Relatórios' },
     { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
     { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
-    { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Segurança' },
+    { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Acesso' },
+    { id: 'logs', icon: <ScrollText size={18} />, label: 'Logs do sistema' },
     { id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' },
     { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
     { id: 'countries', icon: <Globe size={18} />, label: 'Países' },
@@ -318,6 +314,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       customers: 'painel.clientes_fornecedores',
       promos: 'painel.promocoes_acoes',
       security: 'painel.usuarios_seguranca',
+      logs: 'painel.logs_sistema',
       'license-serials': 'painel.emitir_serie',
       payments: 'painel.meios_pagamento',
       countries: 'painel.paises',
@@ -424,19 +421,21 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside 
-          className="bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-all duration-300 relative"
+          className="bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-[width] duration-300 relative shrink-0 overflow-hidden"
           style={{ width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH }}
         >
-          <div className="flex-1 pt-0 pb-2 overflow-y-auto custom-scrollbar">
+          <div className="flex-1 min-h-0 pt-0 pb-2 overflow-y-auto overflow-x-hidden custom-scrollbar">
             {sidebarItemsToRender.map((item) => (
                 <button
                   key={item.id}
+                  type="button"
+                  title={isSidebarCollapsed ? item.label : undefined}
                   onClick={() => {
                     setActiveTab(item.id);
                     setSidebarSelectedTab(item.id);
                   }}
-                  className={`w-full flex items-center py-2 transition-colors relative group ${
-                    isSidebarCollapsed ? 'justify-center px-2' : 'gap-2.5 px-4'
+                  className={`w-full max-w-full flex items-center py-2 transition-colors relative group overflow-hidden ${
+                    isSidebarCollapsed ? 'justify-center px-0' : 'gap-2.5 px-4'
                   } ${
                     sidebarSelectedTab === item.id
                       ? 'bg-zinc-800/50 text-white'
@@ -444,28 +443,25 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                   }`}
                 >
                   <div className="flex-shrink-0">{item.icon}</div>
-                  {!isSidebarCollapsed && <span className="text-xs font-medium truncate capitalize leading-none">{item.label}</span>}
-                  {isSidebarCollapsed && (
-                    <div className="absolute left-full ml-2 px-2 py-1 bg-zinc-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
-                      {item.label}
-                    </div>
+                  {!isSidebarCollapsed && (
+                    <span className="min-w-0 text-xs font-medium truncate capitalize leading-none">{item.label}</span>
                   )}
                 </button>
             ))}
           </div>
 
-          <div className="border-t border-zinc-800/60 p-2">
+          <div className="border-t border-zinc-800/60 p-2 shrink-0 overflow-hidden">
             <button
               type="button"
               onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-              className={`flex h-9 w-full items-center rounded border border-zinc-800 bg-[#1a1a1a] text-zinc-400 transition-colors hover:text-zinc-200 hover:border-zinc-700 ${
-                isSidebarCollapsed ? 'justify-center' : 'justify-between px-3'
+              className={`flex h-9 w-full max-w-full items-center rounded border border-zinc-800 bg-[#1a1a1a] text-zinc-400 transition-colors hover:text-zinc-200 hover:border-zinc-700 overflow-hidden ${
+                isSidebarCollapsed ? 'justify-center px-0' : 'justify-between px-3'
               }`}
               aria-label={isSidebarCollapsed ? 'Abrir menu lateral' : 'Fechar menu lateral'}
               title={isSidebarCollapsed ? 'Abrir menu' : 'Fechar menu'}
             >
-              {!isSidebarCollapsed && <span className="text-xs font-medium">Fechar menu</span>}
-              {isSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+              {!isSidebarCollapsed && <span className="text-xs font-medium truncate">Fechar menu</span>}
+              {isSidebarCollapsed ? <ChevronRight size={16} className="shrink-0" /> : <ChevronLeft size={16} className="shrink-0" />}
             </button>
           </div>
         </aside>
@@ -503,8 +499,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                       <div className="flex-1 p-4 border-r border-zinc-800/30">
                         <div className="flex items-center justify-between mb-4">
                           <div>
-                            <h2 className="text-lg font-medium text-zinc-200">Vendas mensais - {currentYear}</h2>
-                            <p className="text-[11px] text-zinc-500">Dados de vendas agrupados por mês</p>
+                            <h2 className="text-lg font-medium text-zinc-200">Caixa mensal - {currentYear}</h2>
+                            <p className="text-[11px] text-zinc-500">Só entradas de dinheiro (VD, RC e FT pagas no momento)</p>
                           </div>
                           <div className="flex items-center gap-4 text-zinc-500">
                             <button onClick={fetchDashboardData} className="hover:text-zinc-300 transition-colors"><RotateCcw size={16} /></button>
@@ -535,7 +531,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                               <Tooltip 
                                 cursor={{ fill: '#222' }}
                                 contentStyle={{ backgroundColor: '#111', border: '1px solid #333', fontSize: '10px' }}
-                                formatter={(value: any) => [formatPrice(value), 'Vendas']}
+                                formatter={(value: any) => [formatPrice(value), 'Caixa']}
                               />
                               <Bar dataKey="sales" fill={monthlyBarColors[0]} radius={[2, 2, 0, 0]}>
                                 {monthlySalesData.map((entry, index) => (
@@ -555,14 +551,14 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                       
                       <div className="w-48 p-4 flex flex-col justify-between bg-[#111]">
                         <div>
-                          <p className="text-[11px] font-medium text-zinc-500 capitalize tracking-wider">Mês corrente</p>
+                          <p className="text-[11px] font-medium text-zinc-500 capitalize tracking-wider">Caixa do mês</p>
                           <p className="text-xs font-bold text-zinc-300 mt-1">{currentMonthSummary.name}</p>
                           <h3 className="text-4xl font-bold text-white mt-1">{formatPrice(currentMonthSummary.sales)}</h3>
                         </div>
                         <div className="space-y-2">
                           <div>
-                            <p className="text-[10px] text-zinc-500">União dos meses:</p>
-                            <p className="text-xs font-bold text-zinc-300">Total acumulado</p>
+                            <p className="text-[10px] text-zinc-500">Soma dos meses:</p>
+                            <p className="text-xs font-bold text-zinc-300">Total em caixa (ano)</p>
                           </div>
                           <h4 className="text-xl font-bold text-zinc-400">{formatPrice(totalSales)}</h4>
                         </div>
@@ -580,7 +576,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <SyncStatusPanel />
 
-                    <DashboardWidget title="Principais produtos">
+                    <DashboardWidget title="Principais produtos (mês)">
                       {topProducts.length > 0 ? (
                         <div className="w-full space-y-2">
                           {topProducts.map((p, i) => (
@@ -593,7 +589,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                       ) : null}
                     </DashboardWidget>
                     
-                    <DashboardWidget title="Principais clientes">
+                    <DashboardWidget title="Principais clientes (mês)">
                       {topCustomers.length > 0 ? (
                         <div className="w-full space-y-2">
                           {topCustomers.map((customer, i) => (
@@ -618,6 +614,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           {activeTab === 'customers' && <CustomersSuppliersManager />}
           {activeTab === 'payments' && <PaymentMethodsManager />}
           {activeTab === 'security' && <UsersSecurityManager />}
+          {activeTab === 'logs' && <SystemLogsManager />}
           {activeTab === 'license-serials' && <LicenseSerialManager />}
           {activeTab === 'company' && <MyCompanyManager />}
           {activeTab === 'gerenciamento' && <GerenciamentoManager />}
@@ -630,6 +627,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
             activeTab !== 'customers' &&
             activeTab !== 'payments' &&
             activeTab !== 'security' &&
+            activeTab !== 'logs' &&
             activeTab !== 'license-serials' &&
             activeTab !== 'company' &&
             activeTab !== 'gerenciamento' && (

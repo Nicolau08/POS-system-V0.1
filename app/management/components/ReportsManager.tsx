@@ -7,7 +7,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   FileSpreadsheet,
   FileText,
   Printer,
@@ -17,6 +16,13 @@ import {
 } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import {
+  REPORT_DEFINITIONS,
+  buildReport,
+  type BuiltReport,
+  type ReportKey,
+} from '@/lib/reports/reportEngine';
+import PosSelect from '@/components/PosSelect';
 
 async function fetchLocalJson(path: string) {
   const response = await fetch(`${getPosApiBase()}${path}`, {
@@ -34,22 +40,7 @@ function toArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-type ReportKey =
-  | 'products'
-  | 'customers'
-  | 'sales_by_day'
-  | 'documents_by_customer'
-  | 'invoice_list'
-  | 'stock_movement';
-
 type ReportRow = Record<string, string | number | null>;
-
-interface ReportDefinition {
-  key: ReportKey;
-  title: string;
-  section: 'Vendas' | 'Cadastros' | 'Estoque';
-  description: string;
-}
 
 interface CustomerOption {
   id: string;
@@ -71,25 +62,6 @@ interface SummaryCard {
   label: string;
   value: string;
 }
-
-interface BuiltReport {
-  key: ReportKey;
-  title: string;
-  subtitle: string;
-  columns: string[];
-  rows: ReportRow[];
-  summaries: SummaryCard[];
-  meta: Array<{ label: string; value: string }>;
-}
-
-const REPORT_DEFINITIONS: ReportDefinition[] = [
-  { key: 'products', title: 'Produtos', section: 'Cadastros', description: 'Lista geral de produtos, preços, categoria e stock.' },
-  { key: 'customers', title: 'Clientes', section: 'Cadastros', description: 'Relação de clientes com contactos e pontos acumulados.' },
-  { key: 'sales_by_day', title: 'Vendas diárias', section: 'Vendas', description: 'Totais de vendas agrupados por dia no período escolhido.' },
-  { key: 'documents_by_customer', title: 'Documentos por cliente', section: 'Vendas', description: 'Documentos emitidos para o cliente no período filtrado.' },
-  { key: 'invoice_list', title: 'Lista de faturas', section: 'Vendas', description: 'Faturas/documentos emitidos com totais e pagamento.' },
-  { key: 'stock_movement', title: 'Movimento de estoque', section: 'Estoque', description: 'Visão do stock atual, mínimo e valor do inventário.' },
-];
 
 const mtCurrencyFormatter = new Intl.NumberFormat('pt-PT', {
   minimumFractionDigits: 2,
@@ -467,7 +439,7 @@ export default function ReportsManager() {
         { label: 'Grupo', value: categoryName },
         { label: 'Produto', value: productName },
         { label: 'Pagamento', value: selectedPaymentMethod === 'all' ? 'Todos' : selectedPaymentMethod },
-        { label: 'Estado', value: selectedStatus === 'all' ? 'Todos' : selectedStatus },
+        { label: 'Estado', value: selectedStatus === 'all' ? 'Concluídas / Aprovadas' : selectedStatus },
       ],
     };
   };
@@ -561,256 +533,17 @@ export default function ReportsManager() {
         throw new Error('A data inicial não pode ser maior do que a data final.');
       }
 
-      let nextReport: BuiltReport | null = null;
-
-      if (reportKey === 'products') {
-        const localProducts = await fetchLocalJson('/produtos');
-        const data = toArray<any>(localProducts)
-          .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
-          .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
-          .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
-
-        const rows = (data || []).map((item: any) => ({
-          'Código': item.code ?? '-',
-          Produto: item.name,
-          Grupo: item.categories?.name || 'Sem grupo',
-          'Preço': formatCurrency(Number(item.price || 0)),
-          'Preço final': formatCurrency(Number(item.final_price || item.price || 0)),
-          Stock: Number(item.stock_quantity || 0),
-          Estado: item.active ? 'Ativo' : 'Inativo',
-          Registo: formatDate(item.created_at),
-        }));
-
-        const totalStock = (data || []).reduce((sum: number, item: any) => sum + Number(item.stock_quantity || 0), 0);
-        const activeCount = (data || []).filter((item: any) => item.active).length;
-        const metaBlock = buildMeta('Produtos');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Cadastro de produtos',
-          columns: ['Código', 'Produto', 'Grupo', 'Preço', 'Preço final', 'Stock', 'Estado', 'Registo'],
-          rows,
-          summaries: [
-            { label: 'Itens listados', value: String(rows.length) },
-            { label: 'Produtos ativos', value: String(activeCount) },
-            { label: 'Stock acumulado', value: String(totalStock) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (reportKey === 'customers') {
-        const params = new URLSearchParams();
-        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
-        const queryString = params.toString();
-        const data = toArray<any>(await fetchLocalJson(`/reports/customers${queryString ? `?${queryString}` : ''}`));
-
-        const rows = (data || []).map((item: any) => ({
-          Cliente: item.name,
-          Telefone: item.phone || '-',
-          Email: item.email || '-',
-          'Endereço': item.address || '-',
-          Pontos: Number(item.points || 0),
-          Registo: formatDate(item.created_at),
-        }));
-
-        const totalPoints = (data || []).reduce((sum: number, item: any) => sum + Number(item.points || 0), 0);
-        const metaBlock = buildMeta('Clientes');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Cadastro de clientes',
-          columns: ['Cliente', 'Telefone', 'Email', 'Endereço', 'Pontos', 'Registo'],
-          rows,
-          summaries: [
-            { label: 'Clientes listados', value: String(rows.length) },
-            { label: 'Pontos totais', value: String(totalPoints) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (reportKey === 'sales_by_day') {
-        const params = new URLSearchParams({
-          dateFrom,
-          dateTo,
-        });
-        if (selectedStatus !== 'all') params.set('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
-        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
-
-        const grouped = new Map<string, { orders: number; subtotal: number; tax: number; discount: number; total: number }>();
-
-        (data || []).forEach((item: any) => {
-          const key = item.created_at?.slice(0, 10) || '';
-          const current = grouped.get(key) || { orders: 0, subtotal: 0, tax: 0, discount: 0, total: 0 };
-          current.orders += 1;
-          current.subtotal += Number(item.subtotal || 0);
-          current.tax += Number(item.tax || 0);
-          current.discount += Number(item.discount || 0);
-          current.total += Number(item.total || 0);
-          grouped.set(key, current);
-        });
-
-        const rows = Array.from(grouped.entries()).map(([date, item]) => ({
-          Data: formatDate(date),
-          Pedidos: item.orders,
-          Subtotal: formatCurrency(item.subtotal),
-          Imposto: formatCurrency(item.tax),
-          Desconto: formatCurrency(item.discount),
-          Total: formatCurrency(item.total),
-        }));
-
-        const orderCount = (data || []).length;
-        const grandTotal = (data || []).reduce((sum: number, item: any) => sum + Number(item.total || 0), 0);
-        const metaBlock = buildMeta('Vendas diárias');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Resumo de vendas por dia',
-          columns: ['Data', 'Pedidos', 'Subtotal', 'Imposto', 'Desconto', 'Total'],
-          rows,
-          summaries: [
-            { label: 'Dias com vendas', value: String(rows.length) },
-            { label: 'Pedidos emitidos', value: String(orderCount) },
-            { label: 'Total vendido', value: formatCurrency(grandTotal) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (reportKey === 'documents_by_customer') {
-        const params = new URLSearchParams({
-          dateFrom,
-          dateTo,
-        });
-        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
-        if (selectedStatus !== 'all') params.set('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
-        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
-
-        const rows = (data || []).map((item: any, index: number) => ({
-          Loja: '1',
-          Data: formatDate(item.created_at),
-          Documento: 'Venda',
-          'Número': `DOC-${String(index + 1).padStart(5, '0')}`,
-          Cliente: item.customers?.name || 'Consumidor final',
-          Pagamento: item.payment_method || '-',
-          Estado: item.status || '-',
-          Mesa: item.table_number || '-',
-          Total: formatCurrency(Number(item.total || 0)),
-        }));
-
-        const totalAmount = (data || []).reduce((sum: number, item: any) => sum + Number(item.total || 0), 0);
-        const metaBlock = buildMeta('Documentos por cliente');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Documentos emitidos por cliente',
-          columns: ['Loja', 'Data', 'Documento', 'Número', 'Cliente', 'Pagamento', 'Estado', 'Mesa', 'Total'],
-          rows,
-          summaries: [
-            { label: 'Documentos', value: String(rows.length) },
-            { label: 'Total do período', value: formatCurrency(totalAmount) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (reportKey === 'invoice_list') {
-        const params = new URLSearchParams({
-          dateFrom,
-          dateTo,
-        });
-        if (selectedCustomer !== 'all') params.set('customerId', selectedCustomer);
-        if (selectedStatus !== 'all') params.set('status', selectedStatus);
-        if (selectedPaymentMethod !== 'all') params.set('paymentMethod', selectedPaymentMethod);
-        const data = toArray<any>(await fetchLocalJson(`/reports/sales?${params.toString()}`));
-
-        const rows = (data || []).map((item: any, index: number) => ({
-          'Número': item.document_number || `${item.doc_type || 'DOC'}-${String(index + 1).padStart(5, '0')}`,
-          Data: formatDate(item.created_at),
-          Cliente: item.customers?.name || 'Consumidor final',
-          Pagamento: item.payment_method || '-',
-          Subtotal: formatCurrency(Number(item.subtotal || 0)),
-          Imposto: formatCurrency(Number(item.tax || 0)),
-          Desconto: formatCurrency(Number(item.discount || 0)),
-          Total: formatCurrency(Number(item.total || 0)),
-          Estado: item.status || '-',
-        }));
-
-        const grandTotal = (data || []).reduce((sum: number, item: any) => sum + Number(item.total || 0), 0);
-        const metaBlock = buildMeta('Lista de faturas');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Faturas e documentos emitidos',
-          columns: ['Número', 'Data', 'Cliente', 'Pagamento', 'Subtotal', 'Imposto', 'Desconto', 'Total', 'Estado'],
-          rows,
-          summaries: [
-            { label: 'Documentos emitidos', value: String(rows.length) },
-            { label: 'Faturação total', value: formatCurrency(grandTotal) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (reportKey === 'stock_movement') {
-        const localProducts = await fetchLocalJson('/produtos');
-        const data = toArray<any>(localProducts)
-          .filter((item: any) => (selectedCategory === 'all' ? true : String(item.category_id) === selectedCategory))
-          .filter((item: any) => (selectedProduct === 'all' ? true : String(item.id) === selectedProduct))
-          .sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')));
-
-        const rows = (data || []).map((item: any) => {
-          const qty = Number(item.stock_quantity || 0);
-          const cost = Number(item.cost || 0);
-          const price = Number(item.final_price || item.price || 0);
-          return {
-            'Código': item.code ?? '-',
-            Produto: item.name,
-            Grupo: item.categories?.name || 'Sem grupo',
-            'Stock atual': qty,
-            'Stock mínimo': Number(item.min_stock || 0),
-            'Custo unitário': formatCurrency(cost),
-            'Preço venda': formatCurrency(price),
-            'Valor em stock': formatCurrency(qty * cost),
-            Atualizado: formatDate(item.updated_at),
-          };
-        });
-
-        const inventoryCost = (data || []).reduce(
-          (sum: number, item: any) => sum + Number(item.stock_quantity || 0) * Number(item.cost || 0),
-          0
-        );
-        const lowStockCount = (data || []).filter(
-          (item: any) => Number(item.stock_quantity || 0) <= Number(item.min_stock || 0)
-        ).length;
-        const metaBlock = buildMeta('Movimento de estoque');
-
-        nextReport = {
-          key: reportKey,
-          title: metaBlock.title,
-          subtitle: 'Posição atual do inventário',
-          columns: ['Código', 'Produto', 'Grupo', 'Stock atual', 'Stock mínimo', 'Custo unitário', 'Preço venda', 'Valor em stock', 'Atualizado'],
-          rows,
-          summaries: [
-            { label: 'Produtos listados', value: String(rows.length) },
-            { label: 'Baixo stock', value: String(lowStockCount) },
-            { label: 'Valor do inventário', value: formatCurrency(inventoryCost) },
-          ],
-          meta: metaBlock.meta,
-        };
-      }
-
-      if (!nextReport) {
-        throw new Error('Relatório não suportado.');
-      }
+      const nextReport = await buildReport(reportKey, {
+        dateFrom,
+        dateTo,
+        selectedCustomer,
+        selectedStatus,
+        selectedPaymentMethod,
+        selectedCategory,
+        selectedProduct,
+        fetchJson: fetchLocalJson,
+        buildMeta,
+      });
 
       setBuiltReport(nextReport);
       setSelectedReport(reportKey);
@@ -938,7 +671,8 @@ export default function ReportsManager() {
               onChange={setSelectedStatus}
               options={[
                 { value: 'all', label: 'Todos' },
-                { value: 'completed', label: 'Concluído' },
+                { value: 'completed', label: 'Pago / Concluído' },
+                { value: 'approved', label: 'Aprovado' },
                 { value: 'pending', label: 'Pendente' },
                 { value: 'cancelled', label: 'Cancelado' },
               ]}
@@ -962,10 +696,12 @@ export default function ReportsManager() {
               <label className="block text-sm font-medium text-zinc-100 mb-2">Período</label>
               <button
                 onClick={openPeriodModal}
-                className="w-full flex items-center gap-3 bg-[#131314] border border-zinc-700 rounded px-4 py-3 text-left text-white hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+                className="pos-select-trigger h-auto w-full gap-3 !bg-[#131314] px-4 py-3 text-left"
               >
-                <CalendarDays size={16} className="text-zinc-300 shrink-0" />
-                <span className="flex-1 text-center text-sm">{formatDate(dateFrom)} - {formatDate(dateTo)}</span>
+                <CalendarDays size={16} className="shrink-0 text-zinc-300" />
+                <span className="flex-1 text-center text-sm text-white">
+                  {formatDate(dateFrom)} - {formatDate(dateTo)}
+                </span>
               </button>
             </div>
 
@@ -1248,21 +984,8 @@ function FilterSelect({
 }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-zinc-100 mb-2">{label}</label>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="w-full appearance-none bg-[#131314] border border-zinc-700 text-sm text-white px-4 pr-10 py-3 rounded outline-none focus:border-[#2a9cd4] hover:border-zinc-600 transition-colors"
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-      </div>
+      <label className="mb-2 block text-sm font-medium text-zinc-100">{label}</label>
+      <PosSelect value={value} onChange={onChange} options={options} size="md" />
     </div>
   );
 }

@@ -1,85 +1,147 @@
+/**
+ * Gera ícones Windows/Electron/web a partir de "POSly icon.svg".
+ *
+ * Saídas:
+ *   assets/posly-icon.svg  — cópia canónica
+ *   assets/icon.png        — 512px (referência)
+ *   assets/icon.ico        — multi-size (Electron + instalador)
+ *   public/favicon.ico
+ *   public/icon-192.png
+ *   public/icon-512.png
+ *   app/icon.png           — Next.js App Router
+ *
+ * Em Windows (dev), a barra de tarefas usa o ícone do EXE + AppUserModelId,
+ * não o BrowserWindow.icon. Criamos POSly.exe (cópia do electron.exe) com o
+ * ICO aplicado via rcedit — assim o Windows não reutiliza o cache do Atom.
+ */
 import fs from 'fs/promises';
 import path from 'path';
-import { PNG } from 'pngjs';
+import sharp from 'sharp';
 import pngToIco from 'png-to-ico';
+import { rcedit } from 'rcedit';
 
 const ROOT = process.cwd();
+const SOURCE_CANDIDATES = [
+  path.join(ROOT, 'POSly icon.svg'),
+  path.join(ROOT, 'assets', 'posly-icon.svg'),
+  path.join(ROOT, 'assets', 'POSly icon.svg'),
+];
+
 const assetsDir = path.join(ROOT, 'assets');
-const outputIco = path.join(assetsDir, 'icon.ico');
+const publicDir = path.join(ROOT, 'public');
+const appDir = path.join(ROOT, 'app');
 
-const createPngBuffer = (size) => {
-  const png = new PNG({ width: size, height: size });
-  const center = (size - 1) / 2;
-  const maxRadius = size * 0.45;
+async function patchElectronDevExe(iconIcoPath) {
+  if (process.platform !== 'win32') return;
 
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const idx = (size * y + x) << 2;
+  const distDir = path.join(ROOT, 'node_modules', 'electron', 'dist');
+  const electronExe = path.join(distDir, 'electron.exe');
+  const poslyExe = path.join(distDir, 'POSly.exe');
 
-      const dx = x - center;
-      const dy = y - center;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const normalized = Math.min(1, distance / maxRadius);
-
-      // Dark background gradient
-      const bgR = Math.round(14 + 10 * normalized);
-      const bgG = Math.round(26 + 12 * normalized);
-      const bgB = Math.round(45 + 18 * normalized);
-
-      png.data[idx] = bgR;
-      png.data[idx + 1] = bgG;
-      png.data[idx + 2] = bgB;
-      png.data[idx + 3] = 255;
-    }
+  try {
+    await fs.access(electronExe);
+  } catch {
+    console.warn('electron.exe não encontrado — salte o patch do ícone de dev.');
+    return;
   }
 
-  // Center accent circle + white ring so icon is visible on taskbar.
-  const ringOuter = size * 0.34;
-  const ringInner = size * 0.26;
-  const coreRadius = size * 0.2;
+  try {
+    await fs.copyFile(electronExe, poslyExe);
+    await rcedit(poslyExe, {
+      icon: iconIcoPath,
+      'version-string': {
+        ProductName: 'POSly',
+        FileDescription: 'POSly',
+        InternalName: 'POSly',
+        OriginalFilename: 'POSly.exe',
+      },
+    });
+    // Também no electron.exe (fallback se alguém lançar sem o launcher).
+    try {
+      await rcedit(electronExe, { icon: iconIcoPath });
+    } catch {
+      /* pode estar em uso — POSly.exe chega */
+    }
+    console.log(`Dev EXE: ${poslyExe} (ícone aplicado)`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `Não foi possível criar/aplicar ícone em POSly.exe (${msg}).\n` +
+        'Feche o desktop Electron e volte a correr: npm run icon:win',
+    );
+  }
+}
 
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const idx = (size * y + x) << 2;
-      const dx = x - center;
-      const dy = y - center;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      if (distance <= ringOuter && distance >= ringInner) {
-        png.data[idx] = 236;
-        png.data[idx + 1] = 242;
-        png.data[idx + 2] = 248;
-      } else if (distance <= coreRadius) {
-        png.data[idx] = 34;
-        png.data[idx + 1] = 197;
-        png.data[idx + 2] = 94;
-      }
+async function resolveSourceSvg() {
+  for (const candidate of SOURCE_CANDIDATES) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // try next
     }
   }
+  throw new Error(
+    `SVG do POSly não encontrado. Coloque "POSly icon.svg" na raiz do projecto.`,
+  );
+}
 
-  return PNG.sync.write(png);
-};
+async function rasterize(svgBuffer, size) {
+  return sharp(svgBuffer, { density: Math.max(150, size * 2) })
+    .resize(size, size, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
+}
 
 async function main() {
-  await fs.mkdir(assetsDir, { recursive: true });
+  const sourceSvg = await resolveSourceSvg();
+  const svgBuffer = await fs.readFile(sourceSvg);
 
-  const sizes = [16, 24, 32, 48, 64, 128, 256];
+  await fs.mkdir(assetsDir, { recursive: true });
+  await fs.mkdir(publicDir, { recursive: true });
+  await fs.mkdir(appDir, { recursive: true });
+
+  // Cópia canónica sem espaços no nome
+  await fs.writeFile(path.join(assetsDir, 'posly-icon.svg'), svgBuffer);
+
+  const icoSizes = [16, 24, 32, 48, 64, 128, 256];
   const tempPngPaths = [];
-  for (const size of sizes) {
-    const buffer = createPngBuffer(size);
+
+  for (const size of icoSizes) {
+    const png = await rasterize(svgBuffer, size);
     const tempPath = path.join(assetsDir, `.icon-${size}.png`);
-    await fs.writeFile(tempPath, buffer);
+    await fs.writeFile(tempPath, png);
     tempPngPaths.push(tempPath);
   }
 
   const icoBuffer = await pngToIco(tempPngPaths);
-  await fs.writeFile(outputIco, icoBuffer);
+  const iconIcoPath = path.join(assetsDir, 'icon.ico');
+  await fs.writeFile(iconIcoPath, icoBuffer);
+  await fs.writeFile(path.join(publicDir, 'favicon.ico'), icoBuffer);
+
+  const png512 = await rasterize(svgBuffer, 512);
+  const png256 = await rasterize(svgBuffer, 256);
+  const png192 = await rasterize(svgBuffer, 192);
+
+  await fs.writeFile(path.join(assetsDir, 'icon.png'), png512);
+  await fs.writeFile(path.join(appDir, 'icon.png'), png256);
+  await fs.writeFile(path.join(publicDir, 'icon-512.png'), png512);
+  await fs.writeFile(path.join(publicDir, 'icon-192.png'), png192);
 
   for (const tempPath of tempPngPaths) {
     await fs.unlink(tempPath).catch(() => {});
   }
 
-  console.log(`Generated Windows icon: ${outputIco}`);
+  console.log(`Fonte: ${sourceSvg}`);
+  console.log(`ICO:   ${iconIcoPath}`);
+  console.log(`PNG:   ${path.join(assetsDir, 'icon.png')}`);
+  console.log(`App:   ${path.join(appDir, 'icon.png')}`);
+  console.log(`Web:   ${path.join(publicDir, 'favicon.ico')}`);
+
+  await patchElectronDevExe(iconIcoPath);
 }
 
 main().catch((error) => {
