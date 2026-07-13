@@ -26,6 +26,13 @@ declare global {
         configExists: boolean;
         licenseExists: boolean;
       }>;
+      getRuntimeInfo: () => Promise<{
+        success: boolean;
+        packaged: boolean;
+        platform?: string;
+        version?: string;
+        error?: string;
+      }>;
       getMachineId: () => Promise<{
         success: boolean;
         machineId?: string;
