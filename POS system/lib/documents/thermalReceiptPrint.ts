@@ -2,6 +2,7 @@ import type { CompanyProfile } from '@/app/pos/types';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 import type { SalesDocumentItem, SalesDocumentSale } from '@/lib/documents/salesDocumentPrint';
+import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
 
 const THERMAL_ROLL_WIDTH_MM = 80;
 
@@ -31,8 +32,14 @@ function resolveDocTypeLabel(sale: SalesDocumentSale) {
 
 function formatSaleDate(value: string | null | undefined) {
   const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return new Date().toLocaleString('pt-PT');
-  return date.toLocaleString('pt-PT');
+  if (Number.isNaN(date.getTime())) return new Date().toLocaleDateString('pt-PT');
+  return date.toLocaleDateString('pt-PT');
+}
+
+function formatSaleTime(value: string | null | undefined) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return new Date().toLocaleTimeString('pt-PT');
+  return date.toLocaleTimeString('pt-PT');
 }
 
 export function buildThermalReceiptMarkup(
@@ -53,6 +60,7 @@ export function buildThermalReceiptMarkup(
   const discount = Number(sale.discount ?? 0);
   const originalSubtotal = subtotal + discount;
   const hasDiscount = discount > 0.0001;
+  const sourceReference = formatDocumentSourceReferenceLabel(sale);
 
   const receiptHead = buildReceiptHeader(profile);
   const logoSrc = safeReceiptLogoSrc(receiptHead.logoDataUrl);
@@ -103,10 +111,17 @@ export function buildThermalReceiptMarkup(
 
       <div class="print-block">
         <div class="print-meta">
-          <span>Data: ${escapeHtml(formatSaleDate(sale.created_at))}</span>
-          <span>Atendido por: ${escapeHtml(attendant)}</span>
+          <div class="print-meta-col">
+            <span>Data: ${escapeHtml(formatSaleDate(sale.created_at))}</span>
+            <span class="print-meta-sub">${escapeHtml(formatSaleTime(sale.created_at))}</span>
+          </div>
+          <div class="print-meta-col print-meta-right">
+            <span>Atendido por:</span>
+            <span class="print-attendant">${escapeHtml(attendant)}</span>
+          </div>
         </div>
         <div class="print-doc">${escapeHtml(docType)} No.: ${escapeHtml(docNumber)}</div>
+        ${sourceReference ? `<div class="print-ref">${escapeHtml(sourceReference)}</div>` : ''}
       </div>
 
       <div class="print-block">
@@ -248,24 +263,74 @@ const THERMAL_PRINT_STYLES = `
     gap: 6px;
   }
   .print-meta {
+    display: flex !important;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 4mm;
     font-size: 10px;
     font-weight: 700;
   }
-  .print-meta span:last-child { text-align: right; }
+  .print-meta-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .print-meta-col.print-meta-right {
+    text-align: right;
+    align-items: flex-end;
+  }
+  .print-meta span,
+  .print-meta .print-meta-sub,
+  .print-meta .print-attendant {
+    display: block !important;
+    text-align: inherit !important;
+    word-break: break-word;
+  }
+  .print-meta .print-attendant {
+    font-weight: 900;
+  }
   .print-doc {
     margin-top: 6px;
     font-size: 13px;
     font-weight: 900;
   }
-  .print-columns {
+  .print-ref {
+    margin-top: 4px;
     font-size: 10px;
+    font-weight: 700;
+  }
+  .print-columns {
+    display: grid !important;
+    grid-template-columns: 7mm minmax(0, 1fr) 20mm 22mm;
+    gap: 1.5mm;
+    font-size: 11px;
     font-weight: 800;
     margin-bottom: 3px;
   }
-  .qty { width: 10mm; flex: 0 0 10mm; }
-  .desc { flex: 1 1 auto; min-width: 0; }
-  .unit { width: 17mm; flex: 0 0 17mm; text-align: right; }
-  .line-total { width: 19mm; flex: 0 0 19mm; text-align: right; }
+  .qty { width: 7mm; flex: 0 0 7mm; }
+  .desc {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 1mm;
+  }
+  .unit {
+    width: 20mm;
+    flex: 0 0 20mm;
+    text-align: right;
+    white-space: nowrap;
+    padding-left: 1.5mm;
+  }
+  .line-total {
+    width: 22mm;
+    flex: 0 0 22mm;
+    text-align: right;
+    white-space: nowrap;
+    padding-left: 2.5mm;
+  }
   .print-divider {
     border-top: 1px dashed #000;
     margin: 4px 0;
@@ -273,12 +338,17 @@ const THERMAL_PRINT_STYLES = `
   .print-items { padding-top: 1px; }
   .print-item-row {
     display: grid;
-    grid-template-columns: 10mm minmax(0, 1fr) 17mm 19mm;
-    gap: 5px;
+    grid-template-columns: 7mm minmax(0, 1fr) 20mm 22mm;
+    column-gap: 1.5mm;
     align-items: start;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 800;
     padding: 2px 0;
+  }
+  .print-item-row .unit,
+  .print-item-row .line-total {
+    font-size: 11px;
+    letter-spacing: -0.02em;
   }
   .print-totals {
     margin-top: 8px;

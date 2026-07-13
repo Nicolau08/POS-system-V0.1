@@ -1,4 +1,5 @@
 import type { CompanyProfile } from '@/app/pos/types';
+import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 
@@ -15,6 +16,8 @@ export type SalesDocumentSale = {
   created_at?: string | null;
   client_name?: string | null;
   user_name?: string | null;
+  approved_document_type?: string | null;
+  approved_document_number?: string | null;
 };
 
 export type SalesDocumentItem = {
@@ -217,6 +220,7 @@ function buildVendaBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
   const total = Number(sale.total ?? 0);
   const docNumber = String(sale.document_number ?? sale.id ?? '-');
   const payment = String(sale.payment_method ?? '-');
+  const sourceReference = formatDocumentSourceReferenceLabel(sale);
 
   return `
     <div class="client-name">${escapeHtml(sale.client_name || 'Consumidor final')}</div>
@@ -225,6 +229,7 @@ function buildVendaBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
       <div class="meta-item"><div class="meta-label">Vendedor</div><div>${escapeHtml(sale.user_name || '—')}</div></div>
       <div class="meta-item"><div class="meta-label">Pagamento</div><div>${escapeHtml(payment)}</div></div>
     </div>
+    ${sourceReference ? `<div class="payment-note">${escapeHtml(sourceReference)}</div>` : ''}
     ${buildItemsTable(items, getPosTaxPercentLabel())}
     ${buildTotalsBlock(subtotal, tax, total)}
     <div class="payment-note">Documento: ${escapeHtml(docNumber)}</div>
@@ -284,7 +289,10 @@ function buildCotacaoBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
 function buildReciboBody(sale: SalesDocumentSale) {
   const total = Number(sale.total ?? 0);
   const docNumber = String(sale.document_number ?? sale.id ?? '-');
-  const invoiceRef = docNumber.startsWith('PBNK') ? docNumber.replace(/^PBNK/i, 'INV') : docNumber;
+  const invoiceRef = String(sale.approved_document_number ?? '').trim();
+  const invoiceType = String(sale.approved_document_type ?? 'FT').trim().toUpperCase();
+  const invoiceLabel = invoiceType === 'FP' ? 'Cotação' : 'Fatura';
+  const sourceReference = formatDocumentSourceReferenceLabel(sale);
 
   return `
     <div class="meta-grid cols-2 recibo-meta">
@@ -295,7 +303,7 @@ function buildReciboBody(sale: SalesDocumentSale) {
       </div>
       <div>
         <div class="meta-item"><div class="meta-label">Formas de pagamento</div><div>${escapeHtml(sale.payment_method || 'Pagamento manual')}</div></div>
-        <div class="meta-item"><div class="meta-label">Anotações</div><div>${escapeHtml(invoiceRef)}</div></div>
+        <div class="meta-item"><div class="meta-label">Referência</div><div>${escapeHtml(sourceReference || (invoiceRef ? `Referente à ${invoiceLabel.toLowerCase()} ${invoiceRef}` : docNumber))}</div></div>
       </div>
     </div>
     <table class="items-table recibo-table">
@@ -310,18 +318,18 @@ function buildReciboBody(sale: SalesDocumentSale) {
       <tbody>
         <tr>
           <td>${escapeHtml(formatA4Date(sale.created_at))}</td>
-          <td>${escapeHtml(invoiceRef)}</td>
+          <td>${escapeHtml(invoiceRef || '—')}</td>
           <td>${escapeHtml(docNumber)}</td>
           <td class="cell-right">${escapeHtml(formatA4Amount(total))}</td>
         </tr>
         <tr class="row-alt">
           <td>${escapeHtml(formatA4Date(sale.created_at))}</td>
           <td>${escapeHtml(docNumber)}</td>
-          <td>${escapeHtml(invoiceRef)}</td>
+          <td>${escapeHtml(invoiceRef || docNumber)}</td>
           <td class="cell-right">-${escapeHtml(formatA4Amount(total))}</td>
         </tr>
         <tr class="summary-row">
-          <td colspan="3"><strong>Valor devido por ${escapeHtml(invoiceRef)}</strong></td>
+          <td colspan="3"><strong>Valor devido por ${escapeHtml(invoiceRef || docNumber)}</strong></td>
           <td class="cell-right"><strong>${escapeHtml(formatA4Amount(0))}</strong></td>
         </tr>
       </tbody>

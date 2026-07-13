@@ -1,7 +1,7 @@
 import db from '../database.js';
 import { requireTenantId } from '../utils/tenant.js';
-import { listSalesForReports } from './sales.service.js';
-import { parseSearchTerm } from './queryOptions.service.js';
+import { filterRevenueDocuments } from '../utils/revenueDocuments.js';
+import { getDocumentos } from './documentos.service.js';
 
 const allDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -105,8 +105,11 @@ export async function getReportCustomers(filters = {}, actorUser = null) {
 }
 
 export async function getReportSales(filters = {}, actorUser = null) {
-  const rows = await listSalesForReports(filters, actorUser);
-  return (rows ?? []).map((row) => ({
+  const rows = await getDocumentos(filters, actorUser);
+  const docs = Array.isArray(rows) ? rows : rows?.data ?? [];
+  const revenueDocs = filterRevenueDocuments(docs, filters.status ?? 'all');
+
+  return revenueDocs.map((row) => ({
     id: String(row?.id ?? ''),
     doc_type: row?.doc_type ?? null,
     document_number: row?.document_number ?? null,

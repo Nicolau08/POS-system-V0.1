@@ -73,6 +73,7 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'painel.taxas_impostos', required_level: 0 },
       { key: 'painel.minha_empresa', required_level: 0 },
       { key: 'painel.emitir_serie', required_level: 9 },
+      { key: 'painel.logs_sistema', required_level: 7 },
       { key: 'estoque.inventario_rapido', required_level: 0 },
       { key: 'estoque.ver_preco_custo', required_level: 0 },
       { key: 'vendas.ver_pedidos_em_aberto', required_level: 0 },
@@ -248,6 +249,31 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id)`);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_logs (
+      id TEXT PRIMARY KEY,
+      level TEXT NOT NULL,
+      event TEXT NOT NULL,
+      message TEXT NOT NULL,
+      source TEXT,
+      module TEXT,
+      action TEXT,
+      reason TEXT,
+      user_id TEXT,
+      user_name TEXT,
+      tenant_id TEXT,
+      request_id TEXT,
+      entity TEXT,
+      entity_id TEXT,
+      payload_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_created_at ON app_logs(created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_event ON app_logs(event)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_user_id ON app_logs(user_id)`);
+
   db.run(
     `
     CREATE TABLE IF NOT EXISTS permission_rules (
@@ -268,6 +294,15 @@ db.serialize(() => {
     (emitRuleErr) => {
       if (emitRuleErr && !String(emitRuleErr.message || '').includes('no such table')) {
         console.error('[database] Falha ao garantir regra painel.emitir_serie:', emitRuleErr.message);
+      }
+    }
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('painel.logs_sistema', 7, datetime('now'))`,
+    (logsRuleErr) => {
+      if (logsRuleErr && !String(logsRuleErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra painel.logs_sistema:', logsRuleErr.message);
       }
     }
   );
@@ -630,6 +665,80 @@ db.serialize(() => {
     `CREATE INDEX IF NOT EXISTS idx_checkout_idempotency_status_updated
      ON checkout_idempotency(status, updated_at)`,
     'Erro ao criar idx_checkout_idempotency_status_updated:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pos_open_drafts (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, user_id)
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_pos_open_drafts_updated
+     ON pos_open_drafts(updated_at)`,
+    'Erro ao criar idx_pos_open_drafts_updated:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cash_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      register_code TEXT NOT NULL DEFAULT 'caixa-1',
+      status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+      opened_at TEXT NOT NULL,
+      opened_by_id TEXT,
+      opened_by_name TEXT,
+      closed_at TEXT,
+      closed_by_id TEXT,
+      closed_by_name TEXT,
+      z_number INTEGER
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_cash_sessions_tenant_status ON cash_sessions(tenant_id, status, opened_at)`,
+    'Erro ao criar idx_cash_sessions_tenant_status:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cash_withdrawals (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT,
+      user_name TEXT,
+      amount REAL NOT NULL DEFAULT 0,
+      scope TEXT NOT NULL CHECK (scope IN ('user', 'all')),
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_session ON cash_withdrawals(session_id, created_at)`,
+    'Erro ao criar idx_cash_withdrawals_session:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS z_reports (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      z_number INTEGER NOT NULL,
+      generated_at TEXT NOT NULL,
+      generated_by_id TEXT,
+      generated_by_name TEXT,
+      payload_json TEXT NOT NULL
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_z_reports_tenant_generated ON z_reports(tenant_id, generated_at DESC)`,
+    'Erro ao criar idx_z_reports_tenant_generated:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_z_reports_tenant_number ON z_reports(tenant_id, z_number)`,
+    'Erro ao criar uq_z_reports_tenant_number:'
   );
 
   db.run(`ALTER TABLE sync_queue ADD COLUMN tenant_id TEXT`, (err) => {

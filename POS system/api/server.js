@@ -22,6 +22,10 @@ import permissionRulesRoutes from './routes/permission-rules.routes.js';
 import companyProfileRoutes from './routes/company-profile.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
 import reportsRoutes from './routes/reports.routes.js';
+import serialRoutes from './routes/serial.routes.js';
+import posDraftRoutes from './routes/pos-draft.routes.js';
+import appLogsRoutes from './routes/app-logs.routes.js';
+import cashSessionRoutes from './routes/cash-session.routes.js';
 import { authenticateUser } from './middlewares/auth.js';
 import { requireTenantContext } from './middlewares/tenant.middleware.js';
 import { globalErrorHandler, notFoundHandler } from './middlewares/error.middleware.js';
@@ -38,10 +42,9 @@ import {
   getBackupIntervalHours,
   getBackupIntervalMs,
 } from './utils/backup.js';
-import { logAudit, logError, logInfo } from './utils/logger.js';
+import { logAudit, logError, logEvent, logInfo, logWarn } from './utils/logger.js';
 import { validateLicenseAccess } from './services/user.service.js';
 import { getLoginUsers, login } from './controllers/users.controller.js';
-import { bootstrapPaymentMethodsForAllTenants } from './services/payment-methods.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({
@@ -73,6 +76,7 @@ function rejectNonLocalAuthRoute(req, res, next) {
   return next();
 }
 
+/** Login screen: sem sessão ainda — antes do middleware de auth. */
 app.get('/auth/login-users', rejectNonLocalAuthRoute, getLoginUsers);
 app.post('/auth/login', rejectNonLocalAuthRoute, login);
 
@@ -92,13 +96,31 @@ app.use(async (req, res, next) => {
     );
 
     if (result.isExpired) {
-      console.log('🚫 LICENÇA EXPIRADA');
+      logWarn('license_expired_blocked', {
+        event: 'license.expired',
+        message: 'Pedido bloqueado porque a licença está expirada',
+        module: 'license.middleware',
+        action: 'validateLicenseAccess',
+        reason: 'Licença do tenant fora do prazo de validade',
+        request_id: req.requestId ?? null,
+        who: req.user ?? null,
+        tenant_id: req.user?.tenant_id ?? null,
+      });
       return sendError(res, 403, 'Licença expirada');
     }
 
     return next();
   } catch (err) {
-    console.error('❌ middleware error', err);
+    logError('license_middleware_failed', {
+      event: 'license.middleware_error',
+      message: 'Falha ao validar licença no middleware',
+      module: 'license.middleware',
+      action: 'validateLicenseAccess',
+      reason: 'Excepção durante verificação de licença',
+      request_id: req.requestId ?? null,
+      who: req.user ?? null,
+      error: err,
+    });
     return sendError(res, 500, 'erro interno licença');
   }
 });
@@ -138,6 +160,10 @@ app.use('/', permissionRulesRoutes);
 app.use('/', companyProfileRoutes);
 app.use('/', documentosRoutes);
 app.use('/', reportsRoutes);
+app.use('/', serialRoutes);
+app.use('/', posDraftRoutes);
+app.use('/', appLogsRoutes);
+app.use('/', cashSessionRoutes);
 app.use('/sync', syncRoutes);
 app.use('/stock', stockController);
 app.use('/', maintenanceRoutes);
@@ -209,15 +235,42 @@ function startAutoBackupScheduler() {
 
 function startApiServer() {
   app.listen(PORT, () => {
-    console.log(`API running on http://localhost:${PORT}`);
+    logEvent('info', 'api.started', `API POSly a escutar em http://localhost:${PORT}`, {
+      source: 'api',
+      module: 'server',
+      action: 'listen',
+      reason: 'Processo da API iniciado com sucesso',
+      port: PORT,
+      node_env: process.env.NODE_ENV ?? 'development',
+      tenant: process.env.POS_DEV_TENANT ?? process.env.DEFAULT_TENANT_ID ?? null,
+    });
 
     const fullResetEnabled = process.env.ENABLE_FULL_RESET_SYNC === 'true';
-    console.log(`[sync] full reset sync: ${fullResetEnabled ? 'ENABLED' : 'disabled'}`);
+    logInfo('sync_mode', {
+      event: 'sync.config',
+      message: fullResetEnabled
+        ? 'Sync full-reset activado'
+        : 'Sync full-reset desactivado',
+      module: 'sync',
+      action: 'boot',
+      full_reset_enabled: fullResetEnabled,
+    });
 
     if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      console.warn('[sync] Supabase credentials not configured. Running offline-only mode.');
+      logWarn('sync_offline_only', {
+        event: 'sync.offline_only',
+        message: 'Credenciais Supabase em falta — modo apenas offline',
+        module: 'sync',
+        action: 'boot',
+        reason: 'SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configurados',
+      });
     } else {
-      console.log('[sync] Supabase configured successfully');
+      logInfo('sync_supabase_ready', {
+        event: 'sync.supabase_ready',
+        message: 'Supabase configurado — a iniciar serviço de sync',
+        module: 'sync',
+        action: 'boot',
+      });
       startSyncService();
     }
 
@@ -302,16 +355,7 @@ db.run(
             console.error('[fatal] permission_rules seed:', seedErr.message);
             process.exit(1);
           }
-          void bootstrapPaymentMethodsForAllTenants()
-            .then(() => {
-              console.log('[payment-methods] padrões sincronizados (Dinheiro + Conta Corrente).');
-            })
-            .catch((bootstrapErr) => {
-              console.error('[payment-methods] bootstrap:', bootstrapErr?.message ?? bootstrapErr);
-            })
-            .finally(() => {
-              startApiServer();
-            });
+          startApiServer();
         });
       }
     );

@@ -5,7 +5,8 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { all, get, run } from './dbUtils.js';
 import { isUuidString, requireProductCloudId } from './cloudIdUtils.js';
-import { logSyncError } from './syncLogger.js';
+import { logSyncError, logSyncOperation } from './syncLogger.js';
+import { logError, logEvent, logWarn } from './utils/logger.js';
 import { ensureHashedPin, verifyPinAgainstStored } from './pinAuth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -263,21 +264,6 @@ async function setLastSyncAt(syncId, lastSyncAt) {
      ON CONFLICT(id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
     [syncId, safeTs]
   );
-}
-
-async function logSyncOperation(type, payload, message) {
-  try {
-    const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim() || null;
-    await run(`INSERT INTO sync_logs (queue_id, tenant_id, type, payload, error_message) VALUES (?, ?, ?, ?, ?)`, [
-      null,
-      tenantId,
-      type,
-      payload == null ? null : JSON.stringify(payload),
-      message,
-    ]);
-  } catch (error) {
-    console.error('[sync] failed to persist sync operation log:', error.message);
-  }
 }
 
 async function fetchUpdatedRows(table, fields, lastSyncAt, timestampField = 'updated_at', tenantId = null) {
@@ -2759,21 +2745,53 @@ function startSyncService() {
 
   const supabase = getSupabase();
   if (!supabase) {
-    console.warn('[sync] Supabase credentials not configured. Running offline-only mode.');
+    logWarn('sync_offline_only_boot', {
+      event: 'sync.offline_only',
+      message: 'Serviço de sync não iniciado — credenciais Supabase em falta',
+      module: 'sync',
+      action: 'startSyncService',
+      reason: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY não configurados',
+    });
     return;
   }
 
   timer = setInterval(() => {
     processFullSyncCycle().catch((error) => {
-      console.error('[sync] cycle crashed:', error.message);
+      logError('sync_cycle_crashed', {
+        event: 'sync.cycle_crashed',
+        message: `Ciclo de sync falhou: ${error?.message ?? error}`,
+        module: 'sync',
+        action: 'processFullSyncCycle',
+        reason: 'Excepção não tratada no intervalo do sync',
+        error,
+      });
     });
   }, DEFAULT_INTERVAL_MS);
 
   processFullSyncCycle().catch((error) => {
-    console.error('[sync] initial cycle failed:', error.message);
+    logError('sync_initial_cycle_failed', {
+      event: 'sync.initial_cycle_failed',
+      message: `Ciclo inicial de sync falhou: ${error?.message ?? error}`,
+      module: 'sync',
+      action: 'processFullSyncCycle',
+      reason: 'Primeiro ciclo após arranque da API',
+      error,
+    });
   });
 
-  console.log(`[sync] service started (interval=${DEFAULT_INTERVAL_MS}ms)`);
+  logEvent(
+    'info',
+    'sync.service_started',
+    `Serviço de sincronismo iniciado (intervalo ${DEFAULT_INTERVAL_MS}ms)`,
+    {
+      source: 'api',
+      module: 'sync',
+      action: 'startSyncService',
+      reason: 'API pronta e Supabase configurado',
+      interval_ms: DEFAULT_INTERVAL_MS,
+      batch_size: MAX_ITEMS_PER_CYCLE,
+    },
+  );
 }
 
 function stopSyncService() {

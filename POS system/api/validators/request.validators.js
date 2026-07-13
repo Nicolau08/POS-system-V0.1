@@ -39,6 +39,18 @@ export function validateApproveCotacaoBody(body) {
   return true;
 }
 
+export function validateRegisterDocumentPaymentBody(body) {
+  if (!isObject(body)) return 'payload invalido';
+  if (!String(body.documentNumber ?? '').trim()) return 'documentNumber obrigatorio';
+  if (!String(body.paymentMethod ?? '').trim()) return 'paymentMethod obrigatorio';
+  return true;
+}
+
+export function validateDocumentPaymentPreviewQuery(query) {
+  if (!String(query?.documentNumber ?? '').trim()) return 'documentNumber obrigatorio';
+  return true;
+}
+
 export function validateDocumentosNextNumberQuery(query) {
   if (!String(query?.prefix ?? '').trim()) return 'prefix obrigatorio';
   return true;

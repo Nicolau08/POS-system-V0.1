@@ -6,6 +6,8 @@ import {
   getDocumentosNextNumber,
   getNextVd,
   postDocumento,
+  previewDocumentPayment,
+  registerDocumentPayment,
   updateDocumentoPaymentStatus,
 } from '../services/documentos.service.js';
 import { handleControllerError, sendSuccess } from '../utils/response.js';
@@ -76,6 +78,24 @@ export async function getDashboardSummaryController(req, res) {
 export async function getNextVdController(_req, res) {
   try {
     const payload = await getNextVd(_req.user ?? null);
+    return sendSuccess(res, payload);
+  } catch (error) {
+    return handleControllerError(res, error);
+  }
+}
+
+export async function previewDocumentPaymentController(req, res) {
+  try {
+    const payload = await previewDocumentPayment(req.query ?? {}, req.user ?? null);
+    return sendSuccess(res, payload);
+  } catch (error) {
+    return handleControllerError(res, error);
+  }
+}
+
+export async function registerDocumentPaymentController(req, res) {
+  try {
+    const payload = await registerDocumentPayment(req.body ?? {}, req.user ?? null);
     return sendSuccess(res, payload);
   } catch (error) {
     return handleControllerError(res, error);

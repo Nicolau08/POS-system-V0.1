@@ -12,6 +12,7 @@ export function Header({
   onOpenCustomer,
   onOpenDiscount,
   onOpenQuotation,
+  onOpenCashDrawer,
   onOpenTable,
   onOpenAdminSidebar,
   userName,
@@ -23,6 +24,7 @@ export function Header({
   onOpenCustomer: () => void;
   onOpenDiscount: () => void;
   onOpenQuotation: () => void;
+  onOpenCashDrawer?: () => void;
   onOpenTable: () => void;
   onOpenAdminSidebar: () => void;
   userName?: string | null;
@@ -65,7 +67,7 @@ export function Header({
 
       <div className="w-px h-8 bg-zinc-800 mx-1" />
 
-      <HeaderButton icon={<Archive size={20} />} label="Gaveta de dinheiro" />
+      <HeaderButton icon={<Archive size={20} />} label="Gaveta de dinheiro" onClick={onOpenCashDrawer} />
       <HeaderButton
         icon={<Utensils size={20} />}
         label={selectedTableId ? `Mesa ${selectedTableId}` : 'Mesas'}

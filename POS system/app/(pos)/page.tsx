@@ -54,13 +54,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { isConfigured } from '@/lib/supabase';
 import { getPosApiBase } from '@/lib/apiBase';
-import {
-  POS_DRAFT_SCHEMA_VERSION,
-  readPosDraft,
-  writePosDraft,
-  clearPosDraft,
-  type PosDraftSnapshot,
-} from '@/lib/posDraftStorage';
+import { POS_DRAFT_SCHEMA_VERSION, type PosDraftSnapshot } from '@/lib/posDraftStorage';
 import type {
   CartItem,
   CompanyProfile,
@@ -78,9 +72,16 @@ import { PaymentModal } from '@/app/pos/components/PaymentModal';
 import { CustomerModal } from '@/app/pos/components/CustomerModal';
 import { ReceiptPreview } from '@/app/pos/components/ReceiptPreview';
 import { AdminPanel } from '@/app/pos/components/AdminPanel';
+import { EndOfDayModal } from '@/app/pos/components/EndOfDayModal';
+import { ensureCashSession } from '@/lib/cashSession';
 import { SalesHistoryModal } from '@/app/pos/components/SalesHistoryModal';
 import { QuotationModal, type QuotationRow } from '@/app/pos/components/QuotationModal';
 import { useCart } from '@/hooks/useCart';
+import { useCustomerDisplay } from '@/hooks/useCustomerDisplay';
+import { usePosDraftPersistence } from '@/hooks/usePosDraftPersistence';
+import { loadPosSettings } from '@/lib/posSettings';
+import { openCashDrawerIfNeeded } from '@/lib/cashDrawerClient';
+import { buildThermalPrintPageCss, resolveThermalWidthMm } from '@/lib/thermalPrintPage';
 import { useProducts } from '@/hooks/useProducts';
 import { useAuth } from '@/hooks/useAuth';
 import {
@@ -127,6 +128,7 @@ function markPosUiBootstrapped() {
 }
 import SetupWizard from '@/components/SetupWizard';
 import ActivationScreen from '@/components/ActivationScreen';
+import PosSelect from '@/components/PosSelect';
 
 type RouteProps = {
   params: Promise<Record<string, string | string[] | undefined>>;
@@ -349,9 +351,19 @@ function LoginScreen({
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-zinc-100 font-sans overflow-hidden select-none relative p-8">
-      <div className="flex flex-col items-center justify-center h-full">
+      <img
+        src="/posly-p-mark.svg"
+        alt=""
+        aria-hidden
+        width={121}
+        height={131}
+        decoding="async"
+        draggable={false}
+        className="pointer-events-none absolute -left-[12%] top-1/2 -translate-y-1/2 h-[145vh] w-auto max-w-none select-none z-0"
+      />
+      <div className="relative z-10 flex flex-1 flex-col items-center justify-center min-h-0">
         {/* User Grid */}
-        <div className="flex flex-wrap justify-center gap-6 z-10 max-w-7xl">
+        <div className="flex flex-wrap justify-center gap-6 max-w-7xl">
           {users.slice().sort((a, b) => a.name.localeCompare(b.name)).map((user, idx) => (
             <button
               key={user.id}
@@ -543,6 +555,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     return params.get('sidebar') === 'open';
   });
   const [isSalesHistoryOpen, setIsSalesHistoryOpen] = useState(false);
+  const [isEndOfDayOpen, setIsEndOfDayOpen] = useState(false);
 
   // Login State (isolated hook to keep session handling centralized)
   const auth = useAuth();
@@ -592,7 +605,10 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const scannerBufferRef = useRef('');
   const scannerResetTimerRef = useRef<number | null>(null);
   const checkoutIdempotencyKeyRef = useRef<string | null>(null);
-  const posDraftUserRef = useRef<string | null>(null);
+  const clearDraftEverywhereRef = useRef<() => void>(() => {});
+  /** Recibo pré-carregado no Electron enquanto o pagamento está aberto. */
+  const receiptPreparedRef = useRef(false);
+  const receiptPrepareGenRef = useRef(0);
   const familiesMomentumFrameRef = useRef<number | null>(null);
   const familiesDragStateRef = useRef({
     isDragging: false,
@@ -812,18 +828,33 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
   // --- Calculations ---
   const { originalTotal, originalSubtotal, totalDiscount, total, subtotal, tax } = useCart(cart, globalDiscount);
+  useCustomerDisplay({
+    cart,
+    total,
+    isPaymentOpen: isPaymentModalOpen,
+    isSaleFinalized,
+  });
 
-  const buildPrintReceiptMarkup = () => {
+  const buildPrintReceiptMarkup = (options?: {
+    saleFinalized?: boolean;
+    docTypeOverride?: 'VD' | 'TK' | 'FP' | 'FT';
+    receiptNumber?: string | null;
+  }) => {
     const now = new Date();
-    const orderCode = currentReceiptNumber || formatDocumentNumber(nextVDNumber, now);
+    const saleFinalized = options?.saleFinalized ?? isSaleFinalized;
+    const activeDocType = options?.docTypeOverride ?? finalizedDocType;
+    const orderCode =
+      options?.receiptNumber ||
+      currentReceiptNumber ||
+      formatDocumentNumber(nextVDNumber, now);
     const customerLabel = selectedCustomer ? selectedCustomer.name : 'Consumidor Final';
-    const documentLabel = isSaleFinalized ? finalizedDocType : 'Cons. Doc';
-    const totalPaid = !isSaleFinalized
+    const documentLabel = saleFinalized ? activeDocType : 'Cons. Doc';
+    const totalPaid = !saleFinalized
       ? 0
       : !isMultiplePayment
         ? (isCashPaymentMethod(paymentMethod) ? parseFloat(receivedAmount || `${total}`) : total)
         : payments.reduce((acc, p) => acc + p.amount, 0);
-    const paymentRows = !isSaleFinalized
+    const paymentRows = !saleFinalized
       ? ''
       : !isMultiplePayment
         ? `
@@ -842,7 +873,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     const hasChange = ((!isMultiplePayment && isCashPaymentMethod(paymentMethod) && receivedAmount !== '') ||
       (isMultiplePayment && payments.reduce((acc, p) => acc + p.amount, 0) > total));
 
-    const shouldShowPaidRow = !isSaleFinalized
+    const shouldShowPaidRow = !saleFinalized
       ? false
       : !isMultiplePayment
         ? isCashPaymentMethod(paymentMethod) && receivedAmount !== '' && parseFloat(receivedAmount || '0') > total
@@ -880,9 +911,21 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     const headerLinesHtml = receiptHead.lines
       .map((line) => `<div>${escapeHtml(line)}</div>`)
       .join('');
+    const printCfg = loadPosSettings();
+    const extraHeader = String(printCfg.printExtraHeader || '').trim();
+    const extraFooter = String(printCfg.printExtraFooter || '').trim();
+    const headerAlign = printCfg.printHeaderAlign === 'left' ? 'align-left' : 'align-center';
+    const footerAlign = printCfg.printFooterAlign === 'left' ? 'align-left' : 'align-center';
+    const extraHeaderHtml = extraHeader
+      ? `<div class="print-extra-header ${headerAlign}">${escapeHtml(extraHeader)}</div>`
+      : '';
+    const extraFooterHtml = extraFooter
+      ? `<div class="print-extra-footer ${footerAlign}">${escapeHtml(extraFooter)}</div>`
+      : '';
 
     return `
-      <div class="print-receipt ${isSaleFinalized ? 'payment-receipt' : 'consult-receipt'}">
+      <div class="print-receipt ${saleFinalized ? 'payment-receipt' : 'consult-receipt'}">
+        ${extraHeaderHtml}
         <div class="print-header">
           ${headerTitleHtml}
           ${headerLinesHtml}
@@ -891,10 +934,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
         <div class="print-block">
           <div class="print-meta">
-            <span>Data: ${escapeHtml(now.toLocaleDateString())} ${escapeHtml(now.toLocaleTimeString())}</span>
-            <span>Atendido por: ${escapeHtml(currentUser?.name || 'Admin')}</span>
+            <div class="print-meta-col">
+              <span>Data: ${escapeHtml(now.toLocaleDateString())}</span>
+              <span class="print-meta-sub">${escapeHtml(now.toLocaleTimeString())}</span>
+            </div>
+            <div class="print-meta-col print-meta-right">
+              <span>Atendido por:</span>
+              <span class="print-attendant">${escapeHtml(currentUser?.name || 'Admin')}</span>
+            </div>
           </div>
-          <div class="print-doc">${documentLabel} No.: ${escapeHtml(orderCode)}</div>
+          <div class="print-doc" data-receipt-doc>${documentLabel} No.: ${escapeHtml(orderCode)}</div>
         </div>
 
         <div class="print-block">
@@ -926,7 +975,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           </div>
         </div>
 
-        ${isSaleFinalized ? `
+        ${saleFinalized ? `
           <div class="print-block">
             <div class="print-row print-pay-header">
               <span>Método de Pagamento</span>
@@ -956,9 +1005,136 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           <div>Obrigado pela preferência!</div>
           <div class="foot-note">Sistema desenvolvido por: Nicolau Nino</div>
         </div>
+        ${extraFooterHtml}
       </div>
     `;
   };
+
+  const buildThermalReceiptHtml = (options?: {
+    saleFinalized?: boolean;
+    docTypeOverride?: 'VD' | 'TK' | 'FP' | 'FT';
+    receiptNumber?: string | null;
+  }) => {
+    const saleFinalized = options?.saleFinalized ?? isSaleFinalized;
+    const printMarkup = buildPrintReceiptMarkup(options);
+    const estimatedHeightMm = Math.max(
+      34,
+      66 + (cart.length * 9) + (saleFinalized ? (payments.length > 0 ? payments.length * 7 : 14) + 20 : 0),
+    );
+    const printSettings = loadPosSettings();
+    const widthMm = resolveThermalWidthMm(printSettings.printPaperWidth);
+    const heightMm = Math.max(estimatedHeightMm + 20, 120);
+    const printHtml = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Recibo</title>
+    <style>${buildThermalPrintPageCss(widthMm, {
+      top: printSettings.printMarginTop,
+      right: printSettings.printMarginRight,
+      bottom: printSettings.printMarginBottom,
+      left: printSettings.printMarginLeft,
+    })}</style>
+  </head>
+  <body>${printMarkup}</body>
+</html>`;
+    return { printHtml, printSettings, widthMm, heightMm };
+  };
+
+  const estimateCheckoutDocType = useCallback((): 'VD' | 'TK' | 'FP' | 'FT' => {
+    if (docType === 'FP') return 'FP';
+    const finalPayments = isMultiplePayment
+      ? payments
+      : paymentMethod
+        ? [
+            {
+              method: paymentMethod,
+              amount:
+                isCashPaymentMethod(paymentMethod) && receivedAmount !== ''
+                  ? parseFloat(receivedAmount)
+                  : total,
+            },
+          ]
+        : [];
+    if (finalPayments.length === 0) return docType === 'TK' ? 'TK' : 'VD';
+    const isPaidSale = finalPayments.every((entry) => paymentMethodMarksAsPaid(entry.method));
+    return isPaidSale ? docType : 'FT';
+  }, [
+    docType,
+    isMultiplePayment,
+    payments,
+    paymentMethod,
+    receivedAmount,
+    total,
+    paymentMethodMarksAsPaid,
+    isCashPaymentMethod,
+  ]);
+
+  // Pré-montar recibo no Electron enquanto o pagamento está aberto.
+  useEffect(() => {
+    if (!isPaymentModalOpen || !isReceiptPrintEnabled) {
+      receiptPreparedRef.current = false;
+      return;
+    }
+    if (typeof window === 'undefined' || !window.electronAPI?.prepareReceiptPrint) {
+      return;
+    }
+    if (cart.length === 0) {
+      receiptPreparedRef.current = false;
+      return;
+    }
+
+    const gen = ++receiptPrepareGenRef.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const saleDocType = estimateCheckoutDocType();
+          const { printHtml, printSettings, widthMm, heightMm } = buildThermalReceiptHtml({
+            saleFinalized: true,
+            docTypeOverride: saleDocType,
+            receiptNumber: formatDocumentNumber(nextVDNumber, new Date()),
+          });
+          const result = await window.electronAPI!.prepareReceiptPrint!(printHtml, {
+            printer: printSettings.printJobs?.receipt?.printer || undefined,
+            copies: printSettings.printCopies,
+            widthMm,
+            heightMm,
+          });
+          if (gen !== receiptPrepareGenRef.current) return;
+          receiptPreparedRef.current = Boolean(result?.success);
+        } catch {
+          if (gen === receiptPrepareGenRef.current) {
+            receiptPreparedRef.current = false;
+          }
+        }
+      })();
+    }, 80);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+    // Não incluir receivedAmount: cada tecla no troco invalidava o prepare.
+    // O prepare final (com valor exacto) corre em paralelo com createOrder no Finalizar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isPaymentModalOpen,
+    isReceiptPrintEnabled,
+    cart,
+    paymentMethod,
+    payments,
+    isMultiplePayment,
+    total,
+    subtotal,
+    tax,
+    totalDiscount,
+    originalSubtotal,
+    docType,
+    selectedCustomer,
+    companyProfile,
+    nextVDNumber,
+    currentUser?.name,
+    estimateCheckoutDocType,
+  ]);
 
   const fetchUsers = useCallback(async (options?: { bypassLicenseBlock?: boolean }) => {
     if (licenseExpired && !options?.bypassLicenseBlock) return;
@@ -1461,24 +1637,13 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     setIsFinalizingPayment(false);
     checkoutIdempotencyKeyRef.current = null;
     setSelectedCustomer(null);
+    setCustomerName('');
     setCurrentReceiptNumber(null);
     setDocType('VD');
     setFinalizedDocType('VD');
     setLoadedQuotationSource(null);
-    if (salesMode === 'table' && selectedTableId) {
-      setTableOrders(prev => {
-        const next = { ...prev };
-        delete next[selectedTableId];
-        return next;
-      });
-    } else if (salesMode === 'customer') {
-      setTableOrders(prev => {
-        const next = { ...prev };
-        delete next['direct'];
-        return next;
-      });
-    }
-    clearPosDraft(currentUser?.id);
+    setTableOrders({});
+    void clearDraftEverywhereRef.current();
   };
 
   const buildPosDraftSnapshot = useCallback((): PosDraftSnapshot => {
@@ -1508,45 +1673,36 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     selectedCartItemId,
   ]);
 
+  const applyPosDraft = useCallback((d: PosDraftSnapshot) => {
+    const nextCart = Array.isArray(d.cart) ? d.cart : [];
+    setCart(nextCart);
+    setSelectedCustomer(d.selectedCustomer ?? null);
+    setCustomerName(typeof d.customerName === 'string' ? d.customerName : '');
+    setTableNumber(typeof d.tableNumber === 'string' ? d.tableNumber : '');
+    setGlobalDiscount(d.globalDiscount ?? null);
+    setDocType((d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT');
+    setSalesMode(d.salesMode === 'table' ? 'table' : 'customer');
+    setSelectedTableId(d.selectedTableId ?? null);
+    setTableOrders(d.tableOrders && typeof d.tableOrders === 'object' ? d.tableOrders : {});
+    const sid = typeof d.selectedCartItemId === 'string' ? d.selectedCartItemId : null;
+    setSelectedCartItemId(sid && nextCart.some((item) => item.id === sid) ? sid : null);
+  }, []);
+
+  const { flushDraftNow, clearDraftEverywhere } = usePosDraftPersistence({
+    enabled: Boolean(isLoggedIn && isAuthRestored),
+    userId: currentUser?.id,
+    paused: isSaleFinalized,
+    buildSnapshot: buildPosDraftSnapshot,
+    applyDraft: applyPosDraft,
+  });
+  clearDraftEverywhereRef.current = () => {
+    void clearDraftEverywhere();
+  };
+
   useEffect(() => {
-    if (!isLoggedIn || !isAuthRestored) {
-      posDraftUserRef.current = null;
-      return;
-    }
-    const uid = currentUser?.id;
-    if (!uid) return;
-
-    if (posDraftUserRef.current !== uid) {
-      posDraftUserRef.current = uid;
-      const d = readPosDraft(uid);
-      if (d) {
-        const hasMeaningfulDraft =
-          (Array.isArray(d.cart) && d.cart.length > 0) ||
-          Boolean(d.selectedCustomer) ||
-          (typeof d.customerName === 'string' && d.customerName.trim() !== '') ||
-          d.globalDiscount != null ||
-          (d.tableOrders && Object.keys(d.tableOrders).length > 0) ||
-          (d.docType && d.docType !== 'VD');
-        if (hasMeaningfulDraft) {
-          const nextCart = Array.isArray(d.cart) ? d.cart : [];
-          setCart(nextCart);
-          setSelectedCustomer(d.selectedCustomer ?? null);
-          setCustomerName(typeof d.customerName === 'string' ? d.customerName : '');
-          setTableNumber(typeof d.tableNumber === 'string' ? d.tableNumber : '');
-          setGlobalDiscount(d.globalDiscount ?? null);
-          setDocType((d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT');
-          setSalesMode(d.salesMode === 'table' ? 'table' : 'customer');
-          setSelectedTableId(d.selectedTableId ?? null);
-          setTableOrders(d.tableOrders && typeof d.tableOrders === 'object' ? d.tableOrders : {});
-          const sid = typeof d.selectedCartItemId === 'string' ? d.selectedCartItemId : null;
-          setSelectedCartItemId(sid && nextCart.some((i) => i.id === sid) ? sid : null);
-        }
-      }
-      return;
-    }
-
-    writePosDraft(uid, buildPosDraftSnapshot());
-  }, [isLoggedIn, isAuthRestored, currentUser?.id, buildPosDraftSnapshot]);
+    if (!isLoggedIn || !isAuthRestored || !currentUser?.id) return;
+    void ensureCashSession().catch(() => undefined);
+  }, [isLoggedIn, isAuthRestored, currentUser?.id]);
 
   const handleTableSelect = (tableId: string | null) => {
     // 1. Save current state to current ID (already done in openTableModal, but let's be safe)
@@ -1625,6 +1781,48 @@ export default function POSPage({ params, searchParams }: RouteProps) {
             ? (receivedAmount === '' ? total : parseFloat(receivedAmount))
             : total);
     const change = !isProforma && amount > total ? (amount - total) : 0;
+
+    // Enquanto a API grava a venda, garantir recibo pronto na janela de impressão.
+    const printSettingsEarly = loadPosSettings();
+    const shouldPrintReceipt =
+      isReceiptPrintEnabled && Boolean(window.electronAPI?.prepareReceiptPrint || window.electronAPI?.printReceipt);
+    let prepareDuringCheckout: Promise<{
+      ok: boolean;
+      widthMm: number;
+      heightMm: number;
+      printHtml: string;
+    }> | null = null;
+
+    if (shouldPrintReceipt && window.electronAPI?.prepareReceiptPrint) {
+      const bundle = buildThermalReceiptHtml({
+        saleFinalized: true,
+        docTypeOverride: saleDocType,
+        receiptNumber: formatDocumentNumber(nextVDNumber, saleDate),
+      });
+      prepareDuringCheckout = window.electronAPI
+        .prepareReceiptPrint(bundle.printHtml, {
+          printer: printSettingsEarly.printJobs?.receipt?.printer || undefined,
+          copies: printSettingsEarly.printCopies,
+          widthMm: bundle.widthMm,
+          heightMm: bundle.heightMm,
+        })
+        .then((r) => {
+          const ok = Boolean(r?.success);
+          receiptPreparedRef.current = ok;
+          return {
+            ok,
+            widthMm: bundle.widthMm,
+            heightMm: bundle.heightMm,
+            printHtml: bundle.printHtml,
+          };
+        })
+        .catch(() => ({
+          ok: false,
+          widthMm: bundle.widthMm,
+          heightMm: bundle.heightMm,
+          printHtml: bundle.printHtml,
+        }));
+    }
     
     // Save to Supabase via service layer
     try {
@@ -1661,70 +1859,148 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         idempotencyKey,
       });
 
-      if (loadedQuotationSource) {
-        try {
-          const approvalRes = await fetch(`${getPosApiBase()}/cotacoes/aprovar`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sourceId: loadedQuotationSource.sourceId,
-              sourceType: loadedQuotationSource.sourceType,
-              approvedDocType: String(result.usedDocType || saleDocType).toUpperCase(),
-              approvedDocumentNumber: String(result.usedDocumentNumber ?? ''),
-            }),
-          });
-          if (!approvalRes.ok) throw new Error(`Falha ao aprovar cotação (${approvalRes.status})`);
-          setLoadedQuotationSource(null);
-        } catch {
-          showToast('Venda concluída, mas não foi possível atualizar o status da cotação.', 'info');
-        }
-      }
-
       checkoutIdempotencyKeyRef.current = null;
       setPaymentFinalizeError(null);
-      if (isReceiptPrintEnabled) {
-        // Open receipt modal for manual printing
+
+      // Cotação em background — não atrasar a impressão.
+      if (loadedQuotationSource) {
+        const quotationSource = loadedQuotationSource;
+        setLoadedQuotationSource(null);
+        void (async () => {
+          try {
+            const approvalRes = await fetch(`${getPosApiBase()}/cotacoes/aprovar`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sourceId: quotationSource.sourceId,
+                sourceType: quotationSource.sourceType,
+                approvedDocType: String(result.usedDocType || saleDocType).toUpperCase(),
+                approvedDocumentNumber: String(result.usedDocumentNumber ?? ''),
+              }),
+            });
+            if (!approvalRes.ok) throw new Error(`Falha ao aprovar cotação (${approvalRes.status})`);
+          } catch {
+            showToast('Venda concluída, mas não foi possível atualizar o status da cotação.', 'info');
+          }
+        })();
+      }
+
+      // Impressão: commit do recibo já preparado (só atualiza nº + manda ao spooler).
+      if (shouldPrintReceipt && window.electronAPI?.printReceipt) {
+        const printerLabel =
+          printSettingsEarly.printJobs?.receipt?.printer || 'a impressora';
+        showToast(`Recibo enviado para ${printerLabel}.`, 'success');
+
+        const preparedState = prepareDuringCheckout
+          ? await prepareDuringCheckout
+          : {
+              ok: receiptPreparedRef.current,
+              widthMm: resolveThermalWidthMm(printSettingsEarly.printPaperWidth),
+              heightMm: 200,
+              printHtml: '',
+            };
+
+        const printOptions = {
+          printer: printSettingsEarly.printJobs?.receipt?.printer || undefined,
+          copies: printSettingsEarly.printCopies,
+          widthMm: preparedState.widthMm,
+          heightMm: preparedState.heightMm,
+        };
+        const docLine = `${saleDocType} No.: ${String(result.usedDocumentNumber ?? '')}`;
+
+        const sendFullPrint = (html: string) => {
+          if (!html) return;
+          void window.electronAPI!.printReceipt!(html, printOptions).catch(() => {
+            showToast('Falha na impressão silenciosa.', 'info');
+          });
+        };
+
+        let committed = false;
+        if (window.electronAPI.commitReceiptPrint) {
+          try {
+            const commitResult = await window.electronAPI.commitReceiptPrint({
+              ...printOptions,
+              patch: { docLine },
+            });
+            if (!commitResult?.success || commitResult?.needFullPrint) {
+              const fallbackHtml =
+                preparedState.printHtml ||
+                buildThermalReceiptHtml({
+                  saleFinalized: true,
+                  docTypeOverride: saleDocType,
+                  receiptNumber: result.usedDocumentNumber,
+                }).printHtml;
+              sendFullPrint(fallbackHtml);
+            }
+          } catch {
+            const fallbackHtml =
+              preparedState.printHtml ||
+              buildThermalReceiptHtml({
+                saleFinalized: true,
+                docTypeOverride: saleDocType,
+                receiptNumber: result.usedDocumentNumber,
+              }).printHtml;
+            sendFullPrint(fallbackHtml);
+          }
+        } else {
+          const fallbackHtml =
+            preparedState.printHtml ||
+            buildThermalReceiptHtml({
+              saleFinalized: true,
+              docTypeOverride: saleDocType,
+              receiptNumber: result.usedDocumentNumber,
+            }).printHtml;
+          sendFullPrint(fallbackHtml);
+        }
+
+        receiptPreparedRef.current = false;
+        resetForNewSale();
+      } else if (isReceiptPrintEnabled) {
         setFinalizedDocType(saleDocType);
         setCurrentReceiptNumber(result.usedDocumentNumber);
         setIsReceiptModalOpen(true);
         setIsSaleFinalized(true);
       }
+
+      // Gaveta depois de disparar a impressão — menos contenção na XP-80C.
+      if (!isProforma) {
+        void openCashDrawerIfNeeded({
+          payments: finalPayments,
+          paymentMethods,
+        }).then((drawer) => {
+          if (drawer.attempted && !drawer.success && drawer.error) {
+            showToast(`Venda OK. Gaveta: ${drawer.error}`, 'info');
+          }
+        });
+      }
+
       if (String(result.usedDocType || saleDocType).toUpperCase() === 'VD' && result.usedSequence) {
         const updatedNext = result.usedSequence + 1;
         setNextVDNumber(updatedNext);
       }
 
-      // Align UI stock with the server after the atomic checkout succeeded.
-      try {
-        const [productsData, customersData] = await Promise.all([
-          posFetchProducts(),
-          posFetchCustomers(),
-        ]);
-        if (productsData && productsData.length > 0) setProducts(productsData);
-        if (Array.isArray(customersData)) {
-          setCustomers(customersData);
-          if (selectedCustomer) {
-            const refreshed = customersData.find(
-              (c: Customer) =>
-                String(c.id) === String(selectedCustomer.id) ||
-                (selectedCustomer.cloud_id && String(c.cloud_id ?? '') === String(selectedCustomer.cloud_id)),
-            );
-            if (refreshed) setSelectedCustomer(refreshed);
-          }
-        }
-      } catch {
-        // Non-fatal: stock/customers will be corrected on next refresh / error flow.
-      }
-
       setIsPaymentModalOpen(false);
+      // Venda concluída: nunca manter rascunho do carrinho (mesmo com recibo ainda aberto).
+      void clearDraftEverywhere();
       if (!isReceiptPrintEnabled) {
-        // Após refresh do stock no servidor, não devolver reserva local (evita duplicar).
-        clearCart(true);
-        setCustomerName('');
-        setTableNumber('');
-        setIsSaleFinalized(false);
+        resetForNewSale();
       }
       setAllowStockOverrideOnCheckout(false);
+
+      // Refresh stock/customers in background — não bloquear o caixa após finalizar.
+      void (async () => {
+        try {
+          const [productsData, customersData] = await Promise.all([
+            posFetchProducts(),
+            posFetchCustomers(),
+          ]);
+          if (productsData && productsData.length > 0) setProducts(productsData);
+          // Só actualiza a lista — não reaplicar selectedCustomer (resetForNewSale já o limpou).
+          if (Array.isArray(customersData)) setCustomers(customersData);
+        } catch {
+          // Non-fatal: stock/customers will be corrected on next refresh / error flow.
+        }
+      })();
     } catch (error: any) {
       const err = handleSupabaseError(error, 'handleFinalizePayment');
       const code = error instanceof PosApiError ? String(error.code ?? '') : '';
@@ -2049,244 +2325,71 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
   const { productFamilies, visibleProducts } = useProducts(products, searchQuery, selectedCategory);
 
+  const resetForNewSale = () => {
+    clearCart(true);
+    setCustomerName('');
+    setTableNumber('');
+    setPaymentMethod(null);
+    setReceivedAmount('');
+    setGlobalDiscount(null);
+    setSelectedCustomer(null);
+    setCurrentReceiptNumber(null);
+    setIsSaleFinalized(false);
+    setPayments([]);
+    setIsMultiplePayment(false);
+    setMultiplePaymentAmount('');
+    setIsReceiptModalOpen(false);
+  };
+
   const handleReceiptPrimaryAction = () => {
     if (isSaleFinalized) {
-      clearCart(true);
-      setCustomerName('');
-      setTableNumber('');
-      setPaymentMethod(null);
-      setReceivedAmount('');
-      setGlobalDiscount(null);
-      setSelectedCustomer(null);
-      setCurrentReceiptNumber(null);
-      setIsSaleFinalized(false);
-      setPayments([]);
-      setIsMultiplePayment(false);
-      setMultiplePaymentAmount('');
+      resetForNewSale();
+      return;
     }
     setIsReceiptModalOpen(false);
   };
 
-  const handleReceiptPrint = async () => {
-    const printMarkup = buildPrintReceiptMarkup();
-    const estimatedHeightMm = Math.max(
-      34,
-      66 + (cart.length * 9) + (isSaleFinalized ? (payments.length > 0 ? payments.length * 7 : 14) + 20 : 0)
-    );
-
-    const printHtml = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title></title>
-    <style id="page-size-style">
-      @page {
-        size: 72mm ${estimatedHeightMm}mm;
-        margin: 0;
-      }
-    </style>
-    <style>
-      html, body {
-        width: 72mm;
-        height: auto !important;
-        min-height: 0 !important;
-        max-height: none !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        background: white;
-      }
-      @media print {
-        html, body {
-          height: auto !important;
-          min-height: 0 !important;
-          max-height: none !important;
-          overflow: visible !important;
-        }
-        @page {
-          margin: 0 !important;
-        }
-      }
-      body {
-        font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
-        color: black;
-        background: white;
-        width: 72mm;
-        box-sizing: border-box;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: flex-start;
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      .print-receipt {
-        width: 100%;
-        max-width: 72mm;
-        margin: 0 auto;
-        padding: 0.5mm 2mm;
-      }
-      .print-header {
-        text-align: center;
-        font-size: 11px;
-        font-weight: 800;
-        line-height: 1.35;
-      }
-      .logo {
-        font-size: 26px;
-        font-weight: 900;
-        letter-spacing: 0.4px;
-        margin-bottom: 4px;
-      }
-      .print-logo-wrap {
-        margin-bottom: 4px;
-        display: flex;
-        justify-content: center;
-      }
-      .print-logo {
-        max-height: 18mm;
-        max-width: 100%;
-        object-fit: contain;
-        display: block;
-        /* Igual .receipt-thermal-logo — contraste alto gerava faixa preta sob o texto */
-        filter: grayscale(1) contrast(1.2);
-        -webkit-filter: grayscale(1) contrast(1.2);
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-      .customer {
-        margin-top: 6px;
-      }
-      .print-block {
-        padding-top: 4px;
-        margin-top: 6px;
-      }
-      .print-meta,
-      .print-row,
-      .print-columns {
-        display: flex;
-        justify-content: space-between;
-        gap: 6px;
-      }
-      .print-meta {
-        font-size: 10px;
-        font-weight: 700;
-      }
-      .print-meta span:last-child {
-        text-align: right;
-      }
-      .print-doc {
-        margin-top: 6px;
-        font-size: 13px;
-        font-weight: 900;
-      }
-      .print-columns {
-        font-size: 10px;
-        font-weight: 800;
-        margin-bottom: 3px;
-      }
-      .qty {
-        width: 9mm;
-        flex: 0 0 9mm;
-      }
-      .desc {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .unit {
-        width: 15mm;
-        flex: 0 0 15mm;
-        text-align: right;
-      }
-      .line-total {
-        width: 17mm;
-        flex: 0 0 17mm;
-        text-align: right;
-      }
-      .print-divider {
-        border-top: 1px dashed #000;
-        margin: 4px 0;
-      }
-      .payment-divider {
-        margin-top: 6px;
-      }
-      .print-items {
-        padding-top: 1px;
-      }
-      .print-item-row {
-        display: grid;
-        grid-template-columns: 9mm minmax(0, 1fr) 15mm 17mm;
-        gap: 5px;
-        align-items: start;
-        font-size: 10px;
-        font-weight: 800;
-        padding: 2px 0;
-      }
-      .print-totals {
-        margin-top: 8px;
-        font-size: 11px;
-        font-weight: 800;
-      }
-      .print-totals .print-row {
-        margin-top: 3px;
-      }
-      .print-totals .discount-row span:last-child {
-        font-weight: 900;
-      }
-      .total-row {
-        margin-top: 6px;
-        padding-top: 6px;
-        font-size: 17px;
-        font-weight: 900;
-      }
-      .print-pay-header {
-        font-size: 10px;
-        font-weight: 800;
-        margin-bottom: 3px;
-      }
-      .payment-row {
-        font-size: 10px;
-        margin-top: 4px;
-        font-weight: 800;
-      }
-      .print-change {
-        margin-top: 4px;
-        padding-top: 4px;
-        font-size: 10px;
-        font-weight: 800;
-      }
-      .print-footer {
-        border-top: 1px dashed #000;
-        margin-top: 6px;
-        padding-top: 6px;
-        padding-bottom: 0;
-        text-align: center;
-        font-size: 11px;
-        font-weight: 800;
-        line-height: 1.45;
-      }
-      .foot-note {
-        margin-top: 4px;
-        margin-bottom: 0;
-        font-size: 10px;
-        font-style: italic;
-        font-weight: 900;
-      }
-    </style>
-  </head>
-  <body>${printMarkup}</body>
-</html>
-`;
+  const handleReceiptPrint = async (options?: {
+    saleFinalized?: boolean;
+    docTypeOverride?: 'VD' | 'TK' | 'FP' | 'FT';
+    receiptNumber?: string | null;
+    silentOnly?: boolean;
+    skipToast?: boolean;
+  }) => {
+    const saleFinalized = options?.saleFinalized ?? isSaleFinalized;
+    const { printHtml, printSettings, widthMm, heightMm } = buildThermalReceiptHtml(options);
 
     if (window.electronAPI?.printReceipt) {
+      const printOptions = {
+        printer: printSettings.printJobs?.receipt?.printer || undefined,
+        copies: printSettings.printCopies,
+        widthMm,
+        heightMm,
+      };
+      // Finalizar venda: toast imediato — não esperar a impressora (a notificação não atrasa o envio).
+      if (options?.silentOnly) {
+        if (!options.skipToast) {
+          const printerLabel =
+            printSettings.printJobs?.receipt?.printer || 'a impressora';
+          showToast(`Recibo enviado para ${printerLabel}.`, 'success');
+        }
+        void window.electronAPI.printReceipt(printHtml, printOptions).then((result) => {
+          if (result && result.success === false && result.error) {
+            showToast(`Impressão falhou (${result.error}).`, 'info');
+          }
+        }).catch(() => {
+          showToast('Falha na impressão silenciosa.', 'info');
+        });
+        return true;
+      }
       try {
-        const result = await window.electronAPI.printReceipt(printHtml);
+        const result = await window.electronAPI.printReceipt(printHtml, printOptions);
         if (result?.success) {
-          showToast('Recibo enviado para a impressora padrão.', 'success');
-          return;
+          showToast(
+            `Recibo enviado para ${result.printer || printSettings.printJobs?.receipt?.printer || 'a impressora'}.`,
+            'success',
+          );
+          return true;
         }
         if (result?.error) {
           showToast(
@@ -2295,8 +2398,13 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           );
         }
       } catch {
-        showToast('Falha na impressão silenciosa. A abrir fallback manual...', 'info');
+        showToast(
+          'Falha na impressão silenciosa. A abrir fallback manual...',
+          'info',
+        );
       }
+    } else if (options?.silentOnly) {
+      return false;
     }
 
     const iframe = document.createElement('iframe');
@@ -2329,7 +2437,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         if (receipt && styleTag) {
           const px = Math.max(receipt.scrollHeight, receipt.offsetHeight);
           const mm = Math.max(28, Math.ceil((px * 25.4) / 96));
-          styleTag.textContent = `@page { size: 72mm ${mm}mm; margin: 0 !important; }`;
+          styleTag.textContent = `@page { size: ${widthMm}mm ${mm}mm; margin: 0 !important; }`;
         }
         void doc.body?.offsetHeight;
 
@@ -2356,6 +2464,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
     iframe.addEventListener('load', onLoad, { once: true });
     iframe.srcdoc = printHtml;
+    return true;
   };
 
   if (!isAuthRestored) return null; // Prevent flicker
@@ -3014,18 +3123,20 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         currentUserName={currentUser?.name || null}
         currentDate={currentDate}
         onGoToManagement={() => {
-          if (currentUser?.id) {
-            writePosDraft(currentUser.id, buildPosDraftSnapshot());
-          }
-          router.push('/management');
+          void flushDraftNow().finally(() => {
+            router.push('/management');
+          });
         }}
         onOpenSalesHistory={() => {
           setIsAdminSidebarOpen(false);
           setIsSalesHistoryOpen(true);
         }}
+        onOpenEndOfDay={() => {
+          setIsAdminSidebarOpen(false);
+          setIsEndOfDayOpen(true);
+        }}
         onLogout={() => {
-          const uid = currentUser?.id;
-          if (uid) clearPosDraft(uid);
+          void clearDraftEverywhere();
           localStorage.setItem('isLoggedIn', 'false');
           localStorage.removeItem('currentUser');
           window.dispatchEvent(new Event('pos-auth-changed'));
@@ -3033,6 +3144,13 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           setCurrentUser(null);
           setIsAdminSidebarOpen(false);
         }}
+      />
+
+      <EndOfDayModal
+        isOpen={isEndOfDayOpen}
+        onClose={() => setIsEndOfDayOpen(false)}
+        companyName={companyProfile?.name || 'POSly'}
+        onToast={showToast}
       />
 
       <SalesHistoryModal isOpen={isSalesHistoryOpen} onClose={() => setIsSalesHistoryOpen(false)} />
@@ -3310,14 +3428,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
               <div className="p-4 bg-[#121212] border-t border-zinc-800 grid grid-cols-3 gap-6">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs md:text-sm font-bold text-zinc-500 capitalize">Impressora</label>
-                  <select 
+                  <PosSelect
                     value={cashierPrinter}
-                    onChange={(e) => setCashierPrinter(e.target.value)}
-                    className="h-10 bg-zinc-800 border border-zinc-700 rounded px-3 text-base text-white focus:outline-none focus:border-red-500"
-                  >
-                    <option value="Impressora do evento">Impressora do evento</option>
-                    <option value="Impressora térmica">Impressora térmica</option>
-                  </select>
+                    onChange={setCashierPrinter}
+                    size="md"
+                    triggerClassName="!bg-zinc-800 !border-zinc-700"
+                    options={[
+                      { value: 'Impressora do evento', label: 'Impressora do evento' },
+                      { value: 'Impressora térmica', label: 'Impressora térmica' },
+                    ]}
+                  />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs md:text-sm font-bold text-zinc-500 capitalize">Dia inicial</label>

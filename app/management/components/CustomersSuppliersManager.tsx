@@ -18,6 +18,7 @@ import {
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import PosSelect from '@/components/PosSelect';
 
 type CustomerRow = {
   id: string;
@@ -359,18 +360,16 @@ export default function CustomersSuppliersManager() {
 
                   <div className="space-y-1">
                     <label className="text-[30px] font-light text-zinc-100">País</label>
-                    <div className="relative">
-                      <select
-                        value={form.country}
-                        onChange={(e) => setForm({ ...form, country: e.target.value })}
-                        className="w-full bg-[#1a1a1a] border border-zinc-700 rounded px-3 py-1.5 text-sm text-white focus:border-zinc-500 outline-none transition-colors appearance-none"
-                      >
-                        <option>Afghanistan</option>
-                        <option>Mozambique</option>
-                        <option>Portugal</option>
-                      </select>
-                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500">▼</span>
-                    </div>
+                    <PosSelect
+                      value={form.country}
+                      onChange={(v) => setForm({ ...form, country: v })}
+                      size="md"
+                      options={[
+                        { value: 'Afghanistan', label: 'Afghanistan' },
+                        { value: 'Mozambique', label: 'Mozambique' },
+                        { value: 'Portugal', label: 'Portugal' },
+                      ]}
+                    />
                   </div>
 
                   <Field label="Telefone" required value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />

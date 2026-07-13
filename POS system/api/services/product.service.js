@@ -360,6 +360,14 @@ export async function adjustStock(payload = {}, actorUser = null) {
     return { error: 'Produto não encontrado', status: 404 };
   }
 
+  if (Number(product.is_service ?? 0) !== 0) {
+    return {
+      error: 'Produto sem controlo de estoque (serviço). A quantidade não é alterada.',
+      status: 400,
+      code: 'STOCK_NOT_TRACKED',
+    };
+  }
+
   const stockBefore = Number(product.stock_quantity ?? 0) || 0;
   let stockAfter = stockBefore;
   let quantityDelta = 0;
@@ -615,6 +623,12 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
 
     let movementType = 'venda';
     if (
+      docPrefix === 'EN/ST' ||
+      docPrefix === 'PUR' ||
+      docTypeNormalized === 'compra'
+    ) {
+      movementType = 'compra';
+    } else if (
       docPrefix === 'WH/IN' ||
       docTypeNormalized === 'entrada de stock' ||
       docTypeNormalized === 'entrada de armazem' ||
@@ -639,14 +653,16 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
     const rawQty = Number(row?.quantity ?? 0);
     const quantity = Number.isFinite(rawQty) ? rawQty : 0;
     const signedQuantity =
-      movementType === 'entrada' || movementType === 'devolucao'
+      movementType === 'entrada' ||
+      movementType === 'compra' ||
+      movementType === 'devolucao'
         ? Math.abs(quantity)
         : movementType === 'ajuste'
           ? quantity
           : -Math.abs(quantity);
 
     const movementDate =
-      movementType === 'entrada'
+      movementType === 'entrada' || movementType === 'compra'
         ? String(row?.item_created_at ?? row?.document_date ?? '')
         : String(row?.document_date ?? row?.item_created_at ?? '');
 
@@ -655,7 +671,11 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
       product_id: row?.product_id != null ? String(row.product_id) : null,
       product_name: String(row?.product_name ?? ''),
       movement_type: movementType,
-      document_type: isDebt ? 'FT' : docType || null,
+      document_type: isDebt
+        ? 'FT'
+        : movementType === 'compra'
+          ? 'Compra'
+          : docType || null,
       document_number: row?.document_number ? String(row.document_number) : null,
       document_id: row?.document_id ? String(row.document_id) : null,
       customer_name: String(row?.customer_name ?? 'Consumidor final'),
@@ -672,20 +692,32 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
     const rawRef = String(row?.document_number ?? row?.document_id ?? '');
     const isCount = rawRef.startsWith('INV-COUNT:');
     const isWarehouseIn = rawRef.startsWith('WH/IN:');
+    const isPurchaseIn = rawRef.startsWith('EN/ST:') || rawRef.startsWith('PUR:');
     const movementId = row?.movement_id != null ? String(row.movement_id) : '';
     return {
       id: `sm-${movementId}`,
       product_id: row?.product_id != null ? String(row.product_id) : null,
       product_name: String(row?.product_name ?? ''),
-      movement_type: isCount ? 'inventario' : qty >= 0 ? 'entrada' : 'ajuste',
-      document_type: String(row?.doc_type ?? (isCount ? 'Inventário rápido' : 'Entrada de stock')),
+      movement_type: isCount
+        ? 'inventario'
+        : isPurchaseIn
+          ? 'compra'
+          : qty >= 0
+            ? 'entrada'
+            : 'ajuste',
+      document_type: String(
+        row?.doc_type ??
+          (isCount ? 'Inventário rápido' : isPurchaseIn ? 'Compra' : 'Entrada de stock'),
+      ),
       document_number: isCount
         ? `INV/${movementId || '0'}`
         : isWarehouseIn
           ? rawRef.replace(/^WH\/IN:/, '')
-          : rawRef || null,
+          : isPurchaseIn
+            ? rawRef.replace(/^(EN\/ST|PUR):/, '')
+            : rawRef || null,
       document_id: rawRef || null,
-      customer_name: isWarehouseIn ? 'Armazém' : 'Inventário',
+      customer_name: isWarehouseIn ? 'Armazém' : isPurchaseIn ? 'Fornecedor' : 'Inventário',
       quantity: qty,
       quantity_abs: Math.abs(qty),
       unit_price: Number(row?.price ?? 0) || 0,
@@ -694,9 +726,16 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
     };
   };
 
+  // Entradas via documento (EN/ST, PUR, WH/IN) já aparecem em order_items —
+  // ignorar o stock_movement espelho para não duplicar (Venda -N + Entrada +N).
+  const inventoryRowsDeduped = (inventoryRows ?? []).filter((row) => {
+    const ref = String(row?.document_number ?? row?.document_id ?? '');
+    return !/^(EN\/ST|PUR|WH\/IN):/i.test(ref);
+  });
+
   const combined = [
     ...(saleRows ?? []).map(mapSaleRow),
-    ...(inventoryRows ?? []).map(mapInventoryRow),
+    ...inventoryRowsDeduped.map(mapInventoryRow),
   ].sort((a, b) => {
     const aTime = Date.parse(String(a.date ?? '')) || 0;
     const bTime = Date.parse(String(b.date ?? '')) || 0;

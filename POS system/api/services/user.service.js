@@ -111,8 +111,15 @@ export async function authenticateLogin({ userId, enteredPin }) {
     return { ok: false, reason: 'invalid_credentials' };
   }
 
+  console.log("🔐 LOGIN DEBUG START");
+  console.log("USER ID:", userId);
+  console.log("PIN RECEBIDO:", JSON.stringify(enteredPin));
+  console.log("PIN LENGTH:", String(enteredPin).length);
+  console.log("HASH DB:", user.pin);
+
   const auth = await verifyPinAgainstStored(enteredPin, user.pin);
 
+  console.log("BCRYPT RESULT:", auth);
   if (!auth.valid) {
     logInfo('login_failed', { user_id: userId, reason: 'invalid_credentials' });
     return { ok: false, reason: 'invalid_credentials' };
@@ -154,12 +161,26 @@ export async function authenticateLogin({ userId, enteredPin }) {
 }
 
 export async function listLoginUsers() {
-  const rows = await allDb(
-    `SELECT id, name, surname, email, role, access_level, active
-     FROM users
-     WHERE active = 1
-     ORDER BY name ASC`
-  );
+  const installationTenantId = String(
+    process.env.DEFAULT_TENANT_ID || process.env.POS_DEV_TENANT || ''
+  ).trim();
+
+  const rows = installationTenantId
+    ? await allDb(
+        `SELECT id, name, surname, email, role, access_level, active
+         FROM users
+         WHERE active = 1
+           AND tenant_id = ?
+         ORDER BY name ASC`,
+        [installationTenantId]
+      )
+    : await allDb(
+        `SELECT id, name, surname, email, role, access_level, active
+         FROM users
+         WHERE active = 1
+         ORDER BY name ASC`
+      );
+
   return rows.map((row) => ({
     id: String(row.id),
     name: String(row.name ?? ''),
@@ -540,7 +561,9 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
   try {
     const tenantId =
       String(actorUser?.tenant_id ?? '').trim() ||
-      'tenant-1';
+      'tenant-1'; // fallback obrigatório
+
+    console.log('🔥 VALIDANDO LICENÇA', { tenantId });
 
     const rows = await allDb(
       `SELECT expires_at, active, machine_id, created_at
@@ -551,6 +574,7 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
     );
 
     if (!rows.length) {
+      console.log('🔥 LICENSE DB RESULT: nenhuma linha para tenant');
       return { isExpired: true };
     }
 
@@ -570,6 +594,7 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
       if (!isLicenseRowTimeExpired(expiresAt, gracePeriodMs)) {
         const expiresStr =
           expiresAt != null && String(expiresAt).trim() ? String(expiresAt) : null;
+        console.log('🔥 LICENSE OK', { tenantId, expiresStr, machineBound: Boolean(boundMachine) });
         return {
           isExpired: false,
           expiresAt: expiresStr,
@@ -578,6 +603,7 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
       }
     }
 
+    console.log('🔥 LICENSE DB RESULT: nenhuma licença válida (expirada, inactiva ou outra máquina)');
     return { isExpired: true };
   } catch (err) {
     console.error('❌ license validation error', err);

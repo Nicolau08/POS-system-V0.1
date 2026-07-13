@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Edit3, FileText, PackagePlus, PackageSearch, Printer, Search, Trash2, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import PosSelect from '@/components/PosSelect';
 
 const DOCUMENT_CARDS = [
   'Entrada de stock',
@@ -689,17 +690,15 @@ export default function GerenciamentoManager() {
                     </div>
                     <div className="grid grid-cols-[130px_1fr] items-center gap-2">
                       <label className="text-zinc-400">Cliente/Fornecedor</label>
-                      <select
+                      <PosSelect
                         value={selectedPartyId}
-                        onChange={(e) => setSelectedPartyId(e.target.value)}
-                        className="h-8 w-full rounded border border-zinc-700 bg-[#121212] px-2 text-zinc-100 focus:outline-none"
-                      >
-                        {parties.map((party) => (
-                          <option key={String(party.id)} value={String(party.id)}>
-                            {String(party.name ?? '-')}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setSelectedPartyId}
+                        size="sm"
+                        options={parties.map((party) => ({
+                          value: String(party.id),
+                          label: String(party.name ?? '-'),
+                        }))}
+                      />
                     </div>
                   </div>
 
@@ -1028,21 +1027,23 @@ export default function GerenciamentoManager() {
                   <span className="mb-1 block text-zinc-400">Impostos</span>
                   {editorItem.taxUiEnabled && (
                     <div className="flex items-center gap-2">
-                      <select
+                      <PosSelect
                         value={`${editorItem.taxCode}:${editorItem.taxRate}`}
-                        onChange={(e) => {
-                          const [taxCode, taxRateStr] = e.target.value.split(':');
+                        onChange={(v) => {
+                          const [taxCode, taxRateStr] = v.split(':');
                           updateSelectedItem({
                             taxCode,
                             taxRate: Number(taxRateStr) || 0,
                           });
                         }}
-                        className="h-8 w-[150px] border border-zinc-700 bg-[#141414] px-2 text-xs text-zinc-100 focus:outline-none"
-                      >
-                        <option value="IVA:16">IVA (16%)</option>
-                        <option value="IVA:5">IVA (5%)</option>
-                        <option value="ISENTO:0">Isento (0%)</option>
-                      </select>
+                        size="sm"
+                        className="w-[150px]"
+                        options={[
+                          { value: 'IVA:16', label: 'IVA (16%)' },
+                          { value: 'IVA:5', label: 'IVA (5%)' },
+                          { value: 'ISENTO:0', label: 'Isento (0%)' },
+                        ]}
+                      />
                       <button
                         type="button"
                         onClick={() =>
@@ -1096,16 +1097,17 @@ export default function GerenciamentoManager() {
                 <div className="mb-2">
                   <span className="mb-1 block text-zinc-400">Desconto (depois dos impostos)</span>
                   <div className="grid w-[226px] grid-cols-[1fr_64px_auto] gap-1">
-                    <select
+                    <PosSelect
                       value={editorItem.discountType}
-                      onChange={(e) =>
-                        updateSelectedItem({ discountType: e.target.value === 'fixed' ? 'fixed' : 'percent' })
+                      onChange={(v) =>
+                        updateSelectedItem({ discountType: v === 'fixed' ? 'fixed' : 'percent' })
                       }
-                      className="h-8 border border-zinc-700 bg-[#141414] px-2 text-xs text-zinc-100 focus:outline-none"
-                    >
-                      <option value="percent">Porcentagem de desconto</option>
-                      <option value="fixed">Valor de desconto</option>
-                    </select>
+                      size="sm"
+                      options={[
+                        { value: 'percent', label: 'Porcentagem de desconto' },
+                        { value: 'fixed', label: 'Valor de desconto' },
+                      ]}
+                    />
                     <input
                       type="number"
                       step="0.01"

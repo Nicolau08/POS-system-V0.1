@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { logInfo } from '../utils/logger.js';
+import { logError, logWarn } from '../utils/logger.js';
 import { sendError } from '../utils/response.js';
 
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'x-auth-user', 'x-user-id']);
@@ -37,16 +38,41 @@ export function attachRequestContext(req, res, next) {
 
   res.on('finish', () => {
     const durationMs = Date.now() - startedAt;
-    logInfo('http_request', {
+    const status = res.statusCode;
+    const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+    const message =
+      status >= 500
+        ? `Pedido HTTP falhou no servidor (${req.method} ${req.originalUrl})`
+        : status >= 400
+          ? `Pedido HTTP rejeitado (${status}) ${req.method} ${req.originalUrl}`
+          : `Pedido HTTP concluído ${req.method} ${req.originalUrl}`;
+
+    const meta = {
+      event: 'http.request',
+      message,
+      source: 'api',
+      module: 'http',
+      action: `${req.method} ${req.originalUrl}`,
+      reason:
+        status >= 500
+          ? 'Erro interno ao processar o pedido'
+          : status >= 400
+            ? 'Cliente ou autorização impediram o pedido'
+            : 'Pedido processado normalmente',
       request_id: requestId,
       method: req.method,
       path: req.originalUrl,
-      status_code: res.statusCode,
+      status_code: status,
       duration_ms: durationMs,
       ip: getClientIp(req),
+      who: req.user ?? null,
       user_id: req.user?.id ?? null,
       tenant_id: req.tenantId ?? req.user?.tenant_id ?? null,
-    });
+    };
+
+    if (level === 'error') logError('http_request', meta);
+    else if (level === 'warn') logWarn('http_request', { ...meta, persist: true });
+    else logInfo('http_request', { ...meta, persist: false });
   });
 
   next();

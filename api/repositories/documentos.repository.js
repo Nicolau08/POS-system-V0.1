@@ -266,6 +266,11 @@ export function listDashboardOrderRows(tenantId) {
     `
       SELECT
         o.id,
+        o.doc_type,
+        o.document_number,
+        o.payment_method,
+        o.approved_document_type,
+        o.approved_document_number,
         o.status,
         o.total,
         o.created_at,
@@ -286,10 +291,37 @@ export function listDashboardSaleRows(tenantId) {
   return all(
     `
       SELECT
-        CAST(v.id AS TEXT) AS id,
+        ('venda:' || CAST(v.id AS TEXT)) AS id,
         CASE
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'FP'
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'TK' THEN 'TK'
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT' THEN 'FT'
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'VD' THEN 'VD'
+          WHEN LOWER(REPLACE(COALESCE(v.payment_method, ''), '-', ' ')) LIKE '%conta corrente%' THEN 'FT'
+          ELSE 'VD'
+        END AS doc_type,
+        (
+          CASE
+            WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'FP'
+            WHEN UPPER(COALESCE(v.doc_type, '')) = 'TK' THEN 'TK'
+            WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT' THEN 'FT'
+            WHEN UPPER(COALESCE(v.doc_type, '')) = 'VD' THEN 'VD'
+            WHEN LOWER(REPLACE(COALESCE(v.payment_method, ''), '-', ' ')) LIKE '%conta corrente%' THEN 'FT'
+            ELSE 'VD'
+          END
+          || '/' ||
+          CAST(strftime('%Y', v.data) AS TEXT)
+          || '/' ||
+          printf('%04d', COALESCE(v.doc_sequence, v.id))
+        ) AS document_number,
+        v.payment_method AS payment_method,
+        v.approved_document_type AS approved_document_type,
+        v.approved_document_number AS approved_document_number,
+        CASE
+          WHEN LOWER(COALESCE(v.status, '')) IN ('approved', 'aprovado') THEN 'approved'
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'FP' THEN 'pending'
           WHEN LOWER(REPLACE(COALESCE(v.payment_method, ''), '-', ' ')) LIKE '%conta corrente%' THEN 'pending'
-          ELSE 'completed'
+          ELSE COALESCE(v.status, 'completed')
         END AS status,
         v.total AS total,
         v.data AS created_at,
@@ -340,5 +372,214 @@ export function getNextVdSequence(tenantId) {
       WHERE UPPER(COALESCE(doc_type, 'VD')) = 'VD'
         AND tenant_id = ?`,
     [tenantId]
+  );
+}
+
+export function findOrderByDocumentNumber(documentNumber, tenantId) {
+  return get(
+    `SELECT
+       CAST(o.id AS TEXT) AS id,
+       o.doc_type,
+       o.doc_prefix,
+       o.document_number,
+       o.status,
+       o.payment_method,
+       o.total,
+       o.approved_document_type,
+       o.approved_document_number,
+       COALESCE(c.name, 'Consumidor final') AS client_name
+     FROM orders o
+     LEFT JOIN clientes c
+       ON CAST(c.id AS TEXT) = CAST(o.customer_id AS TEXT)
+      AND c.tenant_id = o.tenant_id
+     WHERE UPPER(TRIM(o.document_number)) = UPPER(TRIM(?))
+       AND o.tenant_id = ?
+     LIMIT 1`,
+    [documentNumber, tenantId]
+  );
+}
+
+export function findOrderByDocumentParts(prefix, year, sequence, tenantId) {
+  return get(
+    `SELECT
+       CAST(o.id AS TEXT) AS id,
+       o.doc_type,
+       o.doc_prefix,
+       o.document_number,
+       o.status,
+       o.payment_method,
+       o.total,
+       o.approved_document_type,
+       o.approved_document_number,
+       COALESCE(c.name, 'Consumidor final') AS client_name
+     FROM orders o
+     LEFT JOIN clientes c
+       ON CAST(c.id AS TEXT) = CAST(o.customer_id AS TEXT)
+      AND c.tenant_id = o.tenant_id
+     WHERE o.tenant_id = ?
+       AND UPPER(COALESCE(o.doc_prefix, '')) = UPPER(?)
+       AND CAST(COALESCE(o.doc_year, strftime('%Y', o.created_at)) AS INTEGER) = ?
+       AND CAST(COALESCE(o.doc_sequence, 0) AS INTEGER) = ?
+     LIMIT 1`,
+    [tenantId, prefix, year, sequence]
+  );
+}
+
+export function findVendaByDocumentNumber(documentNumber, tenantId) {
+  const match = String(documentNumber ?? '')
+    .trim()
+    .toUpperCase()
+    .match(/^([A-Z]+)\/(\d{4})\/(\d+)$/);
+  if (!match) return null;
+  const prefix = match[1];
+  const year = match[2];
+  const sequence = Number(match[3]);
+  if (!Number.isFinite(sequence)) return null;
+
+  return get(
+    `SELECT
+       v.id,
+       v.doc_type,
+       v.doc_sequence,
+       v.status,
+       v.payment_method,
+       v.total,
+       v.approved_document_type,
+       v.approved_document_number,
+       COALESCE(c.name, v.customer_name, 'Consumidor final') AS client_name,
+       (
+         UPPER(COALESCE(v.doc_type, 'VD')) || '/' ||
+         CAST(strftime('%Y', v.data) AS TEXT) || '/' ||
+         printf('%04d', COALESCE(v.doc_sequence, v.id))
+       ) AS document_number
+     FROM vendas v
+     LEFT JOIN clientes c
+       ON CAST(c.cloud_id AS TEXT) = CAST(v.customer_id AS TEXT)
+      AND c.tenant_id = v.tenant_id
+     WHERE v.tenant_id = ?
+       AND UPPER(COALESCE(v.doc_type, 'VD')) = ?
+       AND COALESCE(v.doc_sequence, v.id) = ?
+       AND strftime('%Y', v.data) = ?
+     LIMIT 1`,
+    [tenantId, prefix, sequence, year]
+  );
+}
+
+export function updateOrderDocumentPayment(
+  orderId,
+  { paymentMethod, status, approvedDocType, approvedDocumentNumber, updatedAt },
+  tenantId
+) {
+  return run(
+    `UPDATE orders
+     SET payment_method = ?,
+         status = ?,
+         approved_document_type = ?,
+         approved_document_number = ?,
+         updated_at = ?
+     WHERE CAST(id AS TEXT) = ?
+       AND tenant_id = ?`,
+    [paymentMethod, status, approvedDocType, approvedDocumentNumber, updatedAt, orderId, tenantId]
+  );
+}
+
+export function updateVendaDocumentPayment(
+  saleId,
+  { paymentMethod, status, approvedDocType, approvedDocumentNumber },
+  tenantId
+) {
+  return run(
+    `UPDATE vendas
+     SET payment_method = ?,
+         status = ?,
+         approved_document_type = ?,
+         approved_document_number = ?
+     WHERE id = ?
+       AND tenant_id = ?`,
+    [paymentMethod, status, approvedDocType, approvedDocumentNumber, saleId, tenantId]
+  );
+}
+
+export function getOrderPaymentContext(orderId, tenantId) {
+  return get(
+    `SELECT
+       CAST(o.id AS TEXT) AS id,
+       o.customer_id,
+       o.user_id,
+       o.user_name,
+       o.total,
+       o.subtotal,
+       o.tax,
+       o.discount,
+       o.document_number,
+       COALESCE(c.name, 'Consumidor final') AS client_name
+     FROM orders o
+     LEFT JOIN clientes c
+       ON CAST(c.id AS TEXT) = CAST(o.customer_id AS TEXT)
+      AND c.tenant_id = o.tenant_id
+     WHERE CAST(o.id AS TEXT) = ?
+       AND o.tenant_id = ?
+     LIMIT 1`,
+    [String(orderId), tenantId]
+  );
+}
+
+export function getVendaPaymentContext(saleId, tenantId) {
+  return get(
+    `SELECT
+       v.id,
+       v.customer_id,
+       v.customer_name,
+       v.user_id,
+       v.user_name,
+       v.total,
+       v.doc_type,
+       (
+         UPPER(COALESCE(v.doc_type, 'VD')) || '/' ||
+         CAST(strftime('%Y', v.data) AS TEXT) || '/' ||
+         printf('%04d', COALESCE(v.doc_sequence, v.id))
+       ) AS document_number,
+       COALESCE(c.name, v.customer_name, 'Consumidor final') AS client_name
+     FROM vendas v
+     LEFT JOIN clientes c
+       ON CAST(c.cloud_id AS TEXT) = CAST(v.customer_id AS TEXT)
+      AND c.tenant_id = v.tenant_id
+     WHERE v.id = ?
+       AND v.tenant_id = ?
+     LIMIT 1`,
+    [Number(saleId), tenantId]
+  );
+}
+
+export function listOrderItemsByDocumentId(documentId, tenantId) {
+  return all(
+    `SELECT product_id, product_name, quantity, price, discount_amount
+     FROM order_items
+     WHERE tenant_id = ?
+       AND CAST(order_id AS TEXT) = CAST(? AS TEXT)
+     ORDER BY datetime(created_at) ASC, id ASC`,
+    [tenantId, String(documentId)]
+  );
+}
+
+export function insertVendaRecord(params) {
+  return run(
+    `INSERT INTO vendas (
+       total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method,
+       user_id, user_name, approved_document_type, approved_document_number, tenant_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params
+  );
+}
+
+export function updateOrderSourceReference(orderId, sourceDocType, sourceDocumentNumber, updatedAt, tenantId) {
+  return run(
+    `UPDATE orders
+     SET approved_document_type = ?,
+         approved_document_number = ?,
+         updated_at = ?
+     WHERE CAST(id AS TEXT) = ?
+       AND tenant_id = ?`,
+    [sourceDocType, sourceDocumentNumber, updatedAt, String(orderId), tenantId]
   );
 }

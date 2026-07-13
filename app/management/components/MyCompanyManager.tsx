@@ -10,6 +10,8 @@ import {
   saveCompanyVoidReasons,
   resetDatabase,
 } from '@/lib/services/posService';
+import { ensureCompactReceiptLogo } from '@/lib/compressReceiptLogo';
+import PosSelect from '@/components/PosSelect';
 
 const COUNTRY_OPTIONS = [
   { value: '', label: 'Selecione o país…' },
@@ -122,6 +124,7 @@ export default function MyCompanyManager() {
     setSaving(true);
     setMessage(null);
     try {
+      const compactLogo = await ensureCompactReceiptLogo(form.logoDataUrl);
       await saveCompanyProfile({
         name: form.name,
         taxId: form.taxId,
@@ -137,9 +140,12 @@ export default function MyCompanyManager() {
         email: form.email,
         bankAccountNumber: form.bankAccountNumber,
         bankDetails: form.bankDetails,
-        logoDataUrl: form.logoDataUrl,
+        logoDataUrl: compactLogo,
         voidReasons: form.voidReasons,
       });
+      if (compactLogo !== form.logoDataUrl) {
+        setForm((f) => ({ ...f, logoDataUrl: compactLogo }));
+      }
       setMessage({ type: 'ok', text: 'Dados da empresa guardados.' });
       broadcastRefresh();
       await load();
@@ -207,14 +213,34 @@ export default function MyCompanyManager() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || !file.type.startsWith('image/')) return;
-    if (file.size > 1_500_000) {
-      setMessage({ type: 'err', text: 'Imagem demasiado grande (máx. ~1,5 MB).' });
+    if (file.size > 8_000_000) {
+      setMessage({ type: 'err', text: 'Imagem demasiado grande (máx. 8 MB).' });
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
-      const url = typeof reader.result === 'string' ? reader.result : null;
-      setForm((f) => ({ ...f, logoDataUrl: url }));
+      void (async () => {
+        const url = typeof reader.result === 'string' ? reader.result : null;
+        if (!url) return;
+        try {
+          const compact = await ensureCompactReceiptLogo(url);
+          setForm((f) => ({ ...f, logoDataUrl: compact }));
+          if (compact && url.length > compact.length * 1.15) {
+            setMessage({
+              type: 'ok',
+              text: 'Logo comprimido automaticamente para impressão rápida.',
+            });
+          } else {
+            setMessage(null);
+          }
+        } catch {
+          setForm((f) => ({ ...f, logoDataUrl: url }));
+          setMessage({
+            type: 'err',
+            text: 'Não foi possível comprimir o logo; a imagem original foi usada.',
+          });
+        }
+      })();
     };
     reader.readAsDataURL(file);
   };
@@ -292,8 +318,8 @@ export default function MyCompanyManager() {
       {showHelp && (
         <div className="mx-4 mt-2 rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] text-zinc-500 leading-relaxed">
           Os dados de <strong className="text-zinc-400">Nome</strong> e <strong className="text-zinc-400">País</strong> são
-          obrigatórios. As informações guardadas aqui aparecem automaticamente no cabeçalho do recibo no POS. Para o logo,
-          use ficheiros pequenos (PNG/JPG; tipicamente abaixo de 1 MB) para evitar erros ao guardar. API:{' '}
+          obrigatórios. As informações guardadas aqui aparecem automaticamente no cabeçalho do recibo no POS. Logos grandes
+          são comprimidos automaticamente (máx. ~280 px) para a impressão do recibo ser rápida. API:{' '}
           <code className="text-zinc-400">{getPosApiBase()}/company-profile</code> (leitura via proxy; gravação usa a API direta).
         </div>
       )}
@@ -346,17 +372,13 @@ export default function MyCompanyManager() {
                   />
                 </FieldRow>
                 <FieldRow label="País" required>
-                  <select
-                    className={inputCls(!form.country.trim())}
+                  <PosSelect
                     value={form.country}
-                    onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))}
-                  >
-                    {countryOptions.map((o) => (
-                      <option key={o.value || 'empty'} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => setForm((f) => ({ ...f, country: v }))}
+                    size="md"
+                    options={countryOptions}
+                    triggerClassName={!form.country.trim() ? '!border-rose-500/60' : ''}
+                  />
                 </FieldRow>
                 <FieldRow label="Telefone">
                   <input

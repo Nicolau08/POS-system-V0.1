@@ -43,7 +43,8 @@ export function buildReceiptHeader(profile: CompanyProfile | null) {
 export function safeReceiptLogoSrc(logoDataUrl: string | null): string | null {
   if (!logoDataUrl || typeof logoDataUrl !== 'string') return null;
   const t = logoDataUrl.trim();
-  if (t.length < 24 || t.length > 12 * 1024 * 1024) return null;
+  // Após compressão típica fica << 100 KB; 1.5 MB é teto de segurança.
+  if (t.length < 24 || t.length > 1.5 * 1024 * 1024) return null;
   if (/["'<>]/.test(t)) return null;
   if (!/^data:image\/[a-z0-9+.-]+;base64,/i.test(t)) return null;
   return t;

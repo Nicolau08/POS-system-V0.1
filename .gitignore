@@ -44,5 +44,13 @@ check_schema.ts
 # --- Logs ---
 *.log
 
+# --- Logos fonte (originais de design; a app usa public/ e assets/) ---
+/POSly icon.svg
+/P icon.svg
+/posly login.svg
+/**/POSly icon.svg
+/**/P icon.svg
+/**/posly login.svg
+
 # --- CI que depende de tests/ (opcional local) ---
 .github/workflows/smoke.yml

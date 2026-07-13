@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import sqlite3Import from 'sqlite3';
 import { uuidv4 } from './cloudIdUtils.js';
 import { ensureHashedPin } from './pinAuth.js';
-import { DEFAULT_PAYMENT_METHOD_SPECS } from './constants/paymentMethodDefaults.js';
+import { buildDefaultPaymentMethodInsertRows } from './constants/paymentMethodDefaults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sqlite3 = sqlite3Import.verbose();
@@ -11,6 +11,9 @@ const sqlite3 = sqlite3Import.verbose();
 const dbPath = process.env.POS_DB_PATH
   ? path.resolve(String(process.env.POS_DB_PATH))
   : path.join(__dirname, 'pos.db');
+if (process.env.POS_DEV_TENANT || process.env.POS_DB_PATH) {
+  console.log(`[database] SQLite: ${dbPath}`);
+}
 const db = new sqlite3.Database(dbPath);
 db.configure('busyTimeout', 5000);
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID
@@ -70,6 +73,7 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'painel.taxas_impostos', required_level: 0 },
       { key: 'painel.minha_empresa', required_level: 0 },
       { key: 'painel.emitir_serie', required_level: 9 },
+      { key: 'painel.logs_sistema', required_level: 7 },
       { key: 'estoque.inventario_rapido', required_level: 0 },
       { key: 'estoque.ver_preco_custo', required_level: 0 },
       { key: 'vendas.ver_pedidos_em_aberto', required_level: 0 },
@@ -245,6 +249,31 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id)`);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_logs (
+      id TEXT PRIMARY KEY,
+      level TEXT NOT NULL,
+      event TEXT NOT NULL,
+      message TEXT NOT NULL,
+      source TEXT,
+      module TEXT,
+      action TEXT,
+      reason TEXT,
+      user_id TEXT,
+      user_name TEXT,
+      tenant_id TEXT,
+      request_id TEXT,
+      entity TEXT,
+      entity_id TEXT,
+      payload_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_created_at ON app_logs(created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_event ON app_logs(event)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_app_logs_user_id ON app_logs(user_id)`);
+
   db.run(
     `
     CREATE TABLE IF NOT EXISTS permission_rules (
@@ -265,6 +294,15 @@ db.serialize(() => {
     (emitRuleErr) => {
       if (emitRuleErr && !String(emitRuleErr.message || '').includes('no such table')) {
         console.error('[database] Falha ao garantir regra painel.emitir_serie:', emitRuleErr.message);
+      }
+    }
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('painel.logs_sistema', 7, datetime('now'))`,
+    (logsRuleErr) => {
+      if (logsRuleErr && !String(logsRuleErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra painel.logs_sistema:', logsRuleErr.message);
       }
     }
   );
@@ -627,6 +665,80 @@ db.serialize(() => {
     `CREATE INDEX IF NOT EXISTS idx_checkout_idempotency_status_updated
      ON checkout_idempotency(status, updated_at)`,
     'Erro ao criar idx_checkout_idempotency_status_updated:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pos_open_drafts (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, user_id)
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_pos_open_drafts_updated
+     ON pos_open_drafts(updated_at)`,
+    'Erro ao criar idx_pos_open_drafts_updated:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cash_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      register_code TEXT NOT NULL DEFAULT 'caixa-1',
+      status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+      opened_at TEXT NOT NULL,
+      opened_by_id TEXT,
+      opened_by_name TEXT,
+      closed_at TEXT,
+      closed_by_id TEXT,
+      closed_by_name TEXT,
+      z_number INTEGER
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_cash_sessions_tenant_status ON cash_sessions(tenant_id, status, opened_at)`,
+    'Erro ao criar idx_cash_sessions_tenant_status:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cash_withdrawals (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT,
+      user_name TEXT,
+      amount REAL NOT NULL DEFAULT 0,
+      scope TEXT NOT NULL CHECK (scope IN ('user', 'all')),
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_session ON cash_withdrawals(session_id, created_at)`,
+    'Erro ao criar idx_cash_withdrawals_session:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS z_reports (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      z_number INTEGER NOT NULL,
+      generated_at TEXT NOT NULL,
+      generated_by_id TEXT,
+      generated_by_name TEXT,
+      payload_json TEXT NOT NULL
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_z_reports_tenant_generated ON z_reports(tenant_id, generated_at DESC)`,
+    'Erro ao criar idx_z_reports_tenant_generated:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_z_reports_tenant_number ON z_reports(tenant_id, z_number)`,
+    'Erro ao criar uq_z_reports_tenant_number:'
   );
 
   db.run(`ALTER TABLE sync_queue ADD COLUMN tenant_id TEXT`, (err) => {
@@ -1226,6 +1338,7 @@ db.serialize(() => {
           }
         }
       });
+      seedDefaultPaymentMethodsForTenant(defaultTenantId);
     })
     .catch((tenantErr) => {
       console.error('Erro ao garantir tenant padrao:', tenantErr.message);
@@ -1236,154 +1349,30 @@ db.serialize(() => {
       console.error('Erro ao verificar permission_rules iniciais:', permSeedErr.message);
     }
   });
+});
 
-  db.get(`SELECT COUNT(*) AS total FROM categories`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar categorias iniciais:', err.message);
-      return;
-    }
+function seedDefaultPaymentMethodsForTenant(tenantId) {
+  db.get(
+    `SELECT COUNT(*) AS total FROM payment_methods WHERE tenant_id = ?`,
+    [tenantId],
+    (err, row) => {
+      if (err) {
+        console.error('Erro ao verificar meios de pagamento iniciais:', err.message);
+        return;
+      }
+      if ((row?.total ?? 0) > 0) return;
 
-    if ((row?.total ?? 0) === 0) {
-      const seedCategoryNames = ['Bebidas', 'Comidas', 'Petiscos', 'Sobremesas'];
-      db.serialize(() => {
-        for (const name of seedCategoryNames) {
-          db.run(
-            `INSERT OR IGNORE INTO categories (name, tenant_id)
-             SELECT ?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) WHERE NOT EXISTS (
-               SELECT 1 FROM deleted_category_tombstones
-               WHERE tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)
-                 AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM(?))
-             )`,
-            [name, name]
-          );
-        }
-      });
-    }
-  });
-
-  db.get(`SELECT COUNT(*) AS total FROM products`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar produtos iniciais:', err.message);
-      return;
-    }
-
-    if ((row?.total ?? 0) === 0) {
-      const seedCategoryNames = ['Bebidas', 'Comidas', 'Petiscos', 'Sobremesas'];
-      db.serialize(() => {
-        for (const name of seedCategoryNames) {
-          db.run(
-            `INSERT OR IGNORE INTO categories (name, tenant_id)
-             SELECT ?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) WHERE NOT EXISTS (
-               SELECT 1 FROM deleted_category_tombstones
-               WHERE tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)
-                 AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM(?))
-             )`,
-            [name, name]
-          );
-        }
-
-        db.run(
-          `INSERT INTO products
-            (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-           VALUES (?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1), ?, ?, (SELECT id FROM categories WHERE name = ? AND tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            uuidv4(),
-            1,
-            'Coca-Cola',
-            'Bebidas',
-            null,
-            0,
-            50,
-            0,
-            50,
-            1,
-            'un',
-            0,
-            1,
-            20,
-            5,
-            '#ff0000',
-            '',
-            new Date().toISOString(),
-            new Date().toISOString(),
-          ],
-          (productOneErr) => {
-            if (productOneErr) {
-              console.error('Erro ao inserir produto inicial Coca-Cola:', productOneErr.message);
-              return;
-            }
-
-            db.run(
-              `INSERT INTO products
-                (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, is_service, default_quantity, stock_quantity, min_stock, color, image, created_at, updated_at)
-               VALUES (?, (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1), ?, ?, (SELECT id FROM categories WHERE name = ? AND tenant_id = (SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1) LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                uuidv4(),
-                2,
-                'Água',
-                'Bebidas',
-                null,
-                0,
-                25,
-                0,
-                25,
-                1,
-                'un',
-                0,
-                1,
-                50,
-                10,
-                '#00aaff',
-                '',
-                new Date().toISOString(),
-                new Date().toISOString(),
-              ],
-              (productTwoErr) => {
-                if (productTwoErr) {
-                  console.error('Erro ao inserir produto inicial Água:', productTwoErr.message);
-                }
-              }
-            );
-          }
-        );
-      });
-    }
-  });
-
-  db.get(`SELECT COUNT(*) AS total FROM payment_methods`, (err, row) => {
-    if (err) {
-      console.error('Erro ao verificar meios de pagamento iniciais:', err.message);
-      return;
-    }
-
-    if ((row?.total ?? 0) === 0) {
       const now = new Date().toISOString();
-      const tenantSql = `(SELECT id FROM tenants ORDER BY datetime(COALESCE(created_at, '1970-01-01T00:00:00.000Z')) ASC, id ASC LIMIT 1)`;
-      const seedRows = DEFAULT_PAYMENT_METHOD_SPECS.map((spec) => [
-        spec.name,
-        spec.code,
-        spec.shortcut,
-        spec.position,
-        spec.enabled,
-        spec.quick_payment,
-        spec.required_customer,
-        spec.allow_change,
-        spec.mark_as_paid,
-        spec.print_receipt,
-        spec.open_cash_drawer,
-        now,
-        now,
-      ]);
-      for (const seed of seedRows) {
+      for (const seed of buildDefaultPaymentMethodInsertRows(tenantId, now)) {
         db.run(
           `INSERT OR IGNORE INTO payment_methods
             (name, code, tenant_id, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, created_at, updated_at)
-           VALUES (?, ?, ${tenantSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          seed
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          seed,
         );
       }
-    }
-  });
-});
+    },
+  );
+}
 
 export default db;

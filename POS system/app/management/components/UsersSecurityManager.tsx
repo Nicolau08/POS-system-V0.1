@@ -60,6 +60,7 @@ const PERMISSION_RULES_KEYS = [
   'painel.taxas_impostos',
   'painel.minha_empresa',
   'painel.emitir_serie',
+  'painel.logs_sistema',
 
   'estoque.inventario_rapido',
   'estoque.ver_preco_custo',
@@ -102,6 +103,8 @@ const OP_LABELS: Record<string, string> = {
   'painel.paises': 'Países',
   'painel.taxas_impostos': 'Taxas de impostos',
   'painel.minha_empresa': 'Minha Empresa',
+  'painel.emitir_serie': 'Emitir série',
+  'painel.logs_sistema': 'Logs do sistema',
 
   'estoque.inventario_rapido': 'Inventário rápido',
   'estoque.ver_preco_custo': 'Ver preços de custo',
@@ -183,6 +186,8 @@ const SECURITY_GROUPS: SecurityGroup[] = [
       'painel.paises',
       'painel.taxas_impostos',
       'painel.minha_empresa',
+      'painel.logs_sistema',
+      'painel.emitir_serie',
     ],
   },
   {
