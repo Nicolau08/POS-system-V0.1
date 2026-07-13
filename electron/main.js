@@ -22,6 +22,34 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
 dotenv.config({ path: path.join(projectRoot, '.env') });
 dotenv.config({ path: path.join(projectRoot, '.env.local'), override: true });
+
+/** Segredos gerados em build (scripts/inject-pos-build-secrets.mjs) para o instalador. */
+const loadPackagedBuildSecrets = () => {
+  const candidates = [
+    path.join(__dirname, '.build-secrets.json'),
+    path.join(process.resourcesPath || '', 'app.asar', 'electron', '.build-secrets.json'),
+    path.join(process.resourcesPath || '', 'electron', '.build-secrets.json'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (!candidate || !fsSync.existsSync(candidate)) continue;
+      const parsed = JSON.parse(fsSync.readFileSync(candidate, 'utf8'));
+      if (!parsed || typeof parsed !== 'object') continue;
+      for (const [key, value] of Object.entries(parsed)) {
+        const text = String(value ?? '').trim();
+        if (!text) continue;
+        if (!String(process.env[key] ?? '').trim()) {
+          process.env[key] = text;
+        }
+      }
+      return;
+    } catch {
+      // try next
+    }
+  }
+};
+loadPackagedBuildSecrets();
+
 const APP_WEB_PORT = 3000;
 const APP_API_PORT = 3001;
 
