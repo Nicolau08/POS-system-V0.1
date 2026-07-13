@@ -36,6 +36,7 @@ async function main() {
   ]);
 
   try {
+    run('inject build secrets', process.execPath, ['scripts/inject-pos-build-secrets.mjs']);
     run('next build', npmCmd, ['run', 'build']);
     run('limpar dist-electron', npmCmd, ['run', 'electron:clean']);
     run('electron-builder', 'npx', builderArgs, { POS_APP_MODE: 'pos' });
