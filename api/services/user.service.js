@@ -460,26 +460,51 @@ export async function configureInitialAdminPassword(rawPin, tenantCandidate = nu
     return { error: 'pin deve conter pelo menos 4 caracteres', status: 400 };
   }
 
-  const tenantId = await resolveTenantId(tenantCandidate);
+  const setup = await getSetupState();
+  if (Number(setup?.admin_password_set ?? 0) === 1) {
+    return { error: 'senha do admin já foi configurada', status: 409 };
+  }
+
+  const existingAdmin = await getDb(
+    `SELECT id, name, tenant_id
+     FROM users
+     WHERE active = 1 AND LOWER(COALESCE(role, '')) = 'admin'
+     ORDER BY CASE WHEN id = 'admin-local' THEN 0 ELSE 1 END, name ASC
+     LIMIT 1`
+  );
+
+  const tenantFromDb = await getDb(
+    `SELECT id FROM tenants ORDER BY datetime(created_at) ASC, id ASC LIMIT 1`
+  );
+
+  const tenantId =
+    normalizeNonEmptyText(tenantCandidate) ||
+    normalizeNonEmptyText(existingAdmin?.tenant_id) ||
+    normalizeNonEmptyText(tenantFromDb?.id) ||
+    normalizeNonEmptyText(process.env.DEFAULT_TENANT_ID) ||
+    normalizeNonEmptyText(process.env.POS_DEV_TENANT);
+
+  if (!tenantId) {
+    return { error: 'tenant_id ausente para configurar a senha do admin', status: 400 };
+  }
+
   const now = new Date().toISOString();
   const hashedPin = await ensureHashedPin(pin);
-  const adminUserId = 'admin-local';
+  const adminUserId = existingAdmin?.id ? String(existingAdmin.id) : 'admin-local';
+  const adminName = existingAdmin?.name ? String(existingAdmin.name) : 'Administrador';
+
   await runDb(
     `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, cloud_id, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
-       name = excluded.name,
-       surname = excluded.surname,
-       email = excluded.email,
-       role = excluded.role,
        pin = excluded.pin,
-       access_level = excluded.access_level,
-       active = excluded.active,
+       role = 'admin',
+       access_level = 9,
+       active = 1,
        is_system = 1,
        tenant_id = excluded.tenant_id,
-       cloud_id = NULL,
        updated_at = excluded.updated_at`,
-    [adminUserId, 'Admin', null, null, 'admin', hashedPin, 9, 1, 1, tenantId, null, now]
+    [adminUserId, adminName, null, null, 'admin', hashedPin, 9, 1, 1, tenantId, null, now]
   );
 
   await runDb(
@@ -490,7 +515,7 @@ export async function configureInitialAdminPassword(rawPin, tenantCandidate = nu
     [now]
   );
 
-  return { success: true, userId: adminUserId };
+  return { success: true, userId: adminUserId, tenantId };
 }
 
 export async function activateLicenseWithToken(rawToken, rawExpiresAt = null) {
