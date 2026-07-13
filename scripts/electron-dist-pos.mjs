@@ -8,10 +8,16 @@ const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function run(label, command, args, extraEnv = {}) {
   console.log(`\n[electron-dist-pos] ${label}…`);
-  const result = spawnSync(command, args, {
+  const useShell = process.platform === 'win32';
+  // Com shell no Windows, caminhos com espaços (ex.: Program Files) têm de ir entre aspas.
+  const cmd =
+    useShell && typeof command === 'string' && /\s/.test(command)
+      ? `"${command}"`
+      : command;
+  const result = spawnSync(cmd, args, {
     stdio: 'inherit',
     env: { ...process.env, POS_APP_MODE: 'pos', ...extraEnv },
-    shell: process.platform === 'win32',
+    shell: useShell,
   });
   if (result.status !== 0) {
     throw new Error(`${label} falhou (exit ${result.status ?? 'null'})`);

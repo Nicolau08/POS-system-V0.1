@@ -511,7 +511,7 @@ export function SalesHistoryModal({
                         <Td className="text-right tabular-nums">{formatMoneyMt(Number(row.discount ?? 0))}</Td>
                         <Td className="text-right tabular-nums">{formatMoneyMt(subtotal)}</Td>
                         <Td className="text-right tabular-nums">{formatMoneyMt(tax)}</Td>
-                        <Td className="text-right tabular-nums font-semibold">{formatMoneyMt(row.total)}</Td>
+                        <Td className="text-right tabular-nums font-semibold">{formatMoneyMt(Number(row.total ?? 0))}</Td>
                       </tr>
                     );
                   })

@@ -14,6 +14,7 @@ import {
   runInitialSetup,
   runInitializeFromSerial,
 } from '../services/setup.service.js';
+import { configureInitialAdminPassword } from '../services/user.service.js';
 
 const getRow = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -149,6 +150,33 @@ export async function initializeFromSerial(req, res) {
       500,
       error instanceof Error ? error.message : 'Falha ao instalar a partir do número de série.',
       'SETUP_SERIAL_INIT_FAILED',
+    );
+  }
+}
+
+export async function setAdminPassword(req, res) {
+  try {
+    if (!isLocalRequest(req)) {
+      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
+    }
+    const pin = String(req.body?.pin ?? req.body?.password ?? '').trim();
+    if (!pin) {
+      return sendError(res, 400, 'PIN obrigatório.', 'SETUP_ADMIN_PASSWORD_REQUIRED');
+    }
+    const status = await readFirstRunStatus();
+    const tenantCandidate =
+      String(req.body?.tenantId ?? req.body?.tenant_id ?? '').trim() || status?.tenantId || null;
+    const result = await configureInitialAdminPassword(pin, tenantCandidate);
+    if (result?.error) {
+      return sendError(res, result.status ?? 400, result.error, 'SETUP_ADMIN_PASSWORD_FAILED');
+    }
+    return sendSuccess(res, result);
+  } catch (error) {
+    return sendError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Falha ao configurar a senha do admin.',
+      'SETUP_ADMIN_PASSWORD_FAILED',
     );
   }
 }

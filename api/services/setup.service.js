@@ -671,14 +671,14 @@ export async function lookupSerialStores(serialRaw) {
 }
 
 /**
- * Instalação mínima: serial → loja do servidor → PIN admin.
+ * Instalação mínima: serial → loja do servidor.
+ * A senha do admin é definida depois, no ecrã de login.
  * NUIT/impressora ficam para configurar dentro do sistema.
  */
 export async function runInitializeFromSerial(payload) {
   const serialRaw = normalizeText(payload?.serial ?? payload?.serial_number ?? payload?.licenseKey);
   const tenantIdRequested = normalizeText(payload?.tenantId ?? payload?.tenant_id);
   const adminName = normalizeText(payload?.adminName) || 'Administrador';
-  const adminPin = normalizeText(payload?.adminPin);
   const printerType = normalizeText(payload?.printerType) || 'thermal-80';
 
   const serial = tryParseSerialFormat(serialRaw);
@@ -690,9 +690,6 @@ export async function runInitializeFromSerial(payload) {
   }
   if (adminName.length < 2) {
     return { error: 'Nome do admin deve conter pelo menos 2 caracteres.', status: 400 };
-  }
-  if (adminPin.length < 4) {
-    return { error: 'PIN do admin deve conter pelo menos 4 caracteres.', status: 400 };
   }
 
   const status = await readFirstRunStatus();
@@ -736,7 +733,6 @@ export async function runInitializeFromSerial(payload) {
 
   const now = new Date().toISOString();
   const adminId = 'admin-local';
-  const adminPinHash = await ensureHashedPin(adminPin);
   const licenseHash = hashLicenseKey(serial);
 
   await runDb(
@@ -763,20 +759,21 @@ export async function runInitializeFromSerial(payload) {
     [storeName, nuit, now],
   );
 
+  // Admin sem PIN: a senha é configurada no ecrã de login.
   await runDb(
     `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id, cloud_id, updated_at)
-     VALUES (?, ?, NULL, NULL, 'admin', ?, 9, 1, 1, ?, NULL, ?)
+     VALUES (?, ?, NULL, NULL, 'admin', '', 9, 1, 1, ?, NULL, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        role = 'admin',
-       pin = excluded.pin,
+       pin = '',
        access_level = 9,
        active = 1,
        is_system = 1,
        tenant_id = excluded.tenant_id,
        cloud_id = NULL,
        updated_at = excluded.updated_at`,
-    [adminId, adminName, adminPinHash, tenantId, now],
+    [adminId, adminName, tenantId, now],
   );
 
   await runDb(
@@ -806,7 +803,7 @@ export async function runInitializeFromSerial(payload) {
 
   await runDb(
     `UPDATE app_setup_state
-     SET admin_password_set = 1,
+     SET admin_password_set = 0,
          license_activated = 1,
          license_token_hash = ?,
          license_expires_at = ?,

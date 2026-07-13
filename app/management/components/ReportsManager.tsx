@@ -20,6 +20,7 @@ import {
   REPORT_DEFINITIONS,
   buildReport,
   type BuiltReport,
+  type ReportDefinition,
   type ReportKey,
 } from '@/lib/reports/reportEngine';
 import PosSelect from '@/components/PosSelect';
