@@ -43,6 +43,7 @@ import SystemLogsManager from './components/SystemLogsManager';
 import DocumentsManager from './components/DocumentsManager';
 import GerenciamentoManager from './components/GerenciamentoManager';
 import LicenseSerialManager from './components/LicenseSerialManager';
+import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 
 // Dynamically import Recharts to avoid SSR issues
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -86,6 +87,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   use(params);
   use(searchParams);
   const router = useRouter();
+  const isPackagedDesktop = useIsPackagedDesktop();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarSelectedTab, setSidebarSelectedTab] = useState('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -285,23 +287,29 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   }, [activeTab, fetchDashboardData, isLoggedIn]);
 
   // Memoize components to prevent unnecessary re-renders
-  const sidebarItems = useMemo(() => [
-    { id: 'gerenciamento', icon: <Settings size={18} />, label: 'Gerenciamento' },
-    { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
-    { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
-    { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
-    { id: 'inventory', icon: <History size={18} />, label: 'Estoque' },
-    { id: 'reports', icon: <BarChart3 size={18} />, label: 'Relatórios' },
-    { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
-    { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
-    { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Acesso' },
-    { id: 'logs', icon: <ScrollText size={18} />, label: 'Logs do sistema' },
-    { id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' },
-    { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
-    { id: 'countries', icon: <Globe size={18} />, label: 'Países' },
-    { id: 'taxes', icon: <Percent size={18} />, label: 'Taxas de impostos' },
-    { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
-  ], []);
+  const sidebarItems = useMemo(() => {
+    const items = [
+      { id: 'gerenciamento', icon: <Settings size={18} />, label: 'Gerenciamento' },
+      { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
+      { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
+      { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
+      { id: 'inventory', icon: <History size={18} />, label: 'Estoque' },
+      { id: 'reports', icon: <BarChart3 size={18} />, label: 'Relatórios' },
+      { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
+      { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
+      { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Acesso' },
+      { id: 'logs', icon: <ScrollText size={18} />, label: 'Logs do sistema' },
+      // Emitir série: só em dev/browser — nunca no executável de produção.
+      ...(!isPackagedDesktop
+        ? [{ id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' }]
+        : []),
+      { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
+      { id: 'countries', icon: <Globe size={18} />, label: 'Países' },
+      { id: 'taxes', icon: <Percent size={18} />, label: 'Taxas de impostos' },
+      { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
+    ];
+    return items;
+  }, [isPackagedDesktop]);
 
   const accessLevel = Number(currentUser?.accessLevel ?? currentUser?.access_level ?? 0);
 
@@ -335,6 +343,12 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       return accessLevel >= requiredLevel;
     });
   }, [accessLevel, permissionRules, sidebarPermissionKeyById, sidebarItems]);
+
+  useEffect(() => {
+    if (!isPackagedDesktop) return;
+    if (activeTab === 'license-serials') setActiveTab('dashboard');
+    if (sidebarSelectedTab === 'license-serials') setSidebarSelectedTab('dashboard');
+  }, [activeTab, isPackagedDesktop, sidebarSelectedTab]);
 
   useEffect(() => {
     if (!permissionRules) return;
@@ -617,7 +631,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           {activeTab === 'payments' && <PaymentMethodsManager />}
           {activeTab === 'security' && <UsersSecurityManager />}
           {activeTab === 'logs' && <SystemLogsManager />}
-          {activeTab === 'license-serials' && <LicenseSerialManager />}
+          {activeTab === 'license-serials' && !isPackagedDesktop && <LicenseSerialManager />}
           {activeTab === 'company' && <MyCompanyManager />}
           {activeTab === 'gerenciamento' && <GerenciamentoManager />}
           

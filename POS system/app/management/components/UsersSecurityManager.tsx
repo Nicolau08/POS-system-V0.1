@@ -15,8 +15,9 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 
 type ManagedUser = {
   id: string;
@@ -98,7 +99,7 @@ const OP_LABELS: Record<string, string> = {
   'painel.relatorios': 'Relatórios',
   'painel.clientes_fornecedores': 'Clientes & Fornecedores',
   'painel.promocoes_acoes': 'Promoções & Ações',
-  'painel.usuarios_seguranca': 'Usuários & Segurança',
+  'painel.usuarios_seguranca': 'Usuários & Acesso',
   'painel.meios_pagamento': 'Meios de pagamento',
   'painel.paises': 'Países',
   'painel.taxas_impostos': 'Taxas de impostos',
@@ -200,6 +201,7 @@ const SECURITY_GROUPS: SecurityGroup[] = [
 const RULE_HELP_KEYS = new Set(['vendas.devolucao', 'estoque.ver_preco_custo']);
 
 export default function UsersSecurityManager() {
+  const isPackagedDesktop = useIsPackagedDesktop();
   const [subTab, setSubTab] = useState<'users' | 'security'>('users');
 
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -268,7 +270,9 @@ export default function UsersSecurityManager() {
   const fetchRules = async () => {
     setRulesLoading(true);
     try {
-      const res = await fetch(`${getPosApiBase()}/permission-rules`);
+      const res = await fetch(`${getPosApiBase()}/permission-rules`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
       if (!res.ok) throw new Error('Falha ao carregar regras de permissão');
       const data = (unwrapApiSuccessPayload<unknown[]>(await res.json()) ?? []);
       const normalized: Record<string, PermissionRule> = {};
@@ -432,11 +436,17 @@ export default function UsersSecurityManager() {
       }));
       const res = await fetch(`${getPosApiBase()}/permission-rules`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({ rules: rulesArray }),
       });
-      if (!res.ok) throw new Error('Falha ao salvar permissão');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(String(payload?.error ?? 'Falha ao salvar permissão'));
+      }
       await fetchRules();
+      pushToast('Níveis de acesso guardados.', 'success');
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : 'Falha ao salvar permissão', 'error');
     } finally {
       setRulesSaving(false);
     }
@@ -497,7 +507,7 @@ export default function UsersSecurityManager() {
           className={tabBtn(subTab === 'security')}
           onClick={() => setSubTab('security')}
         >
-          Segurança
+          Acesso
         </button>
       </div>
 
@@ -647,13 +657,17 @@ export default function UsersSecurityManager() {
 
           <div className="space-y-4 pb-6">
             {SECURITY_GROUPS.map((group) => {
+              const filterKey = (k: string) =>
+                !(isPackagedDesktop && k === 'painel.emitir_serie');
               if (group.layout === 'twoCol') {
+                const leftKeys = group.leftKeys.filter(filterKey);
+                const rightKeys = group.rightKeys.filter(filterKey);
                 return (
                   <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
                     <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
                       <div className="md:border-r border-zinc-800">
-                        {group.leftKeys.map((k) => (
+                        {leftKeys.map((k) => (
                           <RuleRow
                             key={k}
                             label={OP_LABELS[k] ?? k}
@@ -665,7 +679,7 @@ export default function UsersSecurityManager() {
                         ))}
                       </div>
                       <div>
-                        {group.rightKeys.map((k) => (
+                        {rightKeys.map((k) => (
                           <RuleRow
                             key={k}
                             label={OP_LABELS[k] ?? k}
@@ -681,11 +695,12 @@ export default function UsersSecurityManager() {
                 );
               }
 
+              const keys = group.keys.filter(filterKey);
               return (
                 <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
                   <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                   <div>
-                    {group.keys.map((k) => (
+                    {keys.map((k) => (
                       <RuleRow
                         key={k}
                         label={OP_LABELS[k] ?? k}
