@@ -148,6 +148,12 @@ function isLocalRequest(req) {
 
 export async function resetAdminPin(req, res) {
   try {
+    const isProduction = String(process.env.NODE_ENV ?? 'development').toLowerCase() === 'production';
+    const isPackagedPos = String(process.env.POS_PACKAGED ?? '').trim() === '1';
+    if (isProduction || isPackagedPos) {
+      return res.status(403).json({ error: 'redefinir PIN do admin nao permitido em producao' });
+    }
+
     if (!isLocalRequest(req)) {
       return res.status(403).json({ error: 'operacao permitida apenas localmente' });
     }
