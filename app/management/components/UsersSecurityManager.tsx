@@ -17,6 +17,7 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 
 type ManagedUser = {
   id: string;
@@ -200,6 +201,7 @@ const SECURITY_GROUPS: SecurityGroup[] = [
 const RULE_HELP_KEYS = new Set(['vendas.devolucao', 'estoque.ver_preco_custo']);
 
 export default function UsersSecurityManager() {
+  const isPackagedDesktop = useIsPackagedDesktop();
   const [subTab, setSubTab] = useState<'users' | 'security'>('users');
 
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -655,13 +657,17 @@ export default function UsersSecurityManager() {
 
           <div className="space-y-4 pb-6">
             {SECURITY_GROUPS.map((group) => {
+              const filterKey = (k: string) =>
+                !(isPackagedDesktop && k === 'painel.emitir_serie');
               if (group.layout === 'twoCol') {
+                const leftKeys = group.leftKeys.filter(filterKey);
+                const rightKeys = group.rightKeys.filter(filterKey);
                 return (
                   <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
                     <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
                       <div className="md:border-r border-zinc-800">
-                        {group.leftKeys.map((k) => (
+                        {leftKeys.map((k) => (
                           <RuleRow
                             key={k}
                             label={OP_LABELS[k] ?? k}
@@ -673,7 +679,7 @@ export default function UsersSecurityManager() {
                         ))}
                       </div>
                       <div>
-                        {group.rightKeys.map((k) => (
+                        {rightKeys.map((k) => (
                           <RuleRow
                             key={k}
                             label={OP_LABELS[k] ?? k}
@@ -689,11 +695,12 @@ export default function UsersSecurityManager() {
                 );
               }
 
+              const keys = group.keys.filter(filterKey);
               return (
                 <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
                   <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                   <div>
-                    {group.keys.map((k) => (
+                    {keys.map((k) => (
                       <RuleRow
                         key={k}
                         label={OP_LABELS[k] ?? k}

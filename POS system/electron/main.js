@@ -1180,6 +1180,25 @@ ipcMain.handle('activation:activate', async (_event, payload) => {
   }
 });
 
+ipcMain.handle('app:getRuntimeInfo', async () => {
+  try {
+    return {
+      success: true,
+      packaged: isPackagedBuild(),
+      platform: process.platform,
+      version: String(app.getVersion?.() ?? ''),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      packaged: false,
+      platform: process.platform,
+      version: '',
+      error: String(error?.message ?? error ?? 'Falha ao obter runtime info.'),
+    };
+  }
+});
+
 ipcMain.handle('app:restart', async () => {
   try {
     app.relaunch();

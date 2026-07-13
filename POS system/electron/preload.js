@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPaths: async () => {
     return ipcRenderer.invoke('app:getPaths');
   },
+  getRuntimeInfo: async () => {
+    return ipcRenderer.invoke('app:getRuntimeInfo');
+  },
   getMachineId: async () => {
     return ipcRenderer.invoke('system:getMachineId');
   },
