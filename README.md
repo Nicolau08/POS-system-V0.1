@@ -129,14 +129,41 @@ A consola corre no Next.js:
 
 Fluxo: registar tenant na consola → gerar voucher → cliente activa no desktop → `license.json` + registo em Supabase (com `POS_LICENSE_ISSUER_BASE_URL`). Migração: `supabase/migrations/20260521_posly_license_issuer.sql`.
 
+### Deploy da consola na Vercel (branch `license-console`)
+
+A consola **não** precisa de Electron nem da API Express. Deploy no branch `license-console`:
+
+1. Na Vercel, importar o repo e escolher o branch **`license-console`** como Production Branch (ou Preview neste branch).
+2. Definir Environment Variables:
+
+| Variável | Notas |
+|----------|--------|
+| `POS_LICENSE_HMAC_SECRET` | **Igual** ao injectado no instalador POSly |
+| `LICENSE_ISSUER_ADMIN_TOKEN` | Token Bearer para abrir `/license-admin` |
+| `SUPABASE_URL` | Projecto Supabase |
+| `SUPABASE_SERVICE_ROLE_KEY` | Chave **service_role** (nunca anon) |
+
+3. Deploy → copiar a URL (ex. `https://….vercel.app`).
+4. No `.env.local` **antes** do `npm run electron-dist` do desktop:
+
+```env
+POS_LICENSE_ISSUER_BASE_URL=https://<url-vercel>
+POS_LICENSE_HMAC_SECRET=<mesmo da Vercel>
+```
+
+5. Subir versão do desktop (ex. `0.2.2`), gerar instalador e publicar release no GitHub para auto-update.
+
+Na Vercel a raiz `/` redirecciona para `/license-admin`. O instalador Windows continua a ser gerado a partir do `main` (sem consola no `.exe`).
+
 ### Variáveis de ambiente (resumo)
 
 | Variável | Descrição |
 |----------|-----------|
 | `POS_LICENSE_HMAC_SECRET` | Segredo HMAC (POSly + consola) |
-| `POS_LICENSE_ISSUER_BASE_URL` | URL base do Next com `/api/license-issuer` |
+| `POS_LICENSE_ISSUER_BASE_URL` | URL pública da consola (Vercel), **não** localhost em builds de cliente |
 | `LICENSE_ISSUER_ADMIN_TOKEN` | Token da consola `/license-admin` |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Backend da consola de licenças |
 | `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Cliente Supabase (se aplicável) |
 | `POS_APP_USERDATA_SUBDIR` | Subpasta em `%APPDATA%` (omissão: `POSly`) |
 | `POS_DB_PATH` / `POS_LICENSE_PATH` / `POS_BACKUP_DIR` | Sobrescritas de caminhos (dev/suporte) |
+| `NEXT_OUTPUT_STANDALONE` | `1` só no build Electron (`electron-dist`); omitir na Vercel |

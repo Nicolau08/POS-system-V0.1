@@ -37,7 +37,8 @@ async function main() {
 
   try {
     run('inject build secrets', process.execPath, ['scripts/inject-pos-build-secrets.mjs']);
-    run('next build', npmCmd, ['run', 'build']);
+    // NEXT_OUTPUT_STANDALONE=1 → next.config output standalone (só desktop; Vercel não usa).
+    run('next build', npmCmd, ['run', 'build'], { NEXT_OUTPUT_STANDALONE: '1' });
     run('limpar dist-electron', npmCmd, ['run', 'electron:clean']);
     run('electron-builder', 'npx', builderArgs, { POS_APP_MODE: 'pos' });
   } finally {
