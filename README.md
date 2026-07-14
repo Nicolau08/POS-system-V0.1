@@ -131,9 +131,9 @@ Fluxo: registar tenant na consola → gerar voucher → cliente activa no deskto
 
 ### Deploy da consola na Vercel (branch `license-console`)
 
-A consola **não** precisa de Electron nem da API Express. Deploy no branch `license-console`:
+A consola **não** precisa de Electron nem da API Express. O branch `license-console` é uma **árvore reduzida** (só `/license-admin` + `/api/license-issuer`) para caber no plano Hobby (máx. 12 Serverless Functions). **Não fazer merge deste strip para o `main`.**
 
-1. Na Vercel, importar o repo e escolher o branch **`license-console`** como Production Branch (ou Preview neste branch).
+1. Na Vercel, importar o repo e fazer deploy do branch **`license-console`**.
 2. Definir Environment Variables:
 
 | Variável | Notas |
@@ -153,7 +153,7 @@ POS_LICENSE_HMAC_SECRET=<mesmo da Vercel>
 
 5. Subir versão do desktop (ex. `0.2.2`), gerar instalador e publicar release no GitHub para auto-update.
 
-Na Vercel a raiz `/` redirecciona para `/license-admin`. As APIs `/api/license-issuer/*` estão num único catch-all (limite Hobby: 12 Serverless Functions). O instalador Windows continua a ser gerado a partir do `main` (sem consola no `.exe`).
+Na Vercel a raiz `/` redirecciona para `/license-admin`. As APIs `/api/license-issuer/*` estão num único catch-all. O instalador Windows continua a ser gerado a partir do `main` (sem consola no `.exe`).
 
 ### Variáveis de ambiente (resumo)
 

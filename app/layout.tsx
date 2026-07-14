@@ -1,10 +1,9 @@
-import type {Metadata} from 'next';
+import type { Metadata } from 'next';
 import './globals.css';
-import { LicenseGuardProvider } from '@/components/LicenseGuardProvider';
 
 export const metadata: Metadata = {
-  title: 'POSly',
-  description: 'Sistema POS profissional — POSly',
+  title: 'Consola de licenças — POSly',
+  description: 'Emissão de vouchers e gestão de clientes licenciados',
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: 'any' },
@@ -15,11 +14,12 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({children}: {children: React.ReactNode}) {
+/** Layout mínimo para deploy Vercel (só consola). Sem LicenseGuard do POS. */
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="pt" className="dark">
       <body className="bg-[#121212] text-white antialiased font-sans" suppressHydrationWarning>
-        <LicenseGuardProvider>{children}</LicenseGuardProvider>
+        {children}
       </body>
     </html>
   );
