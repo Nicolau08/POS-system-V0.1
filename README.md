@@ -153,7 +153,7 @@ POS_LICENSE_HMAC_SECRET=<mesmo da Vercel>
 
 5. Subir versão do desktop (ex. `0.2.2`), gerar instalador e publicar release no GitHub para auto-update.
 
-Na Vercel a raiz `/` redirecciona para `/license-admin`. O instalador Windows continua a ser gerado a partir do `main` (sem consola no `.exe`).
+Na Vercel a raiz `/` redirecciona para `/license-admin`. As APIs `/api/license-issuer/*` estão num único catch-all (limite Hobby: 12 Serverless Functions). O instalador Windows continua a ser gerado a partir do `main` (sem consola no `.exe`).
 
 ### Variáveis de ambiente (resumo)
 

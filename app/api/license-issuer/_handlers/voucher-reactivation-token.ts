@@ -14,7 +14,7 @@ import {
   issuerMissingSecretResponse,
   issuerSupabaseUnavailableResponse,
   resolveLicenseHmacSecret,
-} from '../../_utils';
+} from '../_utils';
 
 const TOKEN_VALID_DAYS = 7;
 

@@ -38,6 +38,16 @@ const nextConfig: NextConfig = {
         destination: '/license-admin',
         permanent: false,
       },
+      // Evita páginas POS/management no deploy da consola (menos funções SSR).
+      { source: '/pos', destination: '/license-admin', permanent: false },
+      { source: '/pos/:path*', destination: '/license-admin', permanent: false },
+      { source: '/management', destination: '/license-admin', permanent: false },
+      { source: '/management/:path*', destination: '/license-admin', permanent: false },
+      {
+        source: '/supabase-example',
+        destination: '/license-admin',
+        permanent: false,
+      },
     ];
   },
 

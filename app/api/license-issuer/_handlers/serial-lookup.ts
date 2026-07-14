@@ -8,7 +8,7 @@ import {
   findLicenseVoucherBySerial,
   resolveSupabaseAdmin,
 } from '@/lib/licenseIssuerDb';
-import { issuerSupabaseUnavailableResponse } from '../../_utils';
+import { issuerSupabaseUnavailableResponse } from '../_utils';
 
 /**
  * Público (sem token admin): dado um número de série, devolve a(s) loja(s) associadas.
