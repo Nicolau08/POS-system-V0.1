@@ -1,21 +1,19 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
-import sqlite3Import from 'sqlite3';
 import { uuidv4 } from './cloudIdUtils.js';
 import { ensureHashedPin } from './pinAuth.js';
 import { buildDefaultPaymentMethodInsertRows } from './constants/paymentMethodDefaults.js';
+import { resolveDatabasePathAfterMigration } from './utils/dbPaths.js';
+import { openSqliteDatabase } from './utils/dbEncryption.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const sqlite3 = sqlite3Import.verbose();
 
-const dbPath = process.env.POS_DB_PATH
-  ? path.resolve(String(process.env.POS_DB_PATH))
-  : path.join(__dirname, 'pos.db');
+const dbPath = resolveDatabasePathAfterMigration();
 if (process.env.POS_DEV_TENANT || process.env.POS_DB_PATH) {
   console.log(`[database] SQLite: ${dbPath}`);
 }
-const db = new sqlite3.Database(dbPath);
-db.configure('busyTimeout', 5000);
+
+const { db } = await openSqliteDatabase(dbPath);
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID
   ? String(process.env.DEFAULT_TENANT_ID).trim() || 'tenant-1'
   : 'tenant-1';
@@ -69,7 +67,6 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'painel.promocoes_acoes', required_level: 0 },
       { key: 'painel.usuarios_seguranca', required_level: 0 },
       { key: 'painel.meios_pagamento', required_level: 0 },
-      { key: 'painel.paises', required_level: 0 },
       { key: 'painel.taxas_impostos', required_level: 0 },
       { key: 'painel.minha_empresa', required_level: 0 },
       { key: 'painel.emitir_serie', required_level: 9 },
@@ -77,8 +74,10 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'estoque.inventario_rapido', required_level: 0 },
       { key: 'estoque.ver_preco_custo', required_level: 0 },
       { key: 'vendas.ver_pedidos_em_aberto', required_level: 0 },
+      { key: 'vendas.abrir_mesa_outro', required_level: 5 },
       { key: 'vendas.cancelar_pedido', required_level: 0 },
       { key: 'vendas.cancelar_item', required_level: 0 },
+      { key: 'vendas.anular_item_enviado', required_level: 5 },
       { key: 'vendas.bloquear_venda', required_level: 0 },
       { key: 'vendas.desbloquear_venda', required_level: 0 },
       { key: 'vendas.dividir_pedido', required_level: 0 },
@@ -181,9 +180,11 @@ db.serialize(() => {
       user_name TEXT,
       tenant_id TEXT NOT NULL,
       approved_document_type TEXT,
-      approved_document_number TEXT
+      approved_document_number TEXT,
+      register_code TEXT
     )
   `);
+  db.run(`ALTER TABLE vendas ADD COLUMN register_code TEXT`, () => {});
 
   db.run(`
     CREATE TABLE IF NOT EXISTS clientes (
@@ -212,10 +213,16 @@ db.serialize(() => {
       name TEXT NOT NULL,
       nuit TEXT,
       license_type TEXT,
+      commerce_type TEXT DEFAULT 'retalho',
       created_at TEXT,
       updated_at TEXT
     )
   `);
+  db.run(`ALTER TABLE tenant_profile ADD COLUMN commerce_type TEXT DEFAULT 'retalho'`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar commerce_type em tenant_profile:', err.message);
+    }
+  });
 
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -307,6 +314,30 @@ db.serialize(() => {
     }
   );
 
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('vendas.abrir_mesa_outro', 5, datetime('now'))`,
+    (openOtherErr) => {
+      if (openOtherErr && !String(openOtherErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra vendas.abrir_mesa_outro:', openOtherErr.message);
+      }
+    }
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('vendas.anular_item_enviado', 5, datetime('now'))`,
+    (voidSentErr) => {
+      if (voidSentErr && !String(voidSentErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra vendas.anular_item_enviado:', voidSentErr.message);
+      }
+    }
+  );
+
+  db.run(`DELETE FROM permission_rules WHERE key = 'painel.paises'`, (delPaisesErr) => {
+    if (delPaisesErr && !String(delPaisesErr.message || '').includes('no such table')) {
+      console.error('[database] Falha ao remover regra painel.paises:', delPaisesErr.message);
+    }
+  });
+
   db.run(`
     CREATE TABLE IF NOT EXISTS company_profile (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -391,7 +422,8 @@ db.serialize(() => {
       parent_id INTEGER,
       cloud_id TEXT UNIQUE,
       updated_at TEXT,
-      tenant_id TEXT NOT NULL
+      tenant_id TEXT NOT NULL,
+      color TEXT
     )
   `);
 
@@ -416,6 +448,23 @@ db.serialize(() => {
   );
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS tax_rates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      code TEXT NOT NULL,
+      rate REAL NOT NULL DEFAULT 0,
+      is_fixed INTEGER NOT NULL DEFAULT 0,
+      price_includes_tax INTEGER NOT NULL DEFAULT 1,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      is_system INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cloud_id TEXT UNIQUE,
@@ -426,6 +475,7 @@ db.serialize(() => {
       barcode TEXT,
       cost REAL DEFAULT 0,
       price REAL NOT NULL,
+      tax_rate_id INTEGER,
       tax REAL DEFAULT 0,
       final_price REAL DEFAULT 0,
       active INTEGER DEFAULT 1,
@@ -433,6 +483,7 @@ db.serialize(() => {
       description TEXT,
       age_restriction INTEGER,
       is_service INTEGER DEFAULT 0,
+      product_kind TEXT NOT NULL DEFAULT 'simple',
       default_quantity INTEGER DEFAULT 1,
       stock_quantity REAL DEFAULT 0,
       min_stock REAL DEFAULT 0,
@@ -441,6 +492,18 @@ db.serialize(() => {
       deleted INTEGER DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS product_bom_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      parent_product_id INTEGER NOT NULL,
+      component_product_id INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
@@ -541,6 +604,21 @@ db.serialize(() => {
   );
   safeRun(`CREATE INDEX IF NOT EXISTS idx_products_cloud_id ON products(cloud_id)`, 'Erro ao criar idx_products_cloud_id:');
   safeRun(`CREATE INDEX IF NOT EXISTS idx_products_tenant_id ON products(tenant_id)`, 'Erro ao criar idx_products_tenant_id:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_products_product_kind ON products(product_kind)`, 'Erro ao criar idx_products_product_kind:');
+  safeRun(`CREATE INDEX IF NOT EXISTS idx_tax_rates_tenant_id ON tax_rates(tenant_id)`, 'Erro ao criar idx_tax_rates_tenant_id:');
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_tax_rates_tenant_code ON tax_rates(tenant_id, code)`,
+    'Erro ao criar uq_tax_rates_tenant_code:'
+  );
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_product_bom_parent ON product_bom_lines(tenant_id, parent_product_id)`,
+    'Erro ao criar idx_product_bom_parent:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_product_bom_parent_component
+     ON product_bom_lines(tenant_id, parent_product_id, component_product_id)`,
+    'Erro ao criar uq_product_bom_parent_component:'
+  );
   safeRun(`CREATE INDEX IF NOT EXISTS idx_categories_tenant_id ON categories(tenant_id)`, 'Erro ao criar idx_categories_tenant_id:');
   safeRun(
     `CREATE INDEX IF NOT EXISTS idx_deleted_category_tombstones_tenant_id ON deleted_category_tombstones(tenant_id)`,
@@ -683,6 +761,24 @@ db.serialize(() => {
   );
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS pos_table_orders (
+      tenant_id TEXT NOT NULL,
+      table_key TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by_id TEXT,
+      updated_by_name TEXT,
+      station_code TEXT,
+      PRIMARY KEY (tenant_id, table_key)
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_pos_table_orders_updated
+     ON pos_table_orders(tenant_id, updated_at)`,
+    'Erro ao criar idx_pos_table_orders_updated:'
+  );
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS cash_sessions (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
@@ -796,6 +892,70 @@ db.serialize(() => {
       console.error('Erro ao adicionar coluna deleted em products:', err.message);
     }
   });
+  db.run(`ALTER TABLE products ADD COLUMN tax_rate_id INTEGER`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna tax_rate_id em products:', err.message);
+    }
+    safeRun(
+      `CREATE INDEX IF NOT EXISTS idx_products_tax_rate_id ON products(tax_rate_id)`,
+      'Erro ao criar idx_products_tax_rate_id:'
+    );
+  });
+  db.run(`ALTER TABLE products ADD COLUMN product_kind TEXT DEFAULT 'simple'`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna product_kind em products:', err.message);
+    }
+    db.run(
+      `UPDATE products SET product_kind = 'simple' WHERE product_kind IS NULL OR TRIM(COALESCE(product_kind, '')) = ''`,
+      (updateErr) => {
+        if (updateErr) {
+          console.error('Erro ao normalizar product_kind em products:', updateErr.message);
+        }
+      }
+    );
+    db.run(
+      `UPDATE products
+       SET product_kind = 'service'
+       WHERE COALESCE(is_service, 0) = 1
+         AND COALESCE(product_kind, 'simple') = 'simple'
+         AND COALESCE(deleted, 0) = 0`,
+      (updateErr) => {
+        if (updateErr) {
+          console.error('Erro ao migrar serviços para product_kind=service:', updateErr.message);
+        }
+      }
+    );
+    safeRun(
+      `CREATE INDEX IF NOT EXISTS idx_products_product_kind ON products(product_kind)`,
+      'Erro ao criar idx_products_product_kind:'
+    );
+  });
+  db.run(`ALTER TABLE tax_rates ADD COLUMN price_includes_tax INTEGER DEFAULT 1`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna price_includes_tax em tax_rates:', err.message);
+    }
+    db.run(
+      `UPDATE tax_rates SET price_includes_tax = 1 WHERE price_includes_tax IS NULL`,
+      (updateErr) => {
+        if (updateErr) {
+          console.error('Erro ao normalizar price_includes_tax em tax_rates:', updateErr.message);
+        }
+      }
+    );
+  });
+  db.run(`ALTER TABLE tax_rates ADD COLUMN is_default INTEGER DEFAULT 0`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna is_default em tax_rates:', err.message);
+    }
+    db.run(
+      `UPDATE tax_rates SET is_default = 0 WHERE is_default IS NULL`,
+      (updateErr) => {
+        if (updateErr) {
+          console.error('Erro ao normalizar is_default em tax_rates:', updateErr.message);
+        }
+      }
+    );
+  });
   db.run(`UPDATE products SET deleted = 0 WHERE deleted IS NULL`, (err) => {
     if (err) {
       console.error('Erro ao normalizar deleted em products:', err.message);
@@ -809,6 +969,11 @@ db.serialize(() => {
   db.run(`ALTER TABLE categories ADD COLUMN tenant_id TEXT`, (err) => {
     if (err && !String(err.message || '').includes('duplicate column name')) {
       console.error('Erro ao adicionar coluna tenant_id em categories:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE categories ADD COLUMN color TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna color em categories:', err.message);
     }
   });
   db.run(`ALTER TABLE deleted_category_tombstones ADD COLUMN tenant_id TEXT`, (err) => {
@@ -1041,6 +1206,95 @@ db.serialize(() => {
   safeRun(
     `CREATE INDEX IF NOT EXISTS idx_products_category_tenant_deleted ON products(category_id, tenant_id, deleted)`,
     'Erro ao criar idx_products_category_tenant_deleted:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS locations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      code TEXT,
+      type TEXT NOT NULL DEFAULT 'dining',
+      active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      allow_custom_names INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_locations_tenant ON locations(tenant_id, sort_order, name)`,
+    'Erro ao criar idx_locations_tenant:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_locations_tenant_name ON locations(tenant_id, name)`,
+    'Erro ao criar uq_locations_tenant_name:'
+  );
+  db.run(`ALTER TABLE locations ADD COLUMN allow_custom_names INTEGER NOT NULL DEFAULT 0`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar allow_custom_names em locations:', err.message);
+    }
+  });
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS location_tables (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      location_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      seats INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_location_tables_location ON location_tables(tenant_id, location_id, sort_order)`,
+    'Erro ao criar idx_location_tables_location:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_location_tables_name ON location_tables(tenant_id, location_id, name)`,
+    'Erro ao criar uq_location_tables_name:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS print_centers (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      connection_type TEXT NOT NULL DEFAULT 'windows',
+      windows_printer_name TEXT,
+      host TEXT,
+      port INTEGER DEFAULT 9100,
+      paper_width INTEGER NOT NULL DEFAULT 80,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_print_centers_tenant ON print_centers(tenant_id, sort_order, name)`,
+    'Erro ao criar idx_print_centers_tenant:'
+  );
+  safeRun(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_print_centers_tenant_name ON print_centers(tenant_id, name)`,
+    'Erro ao criar uq_print_centers_tenant_name:'
+  );
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS print_center_categories (
+      print_center_id TEXT NOT NULL,
+      category_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      PRIMARY KEY (print_center_id, category_id)
+    )
+  `);
+  safeRun(
+    `CREATE INDEX IF NOT EXISTS idx_print_center_categories_category
+     ON print_center_categories(tenant_id, category_id)`,
+    'Erro ao criar idx_print_center_categories_category:'
   );
 
   ensureTenantGuards();
@@ -1331,7 +1585,7 @@ db.serialize(() => {
             const seededPin = await ensureHashedPin('1234');
             db.run(
               `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              ['admin-1', 'Administrador', null, null, 'admin', seededPin, 9, 1, 1, defaultTenantId]
+              ['admin-local', 'Administrador', null, null, 'admin', seededPin, 9, 1, 1, defaultTenantId]
             );
           } catch (hashErr) {
             console.error('Erro ao criar PIN inicial do administrador:', hashErr?.message ?? hashErr);
@@ -1373,6 +1627,20 @@ function seedDefaultPaymentMethodsForTenant(tenantId) {
       }
     },
   );
+}
+
+export function getDatabasePath() {
+  return dbPath;
+}
+
+/** Fecha a ligação SQLite (ex.: antes de trocar o ficheiro no restauro). */
+export function closeDatabase() {
+  return new Promise((resolve, reject) => {
+    db.close((err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
 }
 
 export default db;

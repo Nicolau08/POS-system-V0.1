@@ -54,7 +54,7 @@ export async function resetDatabase(req, res) {
     await fs.mkdir(backupDirRaw, { recursive: true });
 
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    const backupFilePath = path.join(backupDirRaw, `pos-backup-${stamp}.db`);
+    const backupFilePath = path.join(backupDirRaw, `database-backup-${stamp}.db`);
     const escapedBackupPath = backupFilePath.replace(/'/g, "''");
 
     await runDb(`VACUUM INTO '${escapedBackupPath}'`);
@@ -194,7 +194,13 @@ export async function createDatabaseBackup(req, res) {
 export async function listDatabaseBackups(_req, res) {
   try {
     const backups = await listBackups();
-    return res.json({ success: true, backups });
+    const { getBackupsDirectory, getLiveDatabasePath } = await import('../utils/backup.js');
+    return res.json({
+      success: true,
+      backups,
+      backupsDir: getBackupsDirectory(),
+      databasePath: getLiveDatabasePath(),
+    });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     logError('backup_list_error', { error: errorMessage });

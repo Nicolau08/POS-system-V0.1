@@ -18,6 +18,7 @@ import maintenanceRoutes from './routes/maintenance.routes.js';
 import categoriasRoutes from './routes/categorias.routes.js';
 import clientesRoutes from './routes/clientes.routes.js';
 import paymentMethodsRoutes from './routes/payment-methods.routes.js';
+import taxRatesRoutes from './routes/tax-rates.routes.js';
 import permissionRulesRoutes from './routes/permission-rules.routes.js';
 import companyProfileRoutes from './routes/company-profile.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
@@ -26,10 +27,17 @@ import serialRoutes from './routes/serial.routes.js';
 import posDraftRoutes from './routes/pos-draft.routes.js';
 import appLogsRoutes from './routes/app-logs.routes.js';
 import cashSessionRoutes from './routes/cash-session.routes.js';
+import locationsRoutes from './routes/locations.routes.js';
+import printCentersRoutes from './routes/print-centers.routes.js';
+import stationsRoutes from './routes/stations.routes.js';
 import { authenticateUser } from './middlewares/auth.js';
 import { requireTenantContext } from './middlewares/tenant.middleware.js';
 import { globalErrorHandler, notFoundHandler } from './middlewares/error.middleware.js';
 import { sendError, sendSuccess } from './utils/response.js';
+import {
+  buildDiscoverPayload,
+  isRemoteAuthAllowed,
+} from './services/station.service.js';
 import {
   attachRequestContext,
   createRateLimiter,
@@ -41,10 +49,12 @@ import {
   endCriticalOperation,
   getBackupIntervalHours,
   getBackupIntervalMs,
+  shouldRunStartupBackup,
 } from './utils/backup.js';
 import { logAudit, logError, logEvent, logInfo, logWarn } from './utils/logger.js';
 import { validateLicenseAccess } from './services/user.service.js';
 import { getLoginUsers, login } from './controllers/users.controller.js';
+import { resolveAuthHmacSecret, getClientIp, isLoopbackIp } from './utils/authSecret.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({
@@ -55,6 +65,9 @@ dotenv.config({
   override: true,
 });
 
+// Segredo Bearer por instalação (env → ficheiro junto à BD → gerar). Sem fallback fixo.
+resolveAuthHmacSecret();
+
 const app = express();
 app.use(cors());
 /** Logos em base64 no PUT /company-profile excedem o default (~100kb). */
@@ -64,17 +77,34 @@ app.use(createRateLimiter());
 app.use(sanitizeInputMiddleware);
 app.use('/setup', setupRoutes);
 
-function rejectNonLocalAuthRoute(req, res, next) {
-  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-  const remote = String(req.socket?.remoteAddress ?? '').trim();
-  const candidate = forwarded || remote;
-  const normalized = candidate.startsWith('::ffff:') ? candidate.replace('::ffff:', '') : candidate;
-  const local = new Set(['127.0.0.1', '::1', 'localhost']);
-  if (!local.has(normalized)) {
-    return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
+async function rejectNonLocalAuthRoute(req, res, next) {
+  const candidate = getClientIp(req);
+  if (isLoopbackIp(candidate)) return next();
+  try {
+    if (await isRemoteAuthAllowed()) return next();
+  } catch {
+    // fall through
   }
-  return next();
+  return sendError(
+    res,
+    403,
+    'Login remoto desactivado. Active «Acesso LAN» em Configurações → Postos no servidor.',
+    'LOCAL_ONLY_OPERATION',
+  );
 }
+
+/** Descoberta de postos na LAN (público; só responde se LAN+descoberta activos). */
+app.get('/station/discover', async (_req, res) => {
+  try {
+    const payload = await buildDiscoverPayload();
+    if (!payload) {
+      return sendError(res, 404, 'Descoberta desactivada neste servidor.', 'DISCOVERY_OFF');
+    }
+    return sendSuccess(res, payload);
+  } catch (err) {
+    return sendError(res, 500, err?.message || 'Erro na descoberta');
+  }
+});
 
 /** Login screen: sem sessão ainda — antes do middleware de auth. */
 app.get('/auth/login-users', rejectNonLocalAuthRoute, getLoginUsers);
@@ -156,6 +186,7 @@ app.use('/', salesRoutes);
 app.use('/', categoriasRoutes);
 app.use('/', clientesRoutes);
 app.use('/', paymentMethodsRoutes);
+app.use('/', taxRatesRoutes);
 app.use('/', permissionRulesRoutes);
 app.use('/', companyProfileRoutes);
 app.use('/', documentosRoutes);
@@ -164,6 +195,9 @@ app.use('/', serialRoutes);
 app.use('/', posDraftRoutes);
 app.use('/', appLogsRoutes);
 app.use('/', cashSessionRoutes);
+app.use('/', locationsRoutes);
+app.use('/', printCentersRoutes);
+app.use('/', stationsRoutes);
 app.use('/sync', syncRoutes);
 app.use('/stock', stockController);
 app.use('/', maintenanceRoutes);
@@ -234,48 +268,90 @@ function startAutoBackupScheduler() {
 }
 
 function startApiServer() {
-  app.listen(PORT, () => {
-    logEvent('info', 'api.started', `API POSly a escutar em http://localhost:${PORT}`, {
-      source: 'api',
-      module: 'server',
-      action: 'listen',
-      reason: 'Processo da API iniciado com sucesso',
-      port: PORT,
-      node_env: process.env.NODE_ENV ?? 'development',
-      tenant: process.env.POS_DEV_TENANT ?? process.env.DEFAULT_TENANT_ID ?? null,
-    });
-
-    const fullResetEnabled = process.env.ENABLE_FULL_RESET_SYNC === 'true';
-    logInfo('sync_mode', {
-      event: 'sync.config',
-      message: fullResetEnabled
-        ? 'Sync full-reset activado'
-        : 'Sync full-reset desactivado',
-      module: 'sync',
-      action: 'boot',
-      full_reset_enabled: fullResetEnabled,
-    });
-
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      logWarn('sync_offline_only', {
-        event: 'sync.offline_only',
-        message: 'Credenciais Supabase em falta — modo apenas offline',
-        module: 'sync',
-        action: 'boot',
-        reason: 'SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configurados',
-      });
-    } else {
-      logInfo('sync_supabase_ready', {
-        event: 'sync.supabase_ready',
-        message: 'Supabase configurado — a iniciar serviço de sync',
-        module: 'sync',
-        action: 'boot',
-      });
-      startSyncService();
+  void (async () => {
+    let bindHost = String(process.env.POS_API_BIND || '127.0.0.1').trim() || '127.0.0.1';
+    try {
+      if (!process.env.POS_API_BIND) {
+        const { getServerStationSettings } = await import('./services/station.service.js');
+        const settings = await getServerStationSettings();
+        if (settings.lanAccessEnabled || settings.effectiveLanAccess) {
+          bindHost = '0.0.0.0';
+          process.env.POS_LAN_ACCESS = process.env.POS_LAN_ACCESS || '1';
+        }
+      }
+    } catch {
+      // keep default bind
     }
 
-    startAutoBackupScheduler();
-  });
+    const server = app.listen(PORT, bindHost, () => {
+      logEvent('info', 'api.started', `API POSly a escutar em http://${bindHost}:${PORT}`, {
+        source: 'api',
+        module: 'server',
+        action: 'listen',
+        reason: 'Processo da API iniciado com sucesso',
+        port: PORT,
+        bind: bindHost,
+        lan_access: String(process.env.POS_LAN_ACCESS ?? ''),
+        node_env: process.env.NODE_ENV ?? 'development',
+        tenant: process.env.POS_DEV_TENANT ?? process.env.DEFAULT_TENANT_ID ?? null,
+        db_path: process.env.POS_DB_PATH ?? null,
+      });
+
+      const fullResetEnabled = process.env.ENABLE_FULL_RESET_SYNC === 'true';
+      logInfo('sync_mode', {
+        event: 'sync.config',
+        message: fullResetEnabled
+          ? 'Sync full-reset activado'
+          : 'Sync full-reset desactivado',
+        module: 'sync',
+        action: 'boot',
+        full_reset_enabled: fullResetEnabled,
+      });
+
+      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        logWarn('sync_offline_only', {
+          event: 'sync.offline_only',
+          message: 'Credenciais Supabase em falta — modo apenas offline',
+          module: 'sync',
+          action: 'boot',
+          reason: 'SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configurados',
+        });
+      } else {
+        logInfo('sync_supabase_ready', {
+          event: 'sync.supabase_ready',
+          message: 'Supabase configurado — a iniciar serviço de sync',
+          module: 'sync',
+          action: 'boot',
+        });
+        startSyncService();
+      }
+
+      startAutoBackupScheduler();
+      void (async () => {
+        try {
+          if (await shouldRunStartupBackup()) {
+            await runAutoBackupCycle();
+          }
+        } catch (err) {
+          logError('auto_backup_startup_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    });
+
+    server.on('error', (err) => {
+      const code = err && typeof err === 'object' ? err.code : null;
+      if (code === 'EADDRINUSE') {
+        console.error(
+          `[fatal] Porta ${PORT} já em uso. Fecha a API/tenant anterior (Ctrl+C) antes de arrancar outro tenant.`,
+        );
+        process.exit(1);
+      }
+      console.error('[fatal] Falha ao iniciar a API:', err?.message ?? err);
+      process.exit(1);
+    });
+  })();
 }
 
 // Garante tabela em bases antigas ou se o CREATE inicial falhou (evita 500 em /permission-rules)
