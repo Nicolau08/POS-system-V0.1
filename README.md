@@ -31,10 +31,12 @@ Pequenas e médias lojas precisam de um POS **fiável offline**, fácil de insta
 
 - **Caixa** — produtos, carrinho, pagamentos, impressão / recibo
 - **Gestão** — utilizadores e permissões, inventário, relatórios, documentos
-- **Resiliência** — backups locais da base de dados
+- **Resiliência** — backups locais da base de dados (pasta `backups\`, retenção configurável)
 - **Licenciamento** — activação por código (voucher), consola web, renovação e runbooks de suporte
 
-Dados por loja/PC em `%APPDATA%\POSly\` (`license.json`, `data\pos.db`).
+Dados por loja/PC em `%APPDATA%\POSly\` (`license.json`, `data\database.db`, `backups\`, chave SQLCipher em `db-encryption.key` via Windows DPAPI).
+
+Na app Electron a BD é **encriptada com SQLCipher**; a chave fica na máquina (Electron `safeStorage`) e **não é pedida ao operador**. Noutro PC o ficheiro sozinho não abre. **BitLocker** continua recomendado no disco do PC.
 
 ---
 
@@ -45,7 +47,7 @@ Dados por loja/PC em `%APPDATA%\POSly\` (`license.json`, `data\pos.db`).
    POSly (Electron)
       ├── Interface: Next.js + React (TypeScript)
       ├── API local: Node.js + Express (JavaScript)
-      └── Dados: SQLite (pos.db)
+      └── Dados: SQLite/SQLCipher (database.db) + backups/
 
 [Cloud — licenciamento]
    Consola /license-admin → Supabase (PostgreSQL)
@@ -104,13 +106,32 @@ npm run dev:full
 - Web: [http://localhost:3000](http://localhost:3000)
 - API: [http://localhost:3001](http://localhost:3001)
 
+Portas (para não haver conflito entre consola/dev e o instalador):
+
+| Ambiente | Web POS | API | Consola licenças |
+|----------|---------|-----|------------------|
+| Dev (`npm run dev`) | 3000 | 3001 | 3002 (`license-console/`) |
+| POSly instalado | 3730 | 3731 | Vercel / cloud |
+
 Modo desktop (opcional):
 
 ```bash
 npm run electron-dev
 ```
 
-Scripts úteis: `npm run dev:tenant:default`, `npm run license:tool`.
+Consola de licenças (projecto separado em `license-console/`):
+
+```bash
+npm run licensing:ensure-env
+npm run dev:licensing
+```
+
+- POS: [http://localhost:3000](http://localhost:3000)
+- Consola: [http://localhost:3002/license-admin](http://localhost:3002/license-admin)
+
+Deploy na Vercel: importar o repositório com **Root Directory** = `license-console` (ver `license-console/README.md`).
+
+Scripts úteis: `npm run dev:tenant:default`, `npm run dev:console`, `npm run build:console`.
 
 ### Build do instalador Windows
 
@@ -118,25 +139,29 @@ Scripts úteis: `npm run dev:tenant:default`, `npm run license:tool`.
 npm run electron-dist
 ```
 
-Gera **apenas o desktop POSly** (modo caixa; sem consola de licenças Electron) em `dist-electron/` (ex.: `POSly Setup 0.1.0.exe`). O `.exe` instalado abre só a janela da aplicação — API e Next correm em segundo plano sem janela CMD. Antes do build, configure `POS_LICENSE_HMAC_SECRET` no `.env.local` (o mesmo segredo usado na consola web `/license-admin` em dev).
+Gera **apenas o desktop POSly** (modo caixa; sem consola de licenças no bundle) em `dist-electron/`. O build exclui `app/license-admin` e `app/api/license-issuer` — a consola vive em `license-console/` (Vercel). Antes do build, configure `POS_LICENSE_HMAC_SECRET` e `POS_LICENSE_ISSUER_BASE_URL` (URL do deploy da consola).
 
 ### Licenciamento (técnico)
 
-A consola corre no Next.js:
+A consola é um **projecto Next.js separado** em `license-console/`:
 
-- URL: `/license-admin`
-- API: `/api/license-issuer/*` (protegida por `LICENSE_ISSUER_ADMIN_TOKEN`)
+- UI: `/license-admin`
+- API: `/api/license-issuer/*` (admin protegida por `LICENSE_ISSUER_ADMIN_TOKEN`; endpoints de activação são públicos com HMAC)
+- Deploy Vercel: Root Directory = `license-console` (12 funções — cabe no plano Hobby)
 
-Fluxo: registar tenant na consola → gerar voucher → cliente activa no desktop → `license.json` + registo em Supabase (com `POS_LICENSE_ISSUER_BASE_URL`). Migração: `supabase/migrations/20260521_posly_license_issuer.sql`.
+Fluxo: registar tenant na consola → gerar serial → cliente activa no desktop → `license.json` + registo em Supabase. O POS chama `POS_LICENSE_ISSUER_BASE_URL` (ex.: `https://licencas.seudominio.com`). Migrações: `license-console/supabase/migrations/` (ou `supabase/migrations/` na raiz).
 
 ### Variáveis de ambiente (resumo)
 
 | Variável | Descrição |
 |----------|-----------|
 | `POS_LICENSE_HMAC_SECRET` | Segredo HMAC (POSly + consola) |
-| `POS_LICENSE_ISSUER_BASE_URL` | URL base do Next com `/api/license-issuer` |
+| `POS_LICENSE_ISSUER_BASE_URL` | URL base da consola (ex.: `https://licencas.seudominio.com`) |
+| `NEXT_PUBLIC_LICENSE_CONSOLE_URL` | Link para abrir a consola no browser (dev: `http://localhost:3002`) |
 | `LICENSE_ISSUER_ADMIN_TOKEN` | Token da consola `/license-admin` |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Backend da consola de licenças |
 | `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Cliente Supabase (se aplicável) |
 | `POS_APP_USERDATA_SUBDIR` | Subpasta em `%APPDATA%` (omissão: `POSly`) |
 | `POS_DB_PATH` / `POS_LICENSE_PATH` / `POS_BACKUP_DIR` | Sobrescritas de caminhos (dev/suporte) |
+| `POS_DB_ENCRYPTION_KEY` | Chave SQLCipher 256-bit hex (Electron injeta via safeStorage; não definir à mão em produção) |
+| `BACKUP_INTERVAL_HOURS` / `BACKUP_RETENTION_COUNT` | Intervalo (omissão 6h) e retenção de backups (omissão 14) |

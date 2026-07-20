@@ -1,28 +1,20 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, HelpCircle, Plus, Trash2, FolderOpen, Eraser, AlertTriangle } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, HelpCircle, FolderOpen, Eraser, AlertTriangle } from 'lucide-react';
 import type { CompanyProfile } from '@/app/pos/types';
 import { getPosApiBase } from '@/lib/apiBase';
 import {
   fetchCompanyProfile,
   saveCompanyProfile,
-  saveCompanyVoidReasons,
   resetDatabase,
 } from '@/lib/services/posService';
 import { ensureCompactReceiptLogo } from '@/lib/compressReceiptLogo';
 import PosSelect from '@/components/PosSelect';
+import DatabaseBackupPanel from '@/app/management/components/DatabaseBackupPanel';
 
 const COUNTRY_OPTIONS = [
-  { value: '', label: 'Selecione o país…' },
   { value: 'Moçambique', label: 'Moçambique' },
-  { value: 'Brasil', label: 'Brasil' },
-  { value: 'Portugal', label: 'Portugal' },
-  { value: 'Angola', label: 'Angola' },
-  { value: 'Cabo Verde', label: 'Cabo Verde' },
-  { value: 'Espanha', label: 'Espanha' },
-  { value: 'Estados Unidos', label: 'Estados Unidos' },
-  { value: 'Outro', label: 'Outro' },
 ];
 
 const emptyForm = (): CompanyProfile => ({
@@ -35,7 +27,7 @@ const emptyForm = (): CompanyProfile => ({
   district: '',
   city: '',
   state: '',
-  country: '',
+  country: 'Moçambique',
   phone: '',
   email: '',
   bankAccountNumber: '',
@@ -66,10 +58,8 @@ function FieldRow({
 }
 
 export default function MyCompanyManager() {
-  const [innerTab, setInnerTab] = useState<'dados' | 'void' | 'reset'>('dados');
+  const [innerTab, setInnerTab] = useState<'dados' | 'backups' | 'reset'>('dados');
   const [form, setForm] = useState<CompanyProfile>(emptyForm);
-  const [voidDraft, setVoidDraft] = useState<string[]>([]);
-  const [newVoidReason, setNewVoidReason] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -88,12 +78,10 @@ export default function MyCompanyManager() {
     setMessage(null);
     try {
       const data = await fetchCompanyProfile();
-      setForm(data);
-      setVoidDraft(data.voidReasons.length ? [...data.voidReasons] : []);
+      setForm({ ...data, country: 'Moçambique' });
     } catch (e) {
       setMessage({ type: 'err', text: e instanceof Error ? e.message : 'Falha ao carregar dados da empresa' });
       setForm(emptyForm());
-      setVoidDraft([]);
     } finally {
       setLoading(false);
     }
@@ -112,7 +100,7 @@ export default function MyCompanyManager() {
   };
 
   const inputCls = (invalid?: boolean) =>
-    `w-full rounded border bg-[#111] px-2.5 py-1.5 text-xs text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-blue-500/80 ${
+    `w-full rounded border bg-[#111] px-2.5 py-1.5 text-xs text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-[#0001fb] ${
       invalid ? 'border-rose-500 ring-1 ring-rose-500/30' : 'border-zinc-700'
     }`;
 
@@ -149,21 +137,6 @@ export default function MyCompanyManager() {
       setMessage({ type: 'ok', text: 'Dados da empresa guardados.' });
       broadcastRefresh();
       await load();
-    } catch (e) {
-      setMessage({ type: 'err', text: e instanceof Error ? e.message : 'Erro ao guardar' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSaveVoid = async () => {
-    setSaving(true);
-    setMessage(null);
-    try {
-      await saveCompanyVoidReasons(voidDraft);
-      setForm((f) => ({ ...f, voidReasons: [...voidDraft] }));
-      setMessage({ type: 'ok', text: 'Motivos de anulação guardados.' });
-      broadcastRefresh();
     } catch (e) {
       setMessage({ type: 'err', text: e instanceof Error ? e.message : 'Erro ao guardar' });
     } finally {
@@ -258,17 +231,11 @@ export default function MyCompanyManager() {
     }
   };
 
-  const countryOptions = useMemo(() => {
-    const o = [...COUNTRY_OPTIONS];
-    if (form.country && !o.some((x) => x.value === form.country)) {
-      o.push({ value: form.country, label: form.country });
-    }
-    return o;
-  }, [form.country]);
+  const countryOptions = COUNTRY_OPTIONS;
 
   const tabs: { id: typeof innerTab; label: string }[] = [
     { id: 'dados', label: 'Dados da empresa' },
-    { id: 'void', label: 'Void reasons' },
+    { id: 'backups', label: 'Cópias de segurança' },
     { id: 'reset', label: 'Redefinir banco de dados' },
   ];
 
@@ -283,8 +250,8 @@ export default function MyCompanyManager() {
               onClick={() => setInnerTab(t.id)}
               className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-wide border-b-2 transition-colors ${
                 innerTab === t.id
-                  ? 'border-blue-500 text-white'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  ? 'border-[#0001fb] text-white'
+                  : 'border-transparent text-zinc-500 hover:text-[#0001fb]'
               }`}
             >
               {t.label}
@@ -296,10 +263,9 @@ export default function MyCompanyManager() {
             type="button"
             onClick={() => {
               if (innerTab === 'dados') void handleSaveDados();
-              else if (innerTab === 'void') void handleSaveVoid();
             }}
-            disabled={saving || loading || innerTab === 'reset'}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-400 hover:text-blue-300 disabled:opacity-40"
+            disabled={saving || loading || innerTab !== 'dados'}
+            className="inline-flex items-center gap-1.5 rounded bg-[#0001fb] px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Check size={14} />
             Salvar
@@ -307,7 +273,7 @@ export default function MyCompanyManager() {
           <button
             type="button"
             onClick={() => setShowHelp((v) => !v)}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 hover:text-zinc-300"
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 transition-colors hover:text-[#0001fb]"
           >
             <HelpCircle size={14} />
             Ajuda
@@ -327,7 +293,7 @@ export default function MyCompanyManager() {
       {message && (
         <div
           className={`mx-4 mt-2 rounded px-3 py-2 text-[11px] font-medium ${
-            message.type === 'ok' ? 'bg-emerald-950/50 text-emerald-400' : 'bg-rose-950/50 text-rose-300'
+            message.type === 'ok' ? 'bg-[#0001fb]/10 text-[#a5b4fc]' : 'bg-rose-950/50 text-rose-300'
           }`}
         >
           {message.text}
@@ -335,7 +301,7 @@ export default function MyCompanyManager() {
       )}
 
       <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-8">
-        {loading ? (
+        {loading && innerTab === 'dados' ? (
           <p className="py-8 text-center text-xs text-zinc-500">A carregar…</p>
         ) : innerTab === 'dados' ? (
           <div className="max-w-3xl pt-4 space-y-6">
@@ -426,7 +392,7 @@ export default function MyCompanyManager() {
                   <button
                     type="button"
                     onClick={() => fileRef.current?.click()}
-                    className="inline-flex items-center gap-1 rounded border border-zinc-600 bg-zinc-800/50 px-2.5 py-1 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-800"
+                    className="inline-flex items-center gap-1 rounded border border-zinc-600 bg-transparent px-2.5 py-1 text-[11px] font-semibold text-zinc-200 transition-colors hover:text-[#0001fb]"
                   >
                     <FolderOpen size={14} />
                     Procurar
@@ -434,7 +400,7 @@ export default function MyCompanyManager() {
                   <button
                     type="button"
                     onClick={() => setForm((f) => ({ ...f, logoDataUrl: null }))}
-                    className="inline-flex items-center gap-1 rounded border border-zinc-600 bg-zinc-800/50 px-2.5 py-1 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-800"
+                    className="inline-flex items-center gap-1 rounded border border-zinc-600 bg-transparent px-2.5 py-1 text-[11px] font-semibold text-zinc-200 transition-colors hover:text-[#0001fb]"
                   >
                     <Eraser size={14} />
                     Limpar
@@ -451,77 +417,22 @@ export default function MyCompanyManager() {
               </div>
             </section>
           </div>
-        ) : innerTab === 'void' ? (
-          <div className="max-w-xl pt-6 space-y-4">
-            <p className="text-[11px] text-zinc-500">
-              Lista de motivos de anulação (void). Pode usar mais tarde em fluxos de cancelamento no POS.
-            </p>
-            <ul className="space-y-2">
-              {voidDraft.map((reason, idx) => (
-                <li
-                  key={`${idx}-${reason.slice(0, 12)}`}
-                  className="flex items-center gap-2 rounded border border-zinc-800 bg-[#141414] px-2 py-1.5"
-                >
-                  <span className="flex-1 text-xs text-zinc-300">{reason}</span>
-                  <button
-                    type="button"
-                    onClick={() => setVoidDraft((list) => list.filter((_, i) => i !== idx))}
-                    className="text-rose-400 hover:text-rose-300 p-1"
-                    aria-label="Remover"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="flex gap-2">
-              <input
-                className={inputCls()}
-                value={newVoidReason}
-                onChange={(e) => setNewVoidReason(e.target.value)}
-                placeholder="Novo motivo…"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const t = newVoidReason.trim();
-                    if (t) {
-                      setVoidDraft((l) => [...l, t]);
-                      setNewVoidReason('');
-                    }
-                  }
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  const t = newVoidReason.trim();
-                  if (!t) return;
-                  setVoidDraft((l) => [...l, t]);
-                  setNewVoidReason('');
-                }}
-                className="shrink-0 rounded bg-blue-600 px-3 text-white hover:bg-blue-500"
-              >
-                <Plus size={18} className="mx-auto" />
-              </button>
-            </div>
-          </div>
+        ) : innerTab === 'backups' ? (
+          <DatabaseBackupPanel />
         ) : (
           <div className="max-w-3xl pt-4 space-y-4">
             <div className="rounded border border-yellow-700/70 bg-yellow-950/25 px-3 py-2 text-[11px] text-yellow-200/90">
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} />
                 <span>
-                  Esta é uma operação destrutiva. Por favor, certifique-se de ler as instruções antes de prosseguir.{' '}
-                  <a href="#" className="text-blue-300 hover:text-blue-200 underline">
-                    saiba mais
-                  </a>
+                  Esta é uma operação destrutiva. Por favor, certifique-se de ler as instruções antes de prosseguir.
                 </span>
               </div>
             </div>
 
             <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
               <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-sky-500 text-[12px] font-bold text-white">
+                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   1
                 </div>
                 <div className="min-w-0 flex-1">
@@ -539,7 +450,7 @@ export default function MyCompanyManager() {
                     <button
                       type="button"
                       onClick={() => void handleSelectBackupFolder()}
-                      className="inline-flex h-[30px] w-[34px] shrink-0 items-center justify-center rounded border border-zinc-600 bg-zinc-800/60 text-zinc-200 hover:bg-zinc-700"
+                      className="inline-flex h-[30px] w-[34px] shrink-0 items-center justify-center rounded border border-zinc-600 bg-transparent text-zinc-200 transition-colors hover:text-[#0001fb]"
                       aria-label="Escolher pasta de backup"
                       title="Escolher pasta"
                     >
@@ -552,7 +463,7 @@ export default function MyCompanyManager() {
 
             <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
               <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-sky-500 text-[12px] font-bold text-white">
+                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   2
                 </div>
                 <div className="min-w-0 flex-1">
@@ -561,7 +472,7 @@ export default function MyCompanyManager() {
                     As entidades selecionadas serão excluídas do banco de dados.
                   </p>
                   <div className="mt-2 space-y-2">
-                    <label className="flex items-center gap-2 text-xs text-zinc-300">
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300 transition-colors hover:text-[#0001fb]">
                       <input
                         type="checkbox"
                         checked={resetSelections.products}
@@ -569,7 +480,7 @@ export default function MyCompanyManager() {
                       />
                       Produtos
                     </label>
-                    <label className="flex items-center gap-2 text-xs text-zinc-300">
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300 transition-colors hover:text-[#0001fb]">
                       <input
                         type="checkbox"
                         checked={resetSelections.customers}
@@ -577,7 +488,7 @@ export default function MyCompanyManager() {
                       />
                       Clientes
                     </label>
-                    <label className="flex items-center gap-2 text-xs text-zinc-300">
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300 transition-colors hover:text-[#0001fb]">
                       <input
                         type="checkbox"
                         checked={resetSelections.documents}
@@ -592,7 +503,7 @@ export default function MyCompanyManager() {
 
             <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
               <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-sky-500 text-[12px] font-bold text-white">
+                <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   3
                 </div>
                 <div className="min-w-0 flex-1">
@@ -616,7 +527,7 @@ export default function MyCompanyManager() {
                         !(resetSelections.products || resetSelections.customers || resetSelections.documents)
                       }
                       onClick={() => void handleResetDatabase()}
-                      className="inline-flex items-center rounded border border-zinc-600 bg-zinc-800/60 px-3 py-1.5 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="inline-flex items-center rounded border border-zinc-600 bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-200 transition-colors hover:text-[#0001fb] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Redefinir banco de dados
                     </button>

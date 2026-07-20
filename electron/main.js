@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import { spawn, execFile } from 'child_process';
 import fsSync from 'fs';
 import crypto from 'crypto';
+import os from 'os';
 import dotenv from 'dotenv';
 import electronUpdaterModule from 'electron-updater';
 import machineIdModule from 'node-machine-id';
@@ -12,11 +13,13 @@ import {
   isReactivationTokenInput,
   normalizeReactivationTokenInput,
 } from '../lib/licensing/reactivationToken.js';
+import { LICENSE_IN_USE_MESSAGE } from '../lib/licensing/licenseConflict.js';
 import {
   resignMachineLicensePayload,
   verifyOfflineReactivationToken,
 } from '../lib/licensing/offlineReactivationToken.js';
 import { electronLogError, electronLogInfo, electronLogWarn } from './logger.js';
+import { getOrCreateDbEncryptionKey } from './dbEncryptionKey.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
@@ -50,8 +53,11 @@ const loadPackagedBuildSecrets = () => {
 };
 loadPackagedBuildSecrets();
 
-const APP_WEB_PORT = 3000;
-const APP_API_PORT = 3001;
+/** Dev / consola (browser): 3000/3001. Instalador empacotado: 3730/3731 (evita conflito com npm run dev). */
+const DEV_WEB_PORT = 3000;
+const DEV_API_PORT = 3001;
+const PACKAGED_WEB_PORT = 3730;
+const PACKAGED_API_PORT = 3731;
 
 /**
  * Em Windows o launcher de dev usa POSly.exe (cópia do electron.exe com ícone).
@@ -73,41 +79,28 @@ const isPackagedBuild = () => {
   return app.isPackaged;
 };
 
-const resolvePosAppMode = () => {
-  // Instalador desktop = sempre caixa POSly (consola de licenças corre no browser em dev/cloud).
-  if (isPackagedBuild()) return 'pos';
-  const raw = String(process.env.POS_APP_MODE || 'pos').trim().toLowerCase();
-  if (raw === 'license-console' || raw === 'license-admin' || raw === 'console') {
-    return 'license-console';
-  }
-  return 'pos';
-};
-
-const isLicenseConsoleMode = () => resolvePosAppMode() === 'license-console';
-
-const resolveDevWebPort = () => {
+const resolveAppWebPort = () => {
+  if (isPackagedBuild()) return PACKAGED_WEB_PORT;
   const fromEnv = Number.parseInt(String(process.env.POS_WEB_PORT || ''), 10);
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  // Consola partilha o mesmo Next que o POS (:3000) quando ambos correm em dev.
-  return APP_WEB_PORT;
+  return DEV_WEB_PORT;
 };
+
+const resolveAppApiPort = () => {
+  if (isPackagedBuild()) return PACKAGED_API_PORT;
+  const fromEnv = Number.parseInt(String(process.env.POS_API_PORT || ''), 10);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return DEV_API_PORT;
+};
+
+const resolvePosAppMode = () => 'pos';
+
+const resolveDevWebPort = () => resolveAppWebPort();
 
 const resolveDevWebUrl = () => {
   const port = resolveDevWebPort();
-  const routePath = isLicenseConsoleMode() ? '/license-admin' : '/';
-  return `http://localhost:${port}${routePath}`;
+  return `http://localhost:${port}/`;
 };
-
-/** Evita conflito de cache/GPU quando POS + consola correm em paralelo (electron-dev:all). */
-const configureIsolatedUserDataForLicenseConsole = () => {
-  if (!isLicenseConsoleMode()) return;
-  const appDataRoot = app.getPath('appData');
-  const subdir = String(process.env.POS_APP_USERDATA_SUBDIR || 'POSly').trim() || 'POSly';
-  const isolatedUserData = path.join(appDataRoot, `${subdir}-license-console`);
-  app.setPath('userData', isolatedUserData);
-};
-
-configureIsolatedUserDataForLicenseConsole();
 
 const { machineIdSync } = machineIdModule;
 const { autoUpdater } = electronUpdaterModule;
@@ -135,10 +128,44 @@ const getRuntimePaths = () => {
   const userDataPath = app.getPath('userData');
   return {
     userDataPath,
-    databasePath: path.join(userDataPath, 'data', 'pos.db'),
+    databasePath: path.join(userDataPath, 'data', 'database.db'),
+    backupsPath: path.join(userDataPath, 'backups'),
     configPath: path.join(userDataPath, 'config.json'),
     licensePath: path.join(userDataPath, 'license.json'),
+    stationRuntimePath: path.join(userDataPath, 'station-runtime.json'),
   };
+};
+
+const readStationRuntimeConfig = async () => {
+  const { stationRuntimePath } = getRuntimePaths();
+  try {
+    const raw = await fs.readFile(stationRuntimePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { mode: 'server', lanAccessEnabled: false, discoveryEnabled: true };
+    }
+    return {
+      mode: String(parsed.mode ?? 'server').toLowerCase() === 'client' ? 'client' : 'server',
+      serverApiBaseUrl: String(parsed.serverApiBaseUrl ?? '').trim(),
+      stationCode: String(parsed.stationCode ?? 'caixa-1').trim(),
+      lanAccessEnabled: Boolean(parsed.lanAccessEnabled),
+      discoveryEnabled: parsed.discoveryEnabled !== false,
+    };
+  } catch {
+    return { mode: 'server', lanAccessEnabled: false, discoveryEnabled: true };
+  }
+};
+
+const writeStationRuntimeConfig = async (patch = {}) => {
+  const current = await readStationRuntimeConfig();
+  const next = {
+    ...current,
+    ...patch,
+    mode: String(patch.mode ?? current.mode ?? 'server').toLowerCase() === 'client' ? 'client' : 'server',
+  };
+  const { stationRuntimePath } = getRuntimePaths();
+  await fs.writeFile(stationRuntimePath, JSON.stringify(next, null, 2), 'utf8');
+  return next;
 };
 
 const appendBoundedLog = (current, chunk) => {
@@ -388,12 +415,18 @@ const validateLicensePayload = ({ payload, expectedTenantId = null }) => {
   if (!expiration) return { ok: false, reason: 'Licença sem data de expiração.' };
 
   if (expectedTenantId && tenantId !== String(expectedTenantId).trim()) {
-    return { ok: false, reason: 'Licença não pertence ao tenant desta instalação.' };
+    return {
+      ok: false,
+      reason: LICENSE_IN_USE_MESSAGE,
+    };
   }
 
   const localMachineId = machineIdSync({ original: true });
   if (machineId !== localMachineId) {
-    return { ok: false, reason: 'Licença vinculada a outra máquina.' };
+    return {
+      ok: false,
+      reason: LICENSE_IN_USE_MESSAGE,
+    };
   }
 
   const expiresAt = new Date(expiration);
@@ -678,7 +711,7 @@ const activateLicenseInternal = async (rawLicenseKey) => {
         machineId,
         activationCode,
         licensePath,
-        error: 'Este código não corresponde ao tenant desta instalação.',
+        error: LICENSE_IN_USE_MESSAGE,
       };
     }
     let finalLicense;
@@ -899,8 +932,9 @@ const shouldSkipLocalLicenseGate = () => {
 };
 
 const isApiAlreadyUp = async (timeoutMs = 1500) => {
+  const apiPort = resolveAppApiPort();
   try {
-    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`, timeoutMs);
+    await waitForHttp(`http://127.0.0.1:${apiPort}`, timeoutMs);
     return true;
   } catch {
     return false;
@@ -908,18 +942,51 @@ const isApiAlreadyUp = async (timeoutMs = 1500) => {
 };
 
 const startBackend = async () => {
+  const apiPort = resolveAppApiPort();
+  const stationRuntime = await readStationRuntimeConfig();
+
+  // Posto remoto: não inicia API local — a UI fala com o servidor LAN.
+  if (stationRuntime.mode === 'client' && stationRuntime.serverApiBaseUrl) {
+    console.log(
+      `[electron] Modo posto remoto — API no servidor ${stationRuntime.serverApiBaseUrl} (não inicia api/server.js).`,
+    );
+    return;
+  }
+
   if (useExternalApi() || (await isApiAlreadyUp())) {
     console.log(
-      `[electron] A usar API externa em http://127.0.0.1:${APP_API_PORT} (não inicia api/server.js).`,
+      `[electron] A usar API externa em http://127.0.0.1:${apiPort} (não inicia api/server.js).`,
     );
-    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`, 10_000);
+    await waitForHttp(`http://127.0.0.1:${apiPort}`, 10_000);
     return;
   }
 
   const paths = getRuntimePaths();
   await ensureDir(path.dirname(paths.databasePath));
+  await ensureDir(paths.backupsPath);
 
-  const dbExistedBeforeBoot = await fileExists(paths.databasePath);
+  // Migração one-shot: pos.db → database.db
+  const legacyDbPath = path.join(path.dirname(paths.databasePath), 'pos.db');
+  try {
+    const legacyExists = await fileExists(legacyDbPath);
+    const newExists = await fileExists(paths.databasePath);
+    if (legacyExists && !newExists) {
+      await fs.rename(legacyDbPath, paths.databasePath);
+      for (const suffix of ['-wal', '-shm']) {
+        const from = `${legacyDbPath}${suffix}`;
+        const to = `${paths.databasePath}${suffix}`;
+        if (await fileExists(from)) {
+          await fs.rename(from, to);
+        }
+      }
+      console.log('[electron] Migrado pos.db → database.db');
+    }
+  } catch (err) {
+    console.warn('[electron] Falha ao migrar pos.db:', err);
+  }
+
+  const dbExistedBeforeBoot =
+    (await fileExists(paths.databasePath)) || (await fileExists(legacyDbPath));
   const backendEntry = await resolveBackendEntry();
   const licenseEnv = await licenseEnvForBackend();
   const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
@@ -927,26 +994,52 @@ const startBackend = async () => {
     process.env.POS_LICENSE_HMAC_SECRET ?? process.env.LICENSE_HMAC_SECRET ?? '',
   ).trim();
 
+  const lanAccess = Boolean(stationRuntime.lanAccessEnabled);
+  const bindHost = lanAccess ? '0.0.0.0' : '127.0.0.1';
+  // Segredo estável por instalação para Bearer em login LAN
+  let authHmac = String(process.env.POS_AUTH_HMAC_SECRET || process.env.AUTH_BEARER_SHARED_SECRET || '').trim();
+  if (!authHmac) {
+    authHmac = crypto.createHash('sha256').update(`posly-auth:${paths.userDataPath}`).digest('hex').slice(0, 48);
+  }
+
+  let dbEncryptionKeyHex = '';
+  try {
+    const dbKey = getOrCreateDbEncryptionKey(paths.userDataPath);
+    dbEncryptionKeyHex = dbKey.keyHex;
+    if (dbKey.created) {
+      electronLogInfo(
+        `[electron] Chave SQLCipher criada (${dbKey.storage}) — sem senha ao operador`,
+      );
+    }
+  } catch (err) {
+    electronLogError('[electron] Falha ao obter chave de encriptação da BD:', err);
+    throw err;
+  }
+
   backendStartupLogs = '';
   backendProcess = spawnNodeService({
     entryPath: backendEntry,
     env: {
-      POS_API_PORT: String(APP_API_PORT),
+      POS_API_PORT: String(apiPort),
+      POS_API_BIND: bindHost,
+      POS_LAN_ACCESS: lanAccess ? '1' : '0',
+      POS_STATION_DISCOVERY: stationRuntime.discoveryEnabled === false ? '0' : '1',
+      POS_AUTH_HMAC_SECRET: authHmac,
+      AUTH_BEARER_SHARED_SECRET: authHmac,
       POS_DB_PATH: paths.databasePath,
+      POS_BACKUP_DIR: paths.backupsPath,
       POS_USER_DATA_PATH: paths.userDataPath,
       POS_CONFIG_PATH: paths.configPath,
       POS_LICENSE_PATH: paths.licensePath,
       POS_DB_EXISTED_BEFORE_BOOT: dbExistedBeforeBoot ? 'true' : 'false',
+      POS_DB_ENCRYPTION_KEY: dbEncryptionKeyHex,
+      POS_DB_ENCRYPTION: '1',
       ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
       ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
       ...licenseEnv,
       ...(isPackagedBuild()
         ? {
-            // Desktop: login UI chama GET /users antes de existir sessão. Em produção a API
-            // desliga o fallback localhost por defeito → 401 e lista vazia. Só escuta em
-            // 127.0.0.1, por isso reativar o fallback aqui é aceitável.
             AUTH_ALLOW_LEGACY_LOCAL: '1',
-            POS_API_BIND: '127.0.0.1',
           }
         : {}),
     },
@@ -957,7 +1050,7 @@ const startBackend = async () => {
   });
 
   try {
-    await waitForHttp(`http://127.0.0.1:${APP_API_PORT}`);
+    await waitForHttp(`http://127.0.0.1:${apiPort}`);
   } catch (error) {
     const details = backendStartupLogs.trim();
     const suffix = details ? `\n\n${details}` : '';
@@ -968,15 +1061,17 @@ const startBackend = async () => {
 const startStandaloneWeb = async () => {
   if (!isPackagedBuild()) return;
 
+  const webPort = resolveAppWebPort();
+  const apiPort = resolveAppApiPort();
   const webEntry = await resolveWebEntry();
   webStartupLogs = '';
   webProcess = spawnNodeService({
     entryPath: webEntry,
     env: {
-      PORT: String(APP_WEB_PORT),
-      POS_API_URL: `http://127.0.0.1:${APP_API_PORT}`,
-      NEXT_PUBLIC_POS_API_URL: `http://127.0.0.1:${APP_API_PORT}`,
-      NEXT_PUBLIC_POS_API_DIRECT_URL: `http://127.0.0.1:${APP_API_PORT}`,
+      PORT: String(webPort),
+      POS_API_URL: `http://127.0.0.1:${apiPort}`,
+      NEXT_PUBLIC_POS_API_URL: `http://127.0.0.1:${apiPort}`,
+      NEXT_PUBLIC_POS_API_DIRECT_URL: `http://127.0.0.1:${apiPort}`,
     },
     onLog: (chunk) => {
       webStartupLogs = appendBoundedLog(webStartupLogs, chunk);
@@ -985,7 +1080,7 @@ const startStandaloneWeb = async () => {
   });
 
   try {
-    await waitForHttp(`http://127.0.0.1:${APP_WEB_PORT}`);
+    await waitForHttp(`http://127.0.0.1:${webPort}`);
   } catch (error) {
     const details = webStartupLogs.trim();
     const suffix = details ? `\n\n${details}` : '';
@@ -1002,7 +1097,7 @@ const stopServices = () => {
 
 const fetchSetupStatus = async () => {
   try {
-    const response = await fetch(`http://127.0.0.1:${APP_API_PORT}/setup/status`);
+    const response = await fetch(`http://127.0.0.1:${resolveAppApiPort()}/setup/status`);
     if (!response.ok) return null;
     const payload = await response.json().catch(() => null);
     if (payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object') {
@@ -1119,9 +1214,8 @@ const createWindow = async (opts = {}) => {
     try {
       await waitForHttp(targetUrl, 90_000);
     } catch (error) {
-      const hint = isLicenseConsoleMode()
-        ? ' Arranque antes: npm run dev (ou npm run electron-dev) e depois npm run license-console.'
-        : ' Confirme que "npm run dev" está activo na porta ' + String(resolveDevWebPort()) + '.';
+      const hint =
+        ' Confirme que "npm run dev" está activo na porta ' + String(resolveDevWebPort()) + '.';
       await win.loadURL(
         `data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(`${String(error?.message ?? error)}${hint}`))}`,
       );
@@ -1137,7 +1231,7 @@ const createWindow = async (opts = {}) => {
     }
     return;
   }
-  await win.loadURL(`http://127.0.0.1:${APP_WEB_PORT}`);
+  await win.loadURL(`http://127.0.0.1:${resolveAppWebPort()}`);
 };
 
 ipcMain.handle('dialog:selectFolder', async () => {
@@ -1163,6 +1257,88 @@ ipcMain.handle('app:getPaths', async () => {
     configExists: await fileExists(paths.configPath),
     licenseExists: await fileExists(paths.licensePath),
   };
+});
+
+ipcMain.handle('station:getRuntimeConfig', async () => {
+  try {
+    const cfg = await readStationRuntimeConfig();
+    return { success: true, ...cfg };
+  } catch (error) {
+    return { success: false, error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('station:saveRuntimeConfig', async (_event, patch) => {
+  try {
+    const cfg = await writeStationRuntimeConfig(patch ?? {});
+    return { success: true, ...cfg };
+  } catch (error) {
+    return { success: false, error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('station:scanLan', async () => {
+  try {
+    const ports = new Set([resolveAppApiPort(), 3731, 3001]);
+    const hosts = [];
+    const nets = os.networkInterfaces();
+    for (const entries of Object.values(nets)) {
+      if (!entries) continue;
+      for (const net of entries) {
+        if ((net.family !== 'IPv4' && net.family !== 4) || net.internal) continue;
+        const parts = String(net.address).split('.').map(Number);
+        if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) continue;
+        const base = `${parts[0]}.${parts[1]}.${parts[2]}`;
+        // Sonda hosts comuns + varredura limitada (.1–.40 e .100–.120) para não demorar demais
+        const octets = new Set([1, 2, parts[3], 10, 20, 50, 100, 101, 150, 200, 254]);
+        for (let i = 1; i <= 40; i += 1) octets.add(i);
+        for (let i = 100; i <= 120; i += 1) octets.add(i);
+        for (const o of octets) {
+          if (o < 1 || o > 254) continue;
+          hosts.push(`${base}.${o}`);
+        }
+      }
+    }
+    const uniqueHosts = [...new Set(hosts)].slice(0, 120);
+    const servers = [];
+    const seen = new Set();
+    const probe = async (host, port) => {
+      const url = `http://${host}:${port}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 350);
+      try {
+        const res = await fetch(`${url}/station/discover`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) return;
+        const json = await res.json().catch(() => null);
+        const data = json?.success ? json.data : json;
+        if (data?.app !== 'posly') return;
+        if (seen.has(url)) return;
+        seen.add(url);
+        servers.push({
+          url,
+          store_name: data.store_name,
+          tenant_id: data.tenant_id,
+          port: data.port || port,
+        });
+      } catch {
+        clearTimeout(timer);
+      }
+    };
+    const tasks = [];
+    for (const host of uniqueHosts) {
+      for (const port of ports) {
+        tasks.push(probe(host, port));
+      }
+    }
+    // lotes de 40
+    for (let i = 0; i < tasks.length; i += 40) {
+      await Promise.all(tasks.slice(i, i + 40));
+    }
+    return { success: true, servers };
+  } catch (error) {
+    return { success: false, error: String(error?.message ?? error), servers: [] };
+  }
 });
 
 ipcMain.handle('system:getMachineId', async () => {
@@ -1379,6 +1555,59 @@ ipcMain.handle('print:raw', async (_event, payload) => {
       error: String(error?.message ?? error ?? 'Falha no envio RAW.'),
     };
   }
+});
+
+ipcMain.handle('print:network', async (_event, payload) => {
+  const host = String(payload?.host ?? '').trim();
+  const port = Math.max(1, Math.min(65535, Number(payload?.port ?? 9100) || 9100));
+  const bytesBase64 = String(payload?.bytesBase64 ?? '');
+  if (!host) {
+    return { success: false, error: 'IP da impressora em falta.' };
+  }
+  if (!bytesBase64) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  let bytes;
+  try {
+    bytes = Buffer.from(bytesBase64, 'base64');
+  } catch {
+    return { success: false, error: 'Payload base64 inválido.' };
+  }
+  if (!bytes.length) {
+    return { success: false, error: 'Conteúdo de impressão vazio.' };
+  }
+
+  const net = await import('net');
+  return await new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(result);
+    };
+
+    socket.setTimeout(8000);
+    socket.once('timeout', () => finish({ success: false, error: `Timeout a ligar a ${host}:${port}` }));
+    socket.once('error', (error) =>
+      finish({ success: false, error: String(error?.message ?? error ?? 'Erro de rede') }),
+    );
+    socket.connect(port, host, () => {
+      socket.write(bytes, (writeErr) => {
+        if (writeErr) {
+          finish({ success: false, error: String(writeErr.message || writeErr) });
+          return;
+        }
+        socket.end(() => finish({ success: true, host, port }));
+      });
+    });
+  });
 });
 
 /** Janela oculta reutilizada — criar BrowserWindow a cada recibo atrasava a impressão. */
@@ -1852,19 +2081,11 @@ app.whenReady().then(async () => {
     mode: resolvePosAppMode(),
   });
   try {
-    if (!isLicenseConsoleMode()) {
-      await startBackend();
-      electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
-        module: 'main',
-        action: 'startBackend',
-      });
-    } else {
-      electronLogInfo('electron.license_console_mode', 'Modo consola de licenças — API local não iniciada', {
-        module: 'main',
-        action: 'startBackend',
-        reason: 'POS_APP_MODE=license-console',
-      });
-    }
+    await startBackend();
+    electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
+      module: 'main',
+      action: 'startBackend',
+    });
     await startStandaloneWeb();
   } catch (error) {
     electronLogError('electron.boot_failed', 'Falha ao iniciar serviços do Electron', {

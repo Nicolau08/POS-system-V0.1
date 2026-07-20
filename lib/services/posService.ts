@@ -84,7 +84,50 @@ const fetchJSON = async (path: string, options?: RequestInit): Promise<any> => {
 };
 
 export const fetchProducts = async () => {
-  return fetchJSON('/produtos');
+  const rows = await fetchJSON('/produtos');
+  return (Array.isArray(rows) ? rows : []).map((row: any) => {
+    const basePrice = Number(row?.price ?? 0) || 0;
+    const finalPriceRaw = Number(row?.final_price);
+    const chargePrice = Number.isFinite(finalPriceRaw) ? finalPriceRaw : basePrice;
+    return {
+      ...row,
+      id: String(row?.id ?? ''),
+      // POS cobra sempre o preço final (com imposto já aplicado no modo “+ imposto”).
+      price: chargePrice,
+      category: String(row?.category ?? row?.categories?.name ?? ''),
+      category_id: row?.category_id != null ? String(row.category_id) : null,
+      tax_rate_id: row?.tax_rate_id != null ? String(row.tax_rate_id) : null,
+      tax_rate_name: row?.tax_rate_name != null ? String(row.tax_rate_name) : null,
+      tax_rate_code: row?.tax_rate_code != null ? String(row.tax_rate_code) : null,
+      tax_rate_percent: Number(row?.tax_rate_percent ?? 0),
+      tax_rate_is_fixed: Boolean(row?.tax_rate_is_fixed),
+      tax_rate_price_includes_tax:
+        row?.tax_rate_price_includes_tax == null
+          ? true
+          : Boolean(row.tax_rate_price_includes_tax),
+      stock_quantity:
+        row?.stock_quantity != null ? Number(row.stock_quantity) : undefined,
+      min_stock: row?.min_stock != null ? Number(row.min_stock) : undefined,
+      active: row?.active === false ? false : Boolean(row?.active ?? true),
+      is_service: Boolean(row?.is_service),
+      product_kind: row?.product_kind ?? 'simple',
+      cloud_id: row?.cloud_id != null ? String(row.cloud_id) : undefined,
+      color: row?.color != null ? String(row.color) : undefined,
+      image: row?.image != null ? String(row.image) : undefined,
+      barcode: row?.barcode != null ? String(row.barcode) : undefined,
+      name: String(row?.name ?? ''),
+    };
+  });
+};
+
+export const fetchCategories = async () => {
+  const rows = await fetchJSON('/categorias');
+  return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+    id: String(row?.id ?? ''),
+    name: String(row?.name ?? ''),
+    parent_id: row?.parent_id != null ? String(row.parent_id) : null,
+    color: row?.color != null ? String(row.color) : null,
+  }));
 };
 
 export const fetchCustomers = async () => {
@@ -583,3 +626,192 @@ export const resetDatabase = async (payload: {
     body: JSON.stringify(payload),
   });
 };
+
+export type DatabaseBackupRow = {
+  fileName: string;
+  filePath: string;
+  sizeBytes: number;
+  createdAt: string;
+  kind?: 'backup' | 'pre-restore';
+};
+
+export const listDatabaseBackups = async (): Promise<{
+  backups: DatabaseBackupRow[];
+  backupsDir?: string;
+  databasePath?: string;
+}> => {
+  const data = await fetchJSON('/backup/list');
+  return {
+    backups: Array.isArray(data?.backups) ? data.backups : Array.isArray(data) ? data : [],
+    backupsDir: data?.backupsDir ? String(data.backupsDir) : undefined,
+    databasePath: data?.databasePath ? String(data.databasePath) : undefined,
+  };
+};
+
+export const createDatabaseBackup = async () => {
+  const data = await fetchJSON('/backup/create', { method: 'POST' });
+  return data?.backup ?? data;
+};
+
+export const restoreDatabaseBackup = async (backupFile: string) => {
+  const data = await fetchJSON('/backup/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ backupFile }),
+  });
+  return data?.restored ?? data;
+};
+
+export type PosLocationTable = {
+  id: string;
+  locationId: string;
+  name: string;
+  seats: number | null;
+  sortOrder: number;
+  active: boolean;
+};
+
+export type PosLocation = {
+  id: string;
+  name: string;
+  code: string | null;
+  type: string;
+  active: boolean;
+  sortOrder: number;
+  allowCustomNames: boolean;
+  tables: PosLocationTable[];
+  tablesSummary?: string;
+};
+
+export type PrintCenter = {
+  id: string;
+  name: string;
+  connectionType: 'windows' | 'network' | string;
+  windowsPrinterName: string | null;
+  host: string | null;
+  port: number;
+  paperWidth: number;
+  enabled: boolean;
+  sortOrder: number;
+  categoryIds: string[];
+  categories: Array<{ id: string; name: string; parentId: string | null }>;
+};
+
+export const fetchLocations = async (): Promise<PosLocation[]> => {
+  const rows = await fetchJSON(`/locations?_=${Date.now()}`, { cache: 'no-store' });
+  return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+    ...row,
+    allowCustomNames: Boolean(row?.allowCustomNames ?? row?.allow_custom_names),
+    tables: Array.isArray(row?.tables) ? row.tables : [],
+    tablesSummary: row?.tablesSummary != null ? String(row.tablesSummary) : undefined,
+  }));
+};
+
+export const createLocationApi = async (payload: {
+  name: string;
+  code?: string;
+  type?: string;
+  active?: boolean;
+  sortOrder?: number;
+  tablesSpec?: string;
+  allowCustomNames?: boolean;
+}) => fetchJSON('/locations', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+
+export const updateLocationApi = async (
+  id: string,
+  payload: Partial<{
+    name: string;
+    code: string;
+    type: string;
+    active: boolean;
+    sortOrder: number;
+    allowCustomNames: boolean;
+  }>,
+) =>
+  fetchJSON(`/locations/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const deleteLocationApi = async (id: string) =>
+  fetchJSON(`/locations/${id}`, { method: 'DELETE' });
+
+export const createLocationTableApi = async (
+  locationId: string,
+  payload: {
+    name?: string;
+    seats?: number | null;
+    sortOrder?: number;
+    active?: boolean;
+    tablesSpec?: string;
+    spec?: string;
+  },
+) =>
+  fetchJSON(`/locations/${locationId}/tables`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const updateLocationTableApi = async (
+  id: string,
+  payload: Partial<{ name: string; seats: number | null; sortOrder: number; active: boolean }>,
+) =>
+  fetchJSON(`/location-tables/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const deleteLocationTableApi = async (id: string) =>
+  fetchJSON(`/location-tables/${id}`, { method: 'DELETE' });
+
+export const fetchPrintCenters = async (): Promise<PrintCenter[]> => {
+  const rows = await fetchJSON(`/print-centers?_=${Date.now()}`, { cache: 'no-store' });
+  return Array.isArray(rows) ? rows : [];
+};
+
+export const createPrintCenterApi = async (payload: {
+  name: string;
+  connectionType: string;
+  windowsPrinterName?: string | null;
+  host?: string | null;
+  port?: number;
+  paperWidth?: number;
+  enabled?: boolean;
+  categoryIds?: string[];
+  sortOrder?: number;
+}) =>
+  fetchJSON('/print-centers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const updatePrintCenterApi = async (
+  id: string,
+  payload: Partial<{
+    name: string;
+    connectionType: string;
+    windowsPrinterName: string | null;
+    host: string | null;
+    port: number;
+    paperWidth: number;
+    enabled: boolean;
+    categoryIds: string[];
+    sortOrder: number;
+  }>,
+) =>
+  fetchJSON(`/print-centers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const deletePrintCenterApi = async (id: string) =>
+  fetchJSON(`/print-centers/${id}`, { method: 'DELETE' });

@@ -63,6 +63,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       heightMm: options?.heightMm,
     });
   },
+  printNetwork: async (options) => {
+    return ipcRenderer.invoke('print:network', {
+      host: options?.host,
+      port: options?.port,
+      bytesBase64: options?.bytesBase64,
+    });
+  },
   prepareReceiptPrint: async (html, options) => {
     return ipcRenderer.invoke('print:prepareReceipt', {
       html,
@@ -80,5 +87,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       heightMm: options?.heightMm,
       patch: options?.patch,
     });
+  },
+  saveStationRuntimeConfig: async (config) => {
+    return ipcRenderer.invoke('station:saveRuntimeConfig', config);
+  },
+  getStationRuntimeConfig: async () => {
+    return ipcRenderer.invoke('station:getRuntimeConfig');
+  },
+  scanLanStations: async () => {
+    return ipcRenderer.invoke('station:scanLan');
   },
 });
