@@ -328,6 +328,7 @@ export default function ReportsManager() {
   const [builtReport, setBuiltReport] = useState<BuiltReport | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
 
   const filteredReports = useMemo(() => {
@@ -519,6 +520,7 @@ export default function ReportsManager() {
     setTempDateTo(endInput);
     setCalendarStartMonth(`${startInput.slice(0, 7)}-01`);
     setCalendarEndMonth(`${endInput.slice(0, 7)}-01`);
+    setActivePreset(preset);
   };
 
   const runReport = async (reportKey = selectedReport, openPreview = false) => {
@@ -623,8 +625,8 @@ export default function ReportsManager() {
                       }}
                       className={`w-full flex items-start gap-3 px-3 py-3 text-left border rounded transition-colors ${
                         selectedReport === report.key
-                          ? 'bg-zinc-800/70 border-transparent text-white'
-                          : 'bg-transparent border-transparent text-zinc-300 hover:bg-zinc-800/50 hover:border-zinc-800'
+                          ? 'bg-[var(--pos-brand-selected-bg)] border-[#0001fb]/40 text-white'
+                          : 'border-transparent bg-transparent text-zinc-300 hover:bg-[var(--pos-brand-hover-bg)]'
                       }`}
                     >
                       <div className="mt-0.5 text-zinc-400">
@@ -763,7 +765,7 @@ export default function ReportsManager() {
                 <ActionButton icon={<Printer size={16} />} label="Imprimir" onClick={handlePrint} />
                 <button
                   onClick={() => setIsPreviewOpen(false)}
-                  className="h-11 w-11 flex items-center justify-center border border-zinc-700 rounded bg-[#202020] hover:bg-zinc-800 hover:border-zinc-600 transition-colors text-zinc-200"
+                  className="h-11 w-11 flex items-center justify-center border border-zinc-700 rounded bg-[#202020] hover:bg-zinc-800 hover:border-[#0001fb] transition-colors text-zinc-200"
                   aria-label="Fechar pré-visualização"
                 >
                   <X size={18} />
@@ -889,15 +891,17 @@ export default function ReportsManager() {
                 <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
+                      type="button"
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronLeft size={16} />
                     </button>
                     <div className="text-white font-bold">{monthLabel(calendarStartMonth)}</div>
                     <button
+                      type="button"
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -905,7 +909,10 @@ export default function ReportsManager() {
                   <CalendarGrid
                     monthValue={calendarStartMonth}
                     selectedValue={tempDateFrom}
-                    onSelect={setTempDateFrom}
+                    onSelect={(value) => {
+                      setActivePreset(null);
+                      setTempDateFrom(value);
+                    }}
                   />
                 </div>
               </div>
@@ -915,15 +922,17 @@ export default function ReportsManager() {
                 <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
+                      type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronLeft size={16} />
                     </button>
                     <div className="text-white font-bold">{monthLabel(calendarEndMonth)}</div>
                     <button
+                      type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -931,7 +940,10 @@ export default function ReportsManager() {
                   <CalendarGrid
                     monthValue={calendarEndMonth}
                     selectedValue={tempDateTo}
-                    onSelect={setTempDateTo}
+                    onSelect={(value) => {
+                      setActivePreset(null);
+                      setTempDateTo(value);
+                    }}
                   />
                 </div>
               </div>
@@ -939,14 +951,14 @@ export default function ReportsManager() {
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Período pré-definido</p>
                 <div className="grid grid-cols-2 gap-2">
-                  <PresetButton label="Hoje" onClick={() => applyPresetPeriod('today')} />
-                  <PresetButton label="Ontem" onClick={() => applyPresetPeriod('yesterday')} />
-                  <PresetButton label="Esta semana" onClick={() => applyPresetPeriod('thisWeek')} />
-                  <PresetButton label="Semana passada" onClick={() => applyPresetPeriod('lastWeek')} />
-                  <PresetButton label="Este mês" onClick={() => applyPresetPeriod('thisMonth')} />
-                  <PresetButton label="Mês passado" onClick={() => applyPresetPeriod('lastMonth')} />
-                  <PresetButton label="Este ano" onClick={() => applyPresetPeriod('thisYear')} />
-                  <PresetButton label="Ano passado" onClick={() => applyPresetPeriod('lastYear')} />
+                  <PresetButton label="Hoje" active={activePreset === 'today'} onClick={() => applyPresetPeriod('today')} />
+                  <PresetButton label="Ontem" active={activePreset === 'yesterday'} onClick={() => applyPresetPeriod('yesterday')} />
+                  <PresetButton label="Esta semana" active={activePreset === 'thisWeek'} onClick={() => applyPresetPeriod('thisWeek')} />
+                  <PresetButton label="Semana passada" active={activePreset === 'lastWeek'} onClick={() => applyPresetPeriod('lastWeek')} />
+                  <PresetButton label="Este mês" active={activePreset === 'thisMonth'} onClick={() => applyPresetPeriod('thisMonth')} />
+                  <PresetButton label="Mês passado" active={activePreset === 'lastMonth'} onClick={() => applyPresetPeriod('lastMonth')} />
+                  <PresetButton label="Este ano" active={activePreset === 'thisYear'} onClick={() => applyPresetPeriod('thisYear')} />
+                  <PresetButton label="Ano passado" active={activePreset === 'lastYear'} onClick={() => applyPresetPeriod('lastYear')} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mt-5">
@@ -1008,10 +1020,10 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center justify-center gap-2 min-h-11 px-3 py-3 border rounded text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+      className={`flex items-center justify-center gap-2 min-h-11 px-3 py-3 border rounded text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
-          ? 'border-zinc-700 bg-[#131314] hover:bg-zinc-800 hover:border-zinc-600'
-          : 'border-zinc-700 bg-[#131314] hover:bg-zinc-800 hover:border-zinc-600'
+          ? 'border-[#0001fb] bg-[#0001fb] text-white hover:bg-[#1a1bff]'
+          : 'border-zinc-700 bg-[#131314] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
       }`}
     >
       {icon}
@@ -1023,14 +1035,21 @@ function ActionButton({
 function PresetButton({
   label,
   onClick,
+  active = false,
 }: {
   label: string;
   onClick: () => void;
+  active?: boolean;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="min-h-11 px-3 py-3 border border-zinc-700 rounded bg-[#1a1a1a] text-white text-sm hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+      className={`min-h-11 rounded border px-3 py-3 text-sm transition-colors ${
+        active
+          ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
+          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+      }`}
     >
       {label}
     </button>
@@ -1066,15 +1085,16 @@ function CalendarGrid({
           return (
             <button
               key={day.value}
+              type="button"
               onClick={() => onSelect(day.value)}
-              className={`w-full aspect-square rounded-xl text-sm transition-colors flex items-center justify-center ${
+              className={`flex aspect-square w-full items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
-                  ? 'bg-emerald-500 text-white scale-110'
+                  ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday
-                    ? 'border border-emerald-500/70 text-white'
-                  : day.inMonth
-                    ? 'text-white hover:bg-zinc-700'
-                    : 'text-zinc-500 hover:bg-zinc-800'
+                    ? 'border border-[#0001fb]/70 text-white'
+                    : day.inMonth
+                      ? 'text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+                      : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
               }`}
             >
               {day.day}

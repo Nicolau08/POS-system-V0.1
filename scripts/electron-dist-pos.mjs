@@ -1,6 +1,6 @@
 /**
- * Build instalador Windows POSly (sem consola de licenças no bundle).
- * Garante restore de app/license-admin mesmo se o build falhar.
+ * Build instalador Windows POSly (caixa apenas).
+ * A consola de licenças vive em license-console/ (browser/Vercel) — não entra no bundle.
  */
 import { spawnSync } from 'child_process';
 
@@ -30,21 +30,18 @@ async function main() {
     ? ['electron-builder', '--win', 'nsis', '--dir']
     : ['electron-builder', '--win', 'nsis'];
 
-  run('excluir license-admin do Next', process.execPath, [
-    'scripts/prepare-pos-desktop-build.mjs',
-    'exclude',
-  ]);
-
   try {
     run('inject build secrets', process.execPath, ['scripts/inject-pos-build-secrets.mjs']);
-    run('next build', npmCmd, ['run', 'build']);
+    // Portas do instalado (3730 web / 3731 API) — distintas de npm run dev (3000/3001).
+    // POS_API_PORT embute o rewrite /pos-backend; DIRECT_URL para uploads grandes no cliente.
+    run('next build', npmCmd, ['run', 'build'], {
+      POS_API_PORT: '3731',
+      NEXT_PUBLIC_POS_API_DIRECT_URL: 'http://127.0.0.1:3731',
+    });
     run('limpar dist-electron', npmCmd, ['run', 'electron:clean']);
     run('electron-builder', 'npx', builderArgs, { POS_APP_MODE: 'pos' });
-  } finally {
-    run('restaurar license-admin', process.execPath, [
-      'scripts/prepare-pos-desktop-build.mjs',
-      'restore',
-    ]);
+  } catch (error) {
+    throw error;
   }
   console.log('\n[electron-dist-pos] Concluído. Instalador em dist-electron/');
 }

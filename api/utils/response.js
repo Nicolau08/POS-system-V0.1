@@ -28,11 +28,12 @@ function normalizeSuccessData(payload) {
 }
 
 export class ApiError extends Error {
-  constructor(status, message, code) {
+  constructor(status, message, code, data = null) {
     super(message);
     this.name = 'ApiError';
     this.status = Number(status) || 500;
     this.code = String(code || defaultErrorCodeByStatus(this.status));
+    this.data = data ?? null;
   }
 }
 
@@ -47,11 +48,11 @@ export function sendSuccess(res, data, status = 200) {
   });
 }
 
-export function sendError(res, status, message, code) {
+export function sendError(res, status, message, code, data = null) {
   const safeStatus = Number(status) || 500;
   return res.status(safeStatus).json({
     success: false,
-    data: null,
+    data: data ?? null,
     error: {
       message: String(message ?? 'Erro interno do servidor'),
       code: String(code || defaultErrorCodeByStatus(safeStatus)),
@@ -61,7 +62,7 @@ export function sendError(res, status, message, code) {
 
 export function handleControllerError(res, error) {
   if (error instanceof ApiError || error instanceof HttpError) {
-    return sendError(res, error.status, error.message, error.code);
+    return sendError(res, error.status, error.message, error.code, error.data ?? null);
   }
   return sendError(res, 500, 'Erro interno do servidor', 'INTERNAL_ERROR');
 }

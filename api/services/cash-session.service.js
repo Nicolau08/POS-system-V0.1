@@ -19,6 +19,29 @@ import {
 
 const REGISTER_CODE = 'caixa-1';
 
+function resolveRegisterCode(actorUser, payload) {
+  const fromUser = String(actorUser?.station_code ?? '').trim();
+  if (fromUser) return fromUser;
+  const fromPayload = String(payload?.register_code ?? payload?.registerCode ?? '').trim();
+  if (fromPayload) return fromPayload;
+  return REGISTER_CODE;
+}
+
+function normalizeStationRole(actorUser) {
+  return String(actorUser?.station_role ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function assertStationCanOperateCash(actorUser) {
+  const role = normalizeStationRole(actorUser);
+  if (role === 'garcom' || role === 'consulta') {
+    throw new HttpError(403, 'Só postos com papel Caixa podem operar a sessão de caixa.');
+  }
+}
+
 async function resolveTenantId(actorUser) {
   const fromUser = String(actorUser?.tenant_id ?? '').trim();
   if (fromUser) return fromUser;
@@ -166,16 +189,18 @@ async function loadSessionSnapshot(tenantId, session, actorUser = null) {
 }
 
 export async function ensureCashSession(actorUser) {
+  assertStationCanOperateCash(actorUser);
   const tenantId = await resolveTenantId(actorUser);
   const user = normalizeUser(actorUser);
-  let session = await getOpenCashSession(tenantId, REGISTER_CODE);
+  const registerCode = resolveRegisterCode(actorUser);
+  let session = await getOpenCashSession(tenantId, registerCode);
   let created = false;
   if (!session) {
     const now = new Date().toISOString();
     session = {
       id: crypto.randomUUID(),
       tenant_id: tenantId,
-      register_code: REGISTER_CODE,
+      register_code: registerCode,
       status: 'open',
       opened_at: now,
       opened_by_id: user.id,
@@ -209,7 +234,7 @@ export async function ensureCashSession(actorUser) {
 
 export async function getCashSession(actorUser) {
   const tenantId = await resolveTenantId(actorUser);
-  const session = await getOpenCashSession(tenantId, REGISTER_CODE);
+  const session = await getOpenCashSession(tenantId, resolveRegisterCode(actorUser));
   if (!session) {
     return { session: null, totals: null, withdrawals: [] };
   }
@@ -217,10 +242,11 @@ export async function getCashSession(actorUser) {
 }
 
 export async function withdrawCash(actorUser, payload = {}) {
+  assertStationCanOperateCash(actorUser);
   const tenantId = await resolveTenantId(actorUser);
   const user = normalizeUser(actorUser);
   const scope = String(payload.scope ?? 'user') === 'all' ? 'all' : 'user';
-  const session = await getOpenCashSession(tenantId, REGISTER_CODE);
+  const session = await getOpenCashSession(tenantId, resolveRegisterCode(actorUser));
   if (!session) throw new HttpError(409, 'Não existe sessão de caixa aberta', 'CASH_SESSION_CLOSED');
 
   const snapshot = await loadSessionSnapshot(tenantId, session, actorUser);
@@ -275,7 +301,7 @@ export async function withdrawCash(actorUser, payload = {}) {
 
 export async function buildReportX(actorUser) {
   const tenantId = await resolveTenantId(actorUser);
-  const session = await getOpenCashSession(tenantId, REGISTER_CODE);
+  const session = await getOpenCashSession(tenantId, resolveRegisterCode(actorUser));
   if (!session) throw new HttpError(409, 'Não existe sessão de caixa aberta', 'CASH_SESSION_CLOSED');
   const snapshot = await loadSessionSnapshot(tenantId, session, actorUser);
   const items = await listSessionSaleItems(tenantId, session.opened_at, null);
@@ -299,12 +325,13 @@ export async function buildReportX(actorUser) {
 }
 
 export async function closeCashSessionDay(actorUser, payload = {}) {
+  assertStationCanOperateCash(actorUser);
   const tenantId = await resolveTenantId(actorUser);
   const user = normalizeUser(actorUser);
   const printItems = payload.printItems !== false;
   const printZ = payload.printZ !== false;
 
-  const session = await getOpenCashSession(tenantId, REGISTER_CODE);
+  const session = await getOpenCashSession(tenantId, resolveRegisterCode(actorUser));
   if (!session) throw new HttpError(409, 'Não existe sessão de caixa aberta', 'CASH_SESSION_CLOSED');
 
   const closedAt = new Date().toISOString();

@@ -14,6 +14,8 @@ import {
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { PosSwitch } from '@/components/PosSwitch';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 type PaymentMethod = {
   id: string;
@@ -192,27 +194,27 @@ export default function PaymentMethodsManager() {
   return (
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
-        <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
-        <ToolbarButton icon={<Plus size={20} />} label="Novo" onClick={openNewModal} />
-        <ToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
-        <ToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={handleDelete} />
-        <ToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
+        <ManagementToolbarButton icon={<Plus size={20} />} label="Novo" onClick={openNewModal} />
+        <ManagementToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={handleDelete} />
+        <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]">
-        <table className="min-w-full text-left border-collapse table-fixed">
-          <thead className="sticky top-0 bg-[#141414] z-10">
-            <tr className="border-b border-zinc-800">
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Nome</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Posição</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Código</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Habilitado</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Pagamento rápido</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Cliente obrigatório</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Mudança permitida</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Marcar transação como paga</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Imprimir recibo</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Tecla de atalho</th>
+      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]">
+        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+          <thead className="sticky top-0 z-10 bg-[#141414]">
+            <tr className="border-b border-[#0001fb]/70">
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Posição</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Código</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Habilitado</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Pagamento rápido</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Cliente obrigatório</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Mudança permitida</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Marcar transação como paga</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Imprimir recibo</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Tecla de atalho</th>
             </tr>
           </thead>
           <tbody>
@@ -233,20 +235,20 @@ export default function PaymentMethodsManager() {
                 <tr
                   key={row.id}
                   onClick={() => setSelectedId(row.id)}
-                  className={`border-b border-zinc-800/50 transition-colors cursor-pointer ${
-                    selectedId === row.id ? 'bg-zinc-800/50' : i % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#141414]'
-                  } hover:bg-zinc-800/30`}
+                  className={`transition-colors cursor-pointer ${
+                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                  } hover:bg-[var(--pos-brand-hover-bg)]`}
                 >
-                  <td className="px-3 py-1.5 text-xs text-zinc-200 truncate">{row.name}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-400">{row.position}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-400 truncate">{row.code || '-'}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.enabled ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.quickPayment ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.requiredCustomer ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.allowChange ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.markAsPaid ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{row.printReceipt ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-400">{row.shortcut || '-'}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-200 truncate">{row.name}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400">{row.position}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">{row.code || '-'}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.enabled ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.quickPayment ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.requiredCustomer ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.allowChange ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.markAsPaid ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.printReceipt ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400">{row.shortcut || '-'}</td>
                 </tr>
               ))
             )}
@@ -367,15 +369,6 @@ export default function PaymentMethodsManager() {
   );
 }
 
-function ToolbarButton({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick?: () => void }) {
-  return (
-    <button onClick={onClick} className="flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 text-zinc-400 group">
-      <div className="mb-1 group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">{label}</span>
-    </button>
-  );
-}
-
 function Field({
   label,
   value,
@@ -407,11 +400,11 @@ function Field({
 
 function ToggleLine({ label, checked, onToggle }: { label: string; checked: boolean; onToggle: () => void }) {
   return (
-    <button type="button" onClick={onToggle} className="flex items-center gap-3 pt-1">
-      <div className={`w-10 h-5 rounded-sm relative transition-colors ${checked ? 'bg-emerald-500' : 'bg-zinc-600'}`}>
-        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${checked ? 'right-0.5' : 'left-0.5'}`} />
-      </div>
-      <span className="text-xs text-zinc-200">{label}</span>
-    </button>
+    <PosSwitch
+      label={label}
+      checked={checked}
+      onChange={() => onToggle()}
+      className="pt-1"
+    />
   );
 }

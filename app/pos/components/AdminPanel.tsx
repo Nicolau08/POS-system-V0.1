@@ -223,9 +223,9 @@ export function AdminPanel({
                   title="Configurações"
                   aria-label="Configurações"
                   onClick={handleOpenSettings}
-                  className={`flex items-center justify-center p-3 hover:bg-zinc-800 rounded transition-all ${
+                  className={`flex items-center justify-center p-3 rounded transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] ${
                     can('gerenciamento.configuracoes')
-                      ? 'text-zinc-500 hover:text-white'
+                      ? 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                       : 'text-zinc-700 cursor-not-allowed'
                   }`}
                 >
@@ -236,7 +236,7 @@ export function AdminPanel({
                   title={isMaximized ? 'Sair do ecrã inteiro' : 'Ecrã inteiro'}
                   aria-label={isMaximized ? 'Sair do ecrã inteiro' : 'Ecrã inteiro'}
                   onClick={() => void handleToggleMaximize()}
-                  className="flex items-center justify-center p-3 hover:bg-zinc-800 rounded text-zinc-500 hover:text-white transition-all"
+                  className="flex items-center justify-center p-3 rounded text-zinc-500 transition-all hover:bg-[var(--pos-brand-hover-bg)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb]"
                 >
                   {isMaximized ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
                 </button>
@@ -245,7 +245,7 @@ export function AdminPanel({
                   title="Fechar sistema"
                   aria-label="Fechar sistema"
                   onClick={() => setIsQuitConfirmOpen(true)}
-                  className="flex items-center justify-center p-3 hover:bg-zinc-800 rounded text-zinc-500 hover:text-red-400 transition-all"
+                  className="flex items-center justify-center p-3 rounded text-zinc-500 transition-all hover:bg-red-500/15 hover:text-red-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-500"
                 >
                   <Power size={20} />
                 </button>
@@ -289,7 +289,7 @@ function SidebarItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-4 px-4 py-3 text-zinc-400 hover:text-white hover:bg-zinc-800/50 rounded transition-all group ${className || ''}`}
+      className={`w-full flex items-center gap-4 px-4 py-3 text-zinc-400 hover:text-white hover:bg-[var(--pos-brand-hover-bg)] rounded transition-all group ${className || ''}`}
     >
       <div className="text-zinc-500 group-hover:text-white transition-colors">{icon}</div>
       <span className="text-sm font-medium tracking-tight">{label}</span>

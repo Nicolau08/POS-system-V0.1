@@ -10,7 +10,6 @@ import {
   ShoppingCart, 
   Users, 
   BarChart3, 
-  Settings, 
   FileText, 
   History, 
   TrendingUp, 
@@ -22,7 +21,6 @@ import {
   Tag,
   ShieldCheck,
   CreditCard,
-  Globe,
   Percent,
   Building2,
   Loader2,
@@ -41,8 +39,8 @@ import UsersSecurityManager from './components/UsersSecurityManager';
 import MyCompanyManager from './components/MyCompanyManager';
 import SystemLogsManager from './components/SystemLogsManager';
 import DocumentsManager from './components/DocumentsManager';
-import GerenciamentoManager from './components/GerenciamentoManager';
 import LicenseSerialManager from './components/LicenseSerialManager';
+import TaxRatesManager from './components/TaxRatesManager';
 import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 
 // Dynamically import Recharts to avoid SSR issues
@@ -82,7 +80,7 @@ type RouteProps = {
 };
 
 export default function ManagementPage({ params, searchParams }: RouteProps) {
-  const SIDEBAR_EXPANDED_WIDTH = 212;
+  const SIDEBAR_EXPANDED_WIDTH = 240;
   const SIDEBAR_COLLAPSED_WIDTH = 56;
   use(params);
   use(searchParams);
@@ -289,7 +287,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   // Memoize components to prevent unnecessary re-renders
   const sidebarItems = useMemo(() => {
     const items = [
-      { id: 'gerenciamento', icon: <Settings size={18} />, label: 'Gerenciamento' },
       { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
       { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
       { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
@@ -304,7 +301,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         ? [{ id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' }]
         : []),
       { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
-      { id: 'countries', icon: <Globe size={18} />, label: 'Países' },
       { id: 'taxes', icon: <Percent size={18} />, label: 'Taxas de impostos' },
       { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
     ];
@@ -315,7 +311,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
 
   const sidebarPermissionKeyById = useMemo(
     () => ({
-      gerenciamento: 'gerenciamento.acesso',
       dashboard: 'painel.painel_controle',
       docs: 'painel.documentos',
       products: 'painel.produtos',
@@ -327,7 +322,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       logs: 'painel.logs_sistema',
       'license-serials': 'painel.emitir_serie',
       payments: 'painel.meios_pagamento',
-      countries: 'painel.paises',
       taxes: 'painel.taxas_impostos',
       company: 'painel.minha_empresa',
     }),
@@ -437,10 +431,10 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside 
-          className="bg-[#141414] border-r border-zinc-800/50 flex flex-col transition-[width] duration-300 relative shrink-0 overflow-hidden"
+          className="bg-[#171717] border-r border-zinc-800 flex flex-col transition-[width] duration-300 relative shrink-0 overflow-hidden"
           style={{ width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH }}
         >
-          <div className="flex-1 min-h-0 pt-0 pb-2 overflow-y-auto overflow-x-hidden custom-scrollbar">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-2 custom-scrollbar">
             {sidebarItemsToRender.map((item) => (
                 <button
                   key={item.id}
@@ -450,33 +444,33 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                     setActiveTab(item.id);
                     setSidebarSelectedTab(item.id);
                   }}
-                  className={`w-full max-w-full flex items-center py-2 transition-colors relative group overflow-hidden ${
-                    isSidebarCollapsed ? 'justify-center px-0' : 'gap-2.5 px-4'
+                  className={`w-full max-w-full flex items-center text-left text-sm transition-colors relative group overflow-hidden ${
+                    isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
                   } ${
                     sidebarSelectedTab === item.id
-                      ? 'bg-zinc-800/50 text-white'
-                      : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                      ? 'bg-[#0001fb] text-white'
+                      : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                   }`}
                 >
                   <div className="flex-shrink-0">{item.icon}</div>
                   {!isSidebarCollapsed && (
-                    <span className="min-w-0 text-xs font-medium truncate capitalize leading-none">{item.label}</span>
+                    <span className="min-w-0 truncate leading-none">{item.label}</span>
                   )}
                 </button>
             ))}
           </div>
 
-          <div className="border-t border-zinc-800/60 p-2 shrink-0 overflow-hidden">
+          <div className="border-t border-zinc-800/60 shrink-0 overflow-hidden">
             <button
               type="button"
               onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-              className={`flex h-9 w-full max-w-full items-center rounded border border-zinc-800 bg-[#1a1a1a] text-zinc-400 transition-colors hover:text-zinc-200 hover:border-zinc-700 overflow-hidden ${
-                isSidebarCollapsed ? 'justify-center px-0' : 'justify-between px-3'
+              className={`flex w-full max-w-full items-center text-sm text-zinc-400 transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-white overflow-hidden ${
+                isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-5 py-2.5'
               }`}
               aria-label={isSidebarCollapsed ? 'Abrir menu lateral' : 'Fechar menu lateral'}
               title={isSidebarCollapsed ? 'Abrir menu' : 'Fechar menu'}
             >
-              {!isSidebarCollapsed && <span className="text-xs font-medium truncate">Fechar menu</span>}
+              {!isSidebarCollapsed && <span className="truncate">Fechar menu</span>}
               {isSidebarCollapsed ? <ChevronRight size={16} className="shrink-0" /> : <ChevronLeft size={16} className="shrink-0" />}
             </button>
           </div>
@@ -510,7 +504,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
               ) : (
                 <>
                   {/* Monthly Sales Chart Section */}
-                  <section className="bg-[#141414] border border-zinc-800/30 rounded">
+                  <section className="bg-[#141414] border border-zinc-800/30 rounded transition-colors hover:border-[#0001fb]/50">
                     <div className="flex">
                       <div className="flex-1 p-4 border-r border-zinc-800/30">
                         <div className="flex items-center justify-between mb-4">
@@ -518,10 +512,26 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                             <h2 className="text-lg font-medium text-zinc-200">Caixa mensal - {currentYear}</h2>
                             <p className="text-[11px] text-zinc-500">Só entradas de dinheiro (VD, RC e FT pagas no momento)</p>
                           </div>
-                          <div className="flex items-center gap-4 text-zinc-500">
-                            <button onClick={() => void fetchDashboardData()} className="hover:text-zinc-300 transition-colors"><RotateCcw size={16} /></button>
-                            <button className="hover:text-zinc-300 transition-colors"><ChevronLeft size={16} /></button>
-                            <button className="hover:text-zinc-300 transition-colors"><ChevronRight size={16} /></button>
+                          <div className="flex items-center gap-3 text-zinc-500">
+                            <button
+                              type="button"
+                              onClick={() => void fetchDashboardData()}
+                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
+                            >
+                              <RotateCcw size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
+                            >
+                              <ChevronLeft size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
+                            >
+                              <ChevronRight size={16} />
+                            </button>
                           </div>
                         </div>
                         
@@ -545,8 +555,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                                 tickFormatter={(value) => formatPrice(value)}
                               />
                               <Tooltip 
-                                cursor={{ fill: '#222' }}
-                                contentStyle={{ backgroundColor: '#111', border: '1px solid #333', fontSize: '10px' }}
+                                cursor={{ fill: 'rgba(0, 1, 251, 0.12)' }}
+                                contentStyle={{ backgroundColor: '#111', border: '1px solid #0001fb', fontSize: '10px' }}
                                 formatter={(value: any) => [formatPrice(value), 'Caixa']}
                               />
                               <Bar dataKey="sales" fill={monthlyBarColors[0]} radius={[2, 2, 0, 0]}>
@@ -633,7 +643,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           {activeTab === 'logs' && <SystemLogsManager />}
           {activeTab === 'license-serials' && !isPackagedDesktop && <LicenseSerialManager />}
           {activeTab === 'company' && <MyCompanyManager />}
-          {activeTab === 'gerenciamento' && <GerenciamentoManager />}
+          {activeTab === 'taxes' && <TaxRatesManager />}
           
           {activeTab !== 'dashboard' &&
             activeTab !== 'products' &&
@@ -646,7 +656,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
             activeTab !== 'logs' &&
             activeTab !== 'license-serials' &&
             activeTab !== 'company' &&
-            activeTab !== 'gerenciamento' && (
+            activeTab !== 'taxes' && (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-600 italic">
               <Package size={48} className="mb-4 opacity-20" />
               <p>Módulo {activeTab} em desenvolvimento</p>
@@ -678,13 +688,13 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
 
 function DashboardWidget({ title, subtitle, isLarge, children }: { title: string, subtitle?: string, isLarge?: boolean, children?: React.ReactNode }) {
   return (
-    <div className={`bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-zinc-700 transition-colors ${isLarge ? 'md:col-span-2' : ''}`}>
+    <div className={`bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-[#0001fb] transition-colors ${isLarge ? 'md:col-span-2' : ''}`}>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h4 className="text-xs font-bold text-zinc-300 capitalize tracking-wider">{title}</h4>
           {subtitle && <p className="text-[10px] text-zinc-500 mt-0.5">{subtitle}</p>}
         </div>
-        <div className="w-2 h-2 rounded-full bg-blue-500/50" />
+        <div className="w-2 h-2 rounded-full bg-[#0001fb]/70" />
       </div>
       <div className="flex-1 flex flex-col items-center justify-center">
         {children || <span className="text-xs text-zinc-600 italic">Sem dados para exibir</span>}

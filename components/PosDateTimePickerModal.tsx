@@ -66,7 +66,7 @@ export function PosDateTimePickerModal({
             type="datetime-local"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-[#2a9cd4] focus:ring-1 focus:ring-[#2a9cd4]/40"
+            className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-[#0001fb] focus:ring-1 focus:ring-[rgba(0,1,251,0.4)]"
           />
         </label>
         <div className="mt-5 flex gap-2">
@@ -80,7 +80,7 @@ export function PosDateTimePickerModal({
           <button
             type="button"
             onClick={() => onApply(datetimeLocalToIso(draft))}
-            className="flex-1 rounded-lg bg-[#2a9cd4] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#238dc0]"
+            className="flex-1 rounded-lg bg-[#0001fb] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a1bff]"
           >
             Aplicar
           </button>

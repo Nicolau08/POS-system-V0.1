@@ -11,7 +11,7 @@ export function SyncStatus() {
     ? 'bg-red-500'
     : isSyncing
       ? 'bg-amber-400'
-      : 'bg-emerald-500';
+      : 'bg-[#0001fb]';
 
   const label = isOffline ? 'Offline' : isSyncing ? 'Syncing' : 'Online';
   const title = `Online: ${online ? 'sim' : 'não'} | Pending: ${pending} | Failed: ${failed}${lastSync ? ` | Último sync: ${new Date(lastSync).toLocaleString()}` : ''}`;

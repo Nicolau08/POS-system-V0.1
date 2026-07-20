@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowRight,
   Check,
   Edit3,
   HelpCircle,
@@ -13,11 +12,12 @@ import {
   UserCircle2,
   X,
 } from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
+import { PosSwitch } from '@/components/PosSwitch';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 type ManagedUser = {
   id: string;
@@ -57,7 +57,6 @@ const PERMISSION_RULES_KEYS = [
   'painel.promocoes_acoes',
   'painel.usuarios_seguranca',
   'painel.meios_pagamento',
-  'painel.paises',
   'painel.taxas_impostos',
   'painel.minha_empresa',
   'painel.emitir_serie',
@@ -67,8 +66,10 @@ const PERMISSION_RULES_KEYS = [
   'estoque.ver_preco_custo',
 
   'vendas.ver_pedidos_em_aberto',
+  'vendas.abrir_mesa_outro',
   'vendas.cancelar_pedido',
   'vendas.cancelar_item',
+  'vendas.anular_item_enviado',
   'vendas.bloquear_venda',
   'vendas.desbloquear_venda',
   'vendas.dividir_pedido',
@@ -101,7 +102,6 @@ const OP_LABELS: Record<string, string> = {
   'painel.promocoes_acoes': 'Promoções & Ações',
   'painel.usuarios_seguranca': 'Usuários & Acesso',
   'painel.meios_pagamento': 'Meios de pagamento',
-  'painel.paises': 'Países',
   'painel.taxas_impostos': 'Taxas de impostos',
   'painel.minha_empresa': 'Minha Empresa',
   'painel.emitir_serie': 'Emitir série',
@@ -111,8 +111,10 @@ const OP_LABELS: Record<string, string> = {
   'estoque.ver_preco_custo': 'Ver preços de custo',
 
   'vendas.ver_pedidos_em_aberto': 'Ver todos os pedidos em aberto',
+  'vendas.abrir_mesa_outro': 'Abrir mesa de outro utilizador',
   'vendas.cancelar_pedido': 'Cancelar pedido',
   'vendas.cancelar_item': 'Cancelar item',
+  'vendas.anular_item_enviado': 'Anular item já pedido (postos)',
   'vendas.bloquear_venda': 'Bloquear venda',
   'vendas.desbloquear_venda': 'Desbloquear venda',
   'vendas.dividir_pedido': 'Dividir pedido',
@@ -150,8 +152,10 @@ const SECURITY_GROUPS: SecurityGroup[] = [
     layout: 'twoCol',
     leftKeys: [
       'vendas.ver_pedidos_em_aberto',
+      'vendas.abrir_mesa_outro',
       'vendas.cancelar_pedido',
       'vendas.cancelar_item',
+      'vendas.anular_item_enviado',
       'vendas.bloquear_venda',
       'vendas.desbloquear_venda',
       'vendas.dividir_pedido',
@@ -184,7 +188,6 @@ const SECURITY_GROUPS: SecurityGroup[] = [
     ],
     rightKeys: [
       'painel.meios_pagamento',
-      'painel.paises',
       'painel.taxas_impostos',
       'painel.minha_empresa',
       'painel.logs_sistema',
@@ -491,7 +494,7 @@ export default function UsersSecurityManager() {
   const tabBtn = (active: boolean) =>
     `px-5 py-2.5 text-[11px] font-bold border-b-2 transition-colors ${
       active
-        ? 'border-[#00a3e0] text-white'
+        ? 'border-[#0001fb] text-white'
         : 'border-transparent text-zinc-500 hover:text-zinc-300'
     }`;
 
@@ -515,48 +518,35 @@ export default function UsersSecurityManager() {
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar shrink-0">
         {subTab === 'users' ? (
           <>
-            <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchUsers()} />
-            <ToolbarButton icon={<Plus size={20} />} label="Adicionar usuário" onClick={openAddUser} />
-            <ToolbarButton
+            <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchUsers()} />
+            <ManagementToolbarButton icon={<Plus size={20} />} label="Adicionar usuário" onClick={openAddUser} />
+            <ManagementToolbarButton
               icon={<Edit3 size={20} />}
               label="Editar"
               disabled={!selectedUser}
               onClick={() => openEditUser()}
             />
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<Trash2 size={20} />}
               label="Deletar"
               disabled={!selectedUser}
               onClick={() => void onDeactivateUserClick()}
             />
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<KeyRound size={20} />}
               label="Redefinir senha"
               disabled={!selectedUser}
               onClick={openResetPin}
             />
             <div className="flex items-center gap-2 px-3 ml-1 border-l border-zinc-800">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={showInactive}
-                onClick={() => setShowInactive((v) => !v)}
-                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-                  showInactive ? 'bg-emerald-600' : 'bg-zinc-700'
-                }`}
+              <PosSwitch
+                checked={showInactive}
+                onChange={setShowInactive}
                 title="Mostrar usuários inativos"
-              >
-                <span
-                  className={`absolute top-1 w-4 h-4 bg-white rounded-sm shadow transition-all ${
-                    showInactive ? 'left-6' : 'left-1'
-                  }`}
-                />
-              </button>
-              <span className="text-[11px] font-bold text-zinc-500 whitespace-nowrap">
-                Mostrar inativos
-              </span>
+                label="Mostrar inativos"
+              />
             </div>
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<HelpCircle size={20} />}
               label="Ajuda"
               onClick={() => pushToast('Selecione uma linha para editar, apagar ou redefinir PIN.', 'info')}
@@ -564,14 +554,14 @@ export default function UsersSecurityManager() {
           </>
         ) : (
           <>
-            <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRules()} />
-            <ToolbarButton
+            <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRules()} />
+            <ManagementToolbarButton
               icon={<Check size={20} />}
               label="Salvar"
               disabled={rulesLoading || rulesSaving}
               onClick={() => void onSaveRulesClick()}
             />
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<HelpCircle size={20} />}
               label="Ajuda"
               onClick={() =>
@@ -587,15 +577,15 @@ export default function UsersSecurityManager() {
 
       {/* Conteúdo */}
       {subTab === 'users' && (
-        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
-          <table className="w-full text-left border-collapse text-[11px]">
-            <thead className="sticky top-0 z-10 bg-[#141414] border-b border-zinc-800">
-              <tr>
-                <th className="px-4 py-2.5 font-bold text-zinc-500">Nome</th>
-                <th className="px-4 py-2.5 font-bold text-zinc-500">Sobrenome</th>
-                <th className="px-4 py-2.5 font-bold text-zinc-500">Email</th>
-                <th className="px-4 py-2.5 font-bold text-zinc-500 text-center w-24">Nível de acesso</th>
-                <th className="px-4 py-2.5 font-bold text-zinc-500 text-center w-20">Ativo</th>
+        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar bg-[#0f0f0f]">
+          <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+            <thead className="sticky top-0 z-10 bg-[#141414]">
+              <tr className="border-b border-[#0001fb]/70">
+                <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
+                <th className="px-3 py-2 text-xs font-bold text-zinc-300">Sobrenome</th>
+                <th className="px-3 py-2 text-xs font-bold text-zinc-300">Email</th>
+                <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300 whitespace-nowrap w-36">Nível de acesso</th>
+                <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300 w-20">Ativo</th>
               </tr>
             </thead>
             <tbody>
@@ -619,25 +609,19 @@ export default function UsersSecurityManager() {
                       key={u.id}
                       onClick={() => setSelectedUserId(u.id)}
                       onDoubleClick={() => openEditUser(u)}
-                      className={`cursor-pointer border-b border-zinc-800/40 ${
-                        i % 2 === 1 ? 'bg-zinc-900/20' : ''
-                      } ${isSelected ? 'bg-[#00a3e0]/15 ring-1 ring-inset ring-[#00a3e0]/40' : 'hover:bg-zinc-800/25'}`}
+                      className={`cursor-pointer ${
+                        isSelected
+                          ? 'bg-[var(--pos-brand-selected-bg)]'
+                          : i % 2
+                            ? 'bg-[#171717]'
+                            : 'bg-[#1d1d1d]'
+                      } hover:bg-[var(--pos-brand-hover-bg)]`}
                     >
-                      <td className="px-4 py-2.5 text-zinc-100 font-semibold">{u.name}</td>
-                      <td className="px-4 py-2.5 text-zinc-300">{u.surname ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 truncate max-w-[220px]">{u.email ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-center text-zinc-100 font-bold">{u.accessLevel}</td>
-                      <td className="px-4 py-2.5 text-center">
-                        {u.active ? (
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                            <Check size={14} />
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30">
-                            <X size={14} />
-                          </span>
-                        )}
-                      </td>
+                      <td className="px-3 py-2 text-xs text-zinc-200">{u.name}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-300">{u.surname ?? '—'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 truncate max-w-[220px]">{u.email ?? '—'}</td>
+                      <td className="px-3 py-2 text-center text-xs text-zinc-200">{u.accessLevel}</td>
+                      <td className="px-3 py-2 text-center text-xs">{u.active ? '✓' : ''}</td>
                     </tr>
                   );
                 })
@@ -664,7 +648,7 @@ export default function UsersSecurityManager() {
                 const rightKeys = group.rightKeys.filter(filterKey);
                 return (
                   <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
-                    <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
+                    <div className="bg-[#0001fb] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
                       <div className="md:border-r border-zinc-800">
                         {leftKeys.map((k) => (
@@ -698,7 +682,7 @@ export default function UsersSecurityManager() {
               const keys = group.keys.filter(filterKey);
               return (
                 <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
-                  <div className="bg-[#00a3e0] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
+                  <div className="bg-[#0001fb] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                   <div>
                     {keys.map((k) => (
                       <RuleRow
@@ -718,7 +702,7 @@ export default function UsersSecurityManager() {
         </div>
       )}
 
-      <UserSlidePanel
+      <UserFormModal
         isOpen={userPanelOpen}
         mode={userPanelMode}
         draftUser={draftUser}
@@ -735,7 +719,7 @@ export default function UsersSecurityManager() {
           <div
             className={`w-3.5 h-3.5 rounded-full ${
               toast.type === 'success'
-                ? 'bg-emerald-400'
+                ? 'bg-[#0001fb]'
                 : toast.type === 'error'
                   ? 'bg-rose-400'
                   : 'bg-blue-400'
@@ -745,34 +729,6 @@ export default function UsersSecurityManager() {
         </div>
       )}
     </div>
-  );
-}
-
-function ToolbarButton({
-  icon,
-  label,
-  onClick,
-  active,
-  disabled,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  active?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={`flex flex-col items-center justify-center min-w-[76px] py-2 px-1.5 rounded transition-all hover:bg-zinc-800 group disabled:opacity-40 disabled:pointer-events-none ${
-        active ? 'bg-zinc-800 text-white' : 'text-zinc-400'
-      }`}
-    >
-      <div className="mb-1 group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="text-[10px] font-bold text-center leading-tight tracking-tighter">{label}</span>
-    </button>
   );
 }
 
@@ -790,13 +746,13 @@ function RuleRow({
   showHelp?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800/40 gap-2">
+    <div className="flex items-center justify-between px-4 py-2 gap-2">
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <span className="text-[11px] text-zinc-300 truncate">{label}</span>
         {showHelp && (
           <button
             type="button"
-            className="shrink-0 w-5 h-5 rounded-full bg-[#00a3e0]/25 text-[#00a3e0] text-[10px] font-bold flex items-center justify-center"
+            className="shrink-0 w-5 h-5 rounded-full bg-[#0001fb]/25 text-[#0001fb] text-[10px] font-bold flex items-center justify-center"
             title="Ajuda"
             aria-label="Ajuda"
           >
@@ -829,7 +785,7 @@ function RuleRow({
   );
 }
 
-function UserSlidePanel({
+function UserFormModal({
   isOpen,
   mode,
   draftUser,
@@ -862,167 +818,149 @@ function UserSlidePanel({
   onClose: () => void;
   onSaveClick: () => void;
 }) {
+  if (!isOpen) return null;
+
   const title =
     mode === 'add'
-      ? 'Adicionar função'
+      ? 'Adicionar usuário'
       : mode === 'resetPin'
         ? 'Redefinir PIN'
-        : `${draftUser.name || 'Usuário'}`.trim() || 'Editar função';
+        : `Editar usuário — ${draftUser.name || 'Usuário'}`.trim();
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          <motion.div
-            className="fixed inset-0 z-[90] bg-black/65"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-          />
-          <motion.aside
-            className="fixed top-0 right-0 bottom-0 z-[100] w-full max-w-[440px] bg-[#1a1a1a] border-l border-zinc-800 shadow-2xl flex flex-col"
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'tween', duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded border border-zinc-800 bg-[#1a1a1a]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-[#1a1a1a] p-4">
+          <UserCircle2 size={20} className="shrink-0 text-[#0001fb]" />
+          <h3 className="truncate text-xl text-zinc-200">{title}</h3>
+        </div>
+
+        <div className="custom-scrollbar flex-1 overflow-y-auto p-4">
+          {mode === 'resetPin' ? (
+            <div className="space-y-4">
+              <p className="text-[11px] text-zinc-500">
+                Utilizador: <span className="font-semibold text-zinc-300">{draftUser.name}</span>
+                {draftUser.surname ? ` ${draftUser.surname}` : ''}
+              </p>
+              <Field label="Novo PIN">
+                <input
+                  type="password"
+                  value={draftUser.pin}
+                  onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
+                  placeholder="Novo PIN"
+                  autoFocus
+                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                />
+              </Field>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              <Field label="Nome">
+                <input
+                  value={draftUser.name}
+                  onChange={(e) => setDraftUser((p) => ({ ...p, name: e.target.value }))}
+                  autoFocus={mode === 'add'}
+                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                />
+              </Field>
+              <Field label="Sobrenome">
+                <input
+                  value={draftUser.surname}
+                  onChange={(e) => setDraftUser((p) => ({ ...p, surname: e.target.value }))}
+                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                />
+              </Field>
+              <Field label="Email">
+                <input
+                  type="email"
+                  value={draftUser.email}
+                  onChange={(e) => setDraftUser((p) => ({ ...p, email: e.target.value }))}
+                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                />
+              </Field>
+              <Field label="Nível de acesso">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraftUser((p) => ({
+                        ...p,
+                        accessLevel: clampLevel((p.accessLevel ?? 0) - 1),
+                      }))
+                    }
+                    className="h-10 w-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 transition-colors hover:bg-zinc-800/50"
+                  >
+                    −
+                  </button>
+                  <input
+                    readOnly
+                    value={draftUser.accessLevel}
+                    className="h-10 flex-1 rounded border border-zinc-800 bg-[#0f0f0f] px-3 text-center font-bold text-white outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraftUser((p) => ({
+                        ...p,
+                        accessLevel: clampLevel((p.accessLevel ?? 0) + 1),
+                      }))
+                    }
+                    className="h-10 w-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 transition-colors hover:bg-zinc-800/50"
+                  >
+                    +
+                  </button>
+                </div>
+              </Field>
+              <Field label="Ativo">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-200">
+                  <input
+                    type="checkbox"
+                    checked={draftUser.active}
+                    onChange={(e) => setDraftUser((p) => ({ ...p, active: e.target.checked }))}
+                    className="h-4 w-4 rounded border-zinc-600"
+                  />
+                  {draftUser.active ? 'Ativo' : 'Inativo'}
+                </label>
+              </Field>
+              <Field label={mode === 'add' ? 'PIN / Senha' : 'Nova PIN (opcional)'}>
+                <input
+                  type="password"
+                  value={draftUser.pin}
+                  onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
+                  placeholder={mode === 'add' ? 'Digite o PIN' : 'Deixe em branco para manter'}
+                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] p-4">
+          <button
+            type="button"
+            onClick={onSaveClick}
+            className="flex items-center gap-2 rounded bg-[#0001fb] px-6 py-2 text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
           >
-            <div className="h-14 px-4 border-b border-zinc-800 flex items-center justify-between bg-[#141414] shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <UserCircle2 size={20} className="text-[#00a3e0] shrink-0" />
-                <span className="text-sm font-bold text-white truncate">{title}</span>
-              </div>
-              <button
-                type="button"
-                onClick={onClose}
-                className="p-2 rounded-lg hover:bg-zinc-800/80 text-zinc-400 hover:text-white transition-colors shrink-0"
-                aria-label="Fechar"
-              >
-                <ArrowRight size={20} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-              {mode === 'resetPin' ? (
-                <div className="space-y-4">
-                  <p className="text-[11px] text-zinc-500">
-                    Utilizador: <span className="text-zinc-300 font-semibold">{draftUser.name}</span>
-                    {draftUser.surname ? ` ${draftUser.surname}` : ''}
-                  </p>
-                  <Field label="Novo PIN">
-                    <input
-                      type="password"
-                      value={draftUser.pin}
-                      onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
-                      placeholder="Novo PIN"
-                      autoFocus
-                      className="w-full bg-[#0f0f0f] border border-zinc-800 rounded px-3 py-2.5 text-sm text-white outline-none focus:border-[#00a3e0]"
-                    />
-                  </Field>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-4">
-                  <Field label="Nome">
-                    <input
-                      value={draftUser.name}
-                      onChange={(e) => setDraftUser((p) => ({ ...p, name: e.target.value }))}
-                      className="w-full bg-[#0f0f0f] border border-zinc-800 rounded px-3 py-2.5 text-sm text-white outline-none focus:border-[#00a3e0]"
-                    />
-                  </Field>
-                  <Field label="Sobrenome">
-                    <input
-                      value={draftUser.surname}
-                      onChange={(e) => setDraftUser((p) => ({ ...p, surname: e.target.value }))}
-                      className="w-full bg-[#0f0f0f] border border-zinc-800 rounded px-3 py-2.5 text-sm text-white outline-none focus:border-[#00a3e0]"
-                    />
-                  </Field>
-                  <Field label="Email">
-                    <input
-                      type="email"
-                      value={draftUser.email}
-                      onChange={(e) => setDraftUser((p) => ({ ...p, email: e.target.value }))}
-                      className="w-full bg-[#0f0f0f] border border-zinc-800 rounded px-3 py-2.5 text-sm text-white outline-none focus:border-[#00a3e0]"
-                    />
-                  </Field>
-                  <Field label="Nível de acesso">
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDraftUser((p) => ({
-                            ...p,
-                            accessLevel: clampLevel((p.accessLevel ?? 0) - 1),
-                          }))
-                        }
-                        className="w-10 h-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 hover:bg-zinc-800/50 transition-colors"
-                      >
-                        −
-                      </button>
-                      <input
-                        readOnly
-                        value={draftUser.accessLevel}
-                        className="flex-1 h-10 bg-[#0f0f0f] border border-zinc-800 rounded px-3 text-white text-center font-bold outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDraftUser((p) => ({
-                            ...p,
-                            accessLevel: clampLevel((p.accessLevel ?? 0) + 1),
-                          }))
-                        }
-                        className="w-10 h-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 hover:bg-zinc-800/50 transition-colors"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </Field>
-                  <Field label="Ativo">
-                    <label className="flex items-center gap-2 text-sm text-zinc-200 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={draftUser.active}
-                        onChange={(e) => setDraftUser((p) => ({ ...p, active: e.target.checked }))}
-                        className="h-4 w-4 rounded border-zinc-600"
-                      />
-                      {draftUser.active ? 'Ativo' : 'Inativo'}
-                    </label>
-                  </Field>
-                  <Field label={mode === 'add' ? 'PIN / Senha' : 'Nova PIN (opcional)'}>
-                    <input
-                      type="password"
-                      value={draftUser.pin}
-                      onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
-                      placeholder={mode === 'add' ? 'Digite o PIN' : 'Deixe em branco para manter'}
-                      className="w-full bg-[#0f0f0f] border border-zinc-800 rounded px-3 py-2.5 text-sm text-white outline-none focus:border-[#00a3e0]"
-                    />
-                  </Field>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 border-t border-zinc-800 bg-[#141414] flex justify-end gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-5 py-2.5 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800 text-[12px] font-bold inline-flex items-center gap-2"
-              >
-                <X size={16} />
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={onSaveClick}
-                className="px-5 py-2.5 rounded-lg border border-emerald-600/50 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 text-[12px] font-bold inline-flex items-center gap-2"
-              >
-                <Check size={16} />
-                Salvar
-              </button>
-            </div>
-          </motion.aside>
-        </>
-      )}
-    </AnimatePresence>
+            <Check size={16} />
+            Salvar
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-2 rounded border border-zinc-700 bg-transparent px-6 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
+          >
+            <X size={16} />
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

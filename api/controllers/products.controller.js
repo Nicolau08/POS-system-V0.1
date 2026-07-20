@@ -5,6 +5,8 @@ import {
   deleteProduct,
   adjustStock,
   getProductHistory,
+  listProductBom,
+  replaceProductBom,
 } from '../services/product.service.js';
 import { resolveUserFromRequest } from '../middlewares/auth.js';
 import { parseBooleanFilter } from '../services/queryOptions.service.js';
@@ -58,6 +60,31 @@ export async function putProduct(req, res) {
 export async function removeProduct(req, res) {
   try {
     const result = await deleteProduct(req.params?.id, req.user);
+    if (result?.error) return sendError(res, result.status ?? 400, result.error, result.code);
+    return sendSuccess(res, result);
+  } catch (error) {
+    return controllerError(res, error);
+  }
+}
+
+export async function getProductBom(req, res) {
+  try {
+    const result = await listProductBom(req.params?.id, req.user);
+    if (result?.error) return sendError(res, result.status ?? 400, result.error, result.code);
+    return sendSuccess(res, result);
+  } catch (error) {
+    return controllerError(res, error);
+  }
+}
+
+export async function putProductBom(req, res) {
+  try {
+    const lines = Array.isArray(req.body?.lines)
+      ? req.body.lines
+      : Array.isArray(req.body)
+        ? req.body
+        : [];
+    const result = await replaceProductBom(req.params?.id, lines, req.user);
     if (result?.error) return sendError(res, result.status ?? 400, result.error, result.code);
     return sendSuccess(res, result);
   } catch (error) {

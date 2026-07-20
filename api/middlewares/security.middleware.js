@@ -2,13 +2,12 @@ import crypto from 'crypto';
 import { logInfo } from '../utils/logger.js';
 import { logError, logWarn } from '../utils/logger.js';
 import { sendError } from '../utils/response.js';
+import { getClientIp as resolveClientIp } from '../utils/authSecret.js';
 
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'x-auth-user', 'x-user-id']);
 
 function getClientIp(req) {
-  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-  const remote = String(req.socket?.remoteAddress ?? '').trim();
-  return forwarded || remote || 'unknown';
+  return resolveClientIp(req) || 'unknown';
 }
 
 function sanitizeObject(value, depth = 0) {

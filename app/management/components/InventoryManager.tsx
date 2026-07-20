@@ -13,6 +13,7 @@ import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { setStockCountedQuantity } from '@/lib/services/posService';
 import PurchaseStockModal from '@/app/management/components/PurchaseStockModal';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 interface Product {
   id: string;
@@ -26,6 +27,7 @@ interface Product {
   unit?: string;
   stock_quantity: number;
   is_service?: boolean;
+  product_kind?: 'simple' | 'composed' | 'ingredient' | 'service';
   categories?: {
     name: string;
   };
@@ -77,6 +79,7 @@ export default function InventoryManager() {
   const [calendarStartMonth, setCalendarStartMonth] = useState(`${historyFrom.slice(0, 7)}-01`);
   const [calendarEndMonth, setCalendarEndMonth] = useState(`${historyTo.slice(0, 7)}-01`);
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
   const [quickValue, setQuickValue] = useState('0');
@@ -187,6 +190,7 @@ export default function InventoryManager() {
     setTempHistoryTo(endInput);
     setCalendarStartMonth(`${startInput.slice(0, 7)}-01`);
     setCalendarEndMonth(`${endInput.slice(0, 7)}-01`);
+    setActivePreset(preset);
   };
 
   const startResizing = (e: React.MouseEvent) => {
@@ -234,16 +238,17 @@ export default function InventoryManager() {
   }, [products, searchQuery, selectedCategory, filterNegative, filterNonZero, filterZero]);
 
   const stats = useMemo(() => {
-    const negative = products.filter(p => p.stock_quantity < 0).length;
-    const nonZero = products.filter(p => p.stock_quantity !== 0).length;
-    const zero = products.filter(p => p.stock_quantity === 0).length;
-    
+    const stockProducts = products.filter((p) => !p.is_service);
+    const negative = stockProducts.filter((p) => p.stock_quantity < 0).length;
+    const zero = stockProducts.filter((p) => p.stock_quantity === 0).length;
+    const positive = stockProducts.filter((p) => p.stock_quantity > 0).length;
+
     const totalCost = filteredProducts.reduce((acc, p) => acc + ((p.cost || 0) * Math.abs(p.stock_quantity)), 0);
     const totalCostWithTax = filteredProducts.reduce((acc, p) => acc + (((p.cost || 0) + (p.tax || 0)) * Math.abs(p.stock_quantity)), 0);
     const totalSales = filteredProducts.reduce((acc, p) => acc + (p.price * Math.abs(p.stock_quantity)), 0);
     const totalSalesWithTax = filteredProducts.reduce((acc, p) => acc + ((p.final_price || p.price) * Math.abs(p.stock_quantity)), 0);
 
-    return { negative, nonZero, zero, totalCost, totalCostWithTax, totalSales, totalSalesWithTax };
+    return { negative, zero, positive, totalCost, totalCostWithTax, totalSales, totalSalesWithTax };
   }, [products, filteredProducts]);
 
   const selectedProduct = useMemo(
@@ -362,7 +367,11 @@ export default function InventoryManager() {
 
   const openQuickModal = () => {
     if (!selectedProduct) return;
-    if (selectedProduct.is_service) {
+    if (
+      selectedProduct.is_service ||
+      (selectedProduct.product_kind ?? 'simple') === 'composed' ||
+      (selectedProduct.product_kind ?? 'simple') === 'service'
+    ) {
       window.alert('Este produto está marcado como serviço (sem controlo de estoque).');
       return;
     }
@@ -497,31 +506,38 @@ export default function InventoryManager() {
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       {/* Toolbar */}
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
-        <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
-        <ToolbarButton
+        <ManagementToolbarButton
           icon={<History size={20} />}
           label="Histórico"
           onClick={() => void openHistoryModal()}
           disabled={!selectedProductId}
+          title={!selectedProductId ? 'Selecione um produto primeiro' : undefined}
         />
-        <ToolbarButton
+        <ManagementToolbarButton
           icon={<PackagePlus size={20} />}
           label="Compra"
           onClick={() => setIsPurchaseOpen(true)}
         />
-        <ToolbarButton
+        <ManagementToolbarButton
           icon={<Zap size={20} />}
           label="Rápido"
           onClick={openQuickModal}
-          disabled={!selectedProductId || Boolean(selectedProduct?.is_service)}
+          disabled={
+            !selectedProductId ||
+            Boolean(selectedProduct?.is_service) ||
+            (selectedProduct?.product_kind ?? 'simple') === 'composed' ||
+            (selectedProduct?.product_kind ?? 'simple') === 'service'
+          }
+          title={!selectedProductId ? 'Selecione um produto primeiro' : undefined}
         />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
-        <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
-        <ToolbarButton icon={<FileText size={20} />} label="PDF" />
-        <ToolbarButton icon={<FileSpreadsheet size={20} />} label="Excel" />
+        <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" />
+        <ManagementToolbarButton icon={<FileText size={20} />} label="PDF" />
+        <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Excel" />
         <div className="w-px h-8 bg-zinc-800 mx-2" />
-        <ToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
+        <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -533,13 +549,15 @@ export default function InventoryManager() {
           <div className="p-2 border-b border-zinc-800/50 flex items-center gap-2">
             <button 
               onClick={() => setIsTreeExpanded(!isTreeExpanded)}
-              className="p-1 hover:bg-zinc-800 rounded"
+              className="rounded p-1 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
             >
               {isTreeExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            <Folder size={16} className="text-blue-500" />
+            <Folder size={16} className="text-[#0001fb]" />
             <span 
-              className={`text-xs font-bold cursor-pointer ${!selectedCategory ? 'text-white' : 'text-zinc-400'}`}
+              className={`text-xs font-bold cursor-pointer transition-colors ${
+                !selectedCategory ? 'text-white hover:text-[#0001fb]' : 'text-zinc-400 hover:text-[#0001fb]'
+              }`}
               onClick={() => setSelectedCategory(null)}
             >
               Produtos
@@ -550,9 +568,11 @@ export default function InventoryManager() {
               {categories.map(cat => (
                 <div 
                   key={cat.id}
-                  onClick={() => setSelectedCategory(cat.id)}
+                  onClick={() => setSelectedCategory(String(cat.id))}
                   className={`flex items-center gap-2 px-6 py-1.5 rounded cursor-pointer transition-colors text-xs ${
-                    selectedCategory === cat.id ? 'bg-[#00a3e0] text-white' : 'hover:bg-zinc-800/50 text-zinc-400'
+                    String(selectedCategory) === String(cat.id)
+                      ? 'bg-[var(--pos-brand-selected-bg)] text-white'
+                      : 'text-zinc-400 hover:text-[#0001fb]'
                   }`}
                 >
                   <Folder size={14} />
@@ -595,8 +615,8 @@ export default function InventoryManager() {
               </div>
               <div className="flex items-center gap-1">
                 <StatBadge color="bg-red-600" value={stats.negative} />
-                <StatBadge color="bg-blue-600" value={stats.nonZero} />
-                <StatBadge color="bg-emerald-600" value={stats.zero} />
+                <StatBadge color="bg-blue-600" value={stats.zero} />
+                <StatBadge color="bg-emerald-600" value={stats.positive} />
               </div>
             </div>
 
@@ -621,21 +641,21 @@ export default function InventoryManager() {
 
           {/* Table */}
           <div
-            className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]"
+            className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]"
             onClick={() => setSelectedProductId(null)}
           >
-            <table className="min-w-full text-left text-xs border-collapse table-fixed">
-              <thead className="sticky top-0 bg-[#141414] z-10">
-                <tr className="text-zinc-400">
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap w-20">Código</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap">Nome</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Quantidade</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-center font-medium whitespace-nowrap w-20">Unidade</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Preço</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Custo</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Custo inc...</th>
-                  <th className="border-b border-r border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Total</th>
-                  <th className="border-b border-zinc-700/80 px-4 py-2.5 text-right font-medium whitespace-nowrap w-24">Total incl...</th>
+            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+              <thead className="sticky top-0 z-10 bg-[#141414]">
+                <tr className="border-b border-[#0001fb]/70">
+                  <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Código</th>
+                  <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap">Nome</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Quantidade</th>
+                  <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Unidade</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Preço</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo inc...</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Total</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Total incl...</th>
                 </tr>
               </thead>
               <tbody>
@@ -658,49 +678,49 @@ export default function InventoryManager() {
                   filteredProducts.map((p, i) => (
                     <tr 
                       key={p.id} 
-                      className={`border-b border-zinc-800/70 transition-colors cursor-pointer ${
+                      className={`transition-colors cursor-pointer ${
                         selectedProductId === String(p.id)
-                          ? 'bg-[#00364b]'
-                          : i % 2 === 0
-                            ? 'bg-[#1a1a1a]'
-                            : 'bg-[#141414]'
-                      } hover:bg-zinc-800/30`}
+                          ? 'bg-[var(--pos-brand-selected-bg)]'
+                          : i % 2
+                            ? 'bg-[#171717]'
+                            : 'bg-[#1d1d1d]'
+                      } hover:bg-[var(--pos-brand-hover-bg)]`}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedProductId(String(p.id));
                       }}
                     >
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 whitespace-nowrap truncate">{p.code || '---'}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-medium border-r border-zinc-800/80 whitespace-nowrap truncate">
+                      <td className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap truncate">{p.code || '---'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap truncate">
                         <div className="flex items-center gap-2">
                           <div
-                            className={`w-2 h-2 rounded-full ${
+                            className={`h-2 w-2 shrink-0 rounded-full ${
                               p.is_service
                                 ? 'bg-zinc-600'
-                                : p.stock_quantity > 0
-                                  ? 'bg-emerald-500'
-                                  : p.stock_quantity < 0
-                                    ? 'bg-red-500'
-                                    : 'bg-zinc-500'
+                                : p.stock_quantity < 0
+                                  ? 'bg-red-600'
+                                  : p.stock_quantity === 0
+                                    ? 'bg-blue-600'
+                                    : 'bg-emerald-600'
                             }`}
                           />
                           {p.name}
                           {p.is_service ? (
-                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-zinc-400">
+                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-zinc-400">
                               Sem stock
                             </span>
                           ) : null}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">
+                      <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">
                         {p.is_service ? '—' : p.stock_quantity}
                       </td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap">{p.unit || 'un'}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold text-right whitespace-nowrap">{formatPrice((p.final_price || p.price) * Math.abs(p.stock_quantity))}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-center whitespace-nowrap">{p.unit || 'un'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">{formatPrice((p.final_price || p.price) * Math.abs(p.stock_quantity))}</td>
                     </tr>
                   ))
                 )}
@@ -739,7 +759,11 @@ export default function InventoryManager() {
       <PurchaseStockModal
         isOpen={isPurchaseOpen}
         onClose={() => setIsPurchaseOpen(false)}
-        products={products}
+        products={products.filter(
+          (p) =>
+            !p.is_service &&
+            (p.product_kind ?? 'simple') !== 'composed'
+        )}
         initialProductId={selectedProductId}
         onSaved={async () => {
           await fetchData();
@@ -827,7 +851,7 @@ export default function InventoryManager() {
                   type="button"
                   disabled={quickSaving}
                   onClick={() => void submitQuickCount()}
-                  className="flex h-32 items-center justify-center border-b border-zinc-800 bg-[#00a3e0] text-white hover:bg-[#0090c7] disabled:opacity-50"
+                  className="flex h-32 items-center justify-center border-b border-zinc-800 bg-[#0001fb] text-white hover:bg-[#1a1bff] disabled:opacity-50"
                 >
                   {quickSaving ? (
                     <Loader2 size={28} className="animate-spin" />
@@ -852,7 +876,7 @@ export default function InventoryManager() {
           >
             <div className="flex items-center justify-between border-b border-zinc-800 bg-[#141414] px-5 py-3">
               <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#00a3e0]/15 text-[#00a3e0]">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0001fb]/15 text-[#0001fb]">
                   <History size={18} />
                 </div>
                 <div className="min-w-0">
@@ -892,7 +916,7 @@ export default function InventoryManager() {
               <button
                 type="button"
                 onClick={() => selectedProductId && void fetchProductHistory(selectedProductId)}
-                className="inline-flex h-8 items-center gap-2 rounded border border-[#00a3e0]/40 bg-[#00a3e0]/20 px-3 text-xs font-bold text-[#7dd3f0] transition-colors hover:bg-[#00a3e0]/30"
+                className="inline-flex h-8 items-center gap-2 rounded border border-[#0001fb]/40 bg-[#0001fb]/20 px-3 text-xs font-bold text-[#a5b4fc] transition-colors hover:bg-[#0001fb]/30"
               >
                 <RotateCcw size={13} />
                 Atualizar
@@ -904,10 +928,10 @@ export default function InventoryManager() {
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto custom-scrollbar">
-              <table className="w-full min-w-[980px] border-collapse text-xs">
-                <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
-                  <tr className="text-zinc-400">
+            <div className="min-h-0 flex-1 overflow-auto bg-[#0f0f0f] custom-scrollbar">
+              <table className="w-full min-w-[980px] border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+                <thead className="sticky top-0 z-10 bg-[#141414]">
+                  <tr className="border-b border-[#0001fb]/70">
                     <HistoryTh>Tipo de documento</HistoryTh>
                     <HistoryTh>Documento</HistoryTh>
                     <HistoryTh>Entidade</HistoryTh>
@@ -922,30 +946,32 @@ export default function InventoryManager() {
                 <tbody>
                   {historyLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-zinc-500">
+                      <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                         <span className="inline-flex items-center gap-2">
-                          <Loader2 size={14} className="animate-spin text-[#00a3e0]" />
+                          <Loader2 size={14} className="animate-spin text-[#0001fb]" />
                           Carregando histórico...
                         </span>
                       </td>
                     </tr>
                   ) : historyError ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-red-400">
+                      <td colSpan={9} className="px-3 py-10 text-center text-red-400">
                         {historyError}
                       </td>
                     </tr>
                   ) : historyRowsWithStock.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-zinc-500">
+                      <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                         Nenhum movimento encontrado para este período.
                       </td>
                     </tr>
                   ) : (
-                    historyRowsWithStock.map((row) => (
+                    historyRowsWithStock.map((row, index) => (
                       <tr
                         key={row.id}
-                        className="border-b border-zinc-800/70 text-zinc-200 transition-colors hover:bg-zinc-800/30"
+                        className={`${
+                          index % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                        } hover:bg-[var(--pos-brand-hover-bg)]`}
                       >
                         <HistoryTd>{movementLabel(row.movement_type)}</HistoryTd>
                         <HistoryTd className="font-medium text-zinc-100">
@@ -1032,7 +1058,7 @@ export default function InventoryManager() {
                     <button
                       type="button"
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, -1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronLeft size={16} />
                     </button>
@@ -1040,7 +1066,7 @@ export default function InventoryManager() {
                     <button
                       type="button"
                       onClick={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, 1))}
-                      className="p-1 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                      className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -1048,7 +1074,10 @@ export default function InventoryManager() {
                   <HistoryCalendarGrid
                     monthValue={calendarStartMonth}
                     selectedValue={tempHistoryFrom}
-                    onSelect={setTempHistoryFrom}
+                    onSelect={(value) => {
+                      setActivePreset(null);
+                      setTempHistoryFrom(value);
+                    }}
                   />
                 </div>
               </div>
@@ -1060,7 +1089,7 @@ export default function InventoryManager() {
                     <button
                       type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, -1))}
-                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronLeft size={16} />
                     </button>
@@ -1068,7 +1097,7 @@ export default function InventoryManager() {
                     <button
                       type="button"
                       onClick={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, 1))}
-                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+                      className="rounded-[0.4rem] p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -1076,7 +1105,10 @@ export default function InventoryManager() {
                   <HistoryCalendarGrid
                     monthValue={calendarEndMonth}
                     selectedValue={tempHistoryTo}
-                    onSelect={setTempHistoryTo}
+                    onSelect={(value) => {
+                      setActivePreset(null);
+                      setTempHistoryTo(value);
+                    }}
                   />
                 </div>
               </div>
@@ -1084,14 +1116,14 @@ export default function InventoryManager() {
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Período pré-definido</p>
                 <div className="grid grid-cols-2 gap-2">
-                  <HistoryPresetButton label="Hoje" onClick={() => applyPresetPeriod('today')} />
-                  <HistoryPresetButton label="Ontem" onClick={() => applyPresetPeriod('yesterday')} />
-                  <HistoryPresetButton label="Esta semana" onClick={() => applyPresetPeriod('thisWeek')} />
-                  <HistoryPresetButton label="Semana passada" onClick={() => applyPresetPeriod('lastWeek')} />
-                  <HistoryPresetButton label="Este mês" onClick={() => applyPresetPeriod('thisMonth')} />
-                  <HistoryPresetButton label="Mês passado" onClick={() => applyPresetPeriod('lastMonth')} />
-                  <HistoryPresetButton label="Este ano" onClick={() => applyPresetPeriod('thisYear')} />
-                  <HistoryPresetButton label="Ano passado" onClick={() => applyPresetPeriod('lastYear')} />
+                  <HistoryPresetButton label="Hoje" active={activePreset === 'today'} onClick={() => applyPresetPeriod('today')} />
+                  <HistoryPresetButton label="Ontem" active={activePreset === 'yesterday'} onClick={() => applyPresetPeriod('yesterday')} />
+                  <HistoryPresetButton label="Esta semana" active={activePreset === 'thisWeek'} onClick={() => applyPresetPeriod('thisWeek')} />
+                  <HistoryPresetButton label="Semana passada" active={activePreset === 'lastWeek'} onClick={() => applyPresetPeriod('lastWeek')} />
+                  <HistoryPresetButton label="Este mês" active={activePreset === 'thisMonth'} onClick={() => applyPresetPeriod('thisMonth')} />
+                  <HistoryPresetButton label="Mês passado" active={activePreset === 'lastMonth'} onClick={() => applyPresetPeriod('lastMonth')} />
+                  <HistoryPresetButton label="Este ano" active={activePreset === 'thisYear'} onClick={() => applyPresetPeriod('thisYear')} />
+                  <HistoryPresetButton label="Ano passado" active={activePreset === 'lastYear'} onClick={() => applyPresetPeriod('lastYear')} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mt-5">
@@ -1099,7 +1131,7 @@ export default function InventoryManager() {
                     type="button"
                     onClick={applyPeriod}
                     disabled={tempHistoryFrom > tempHistoryTo}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-[#0001fb] bg-[#0001fb] px-3 py-3 text-sm text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Check size={16} />
                     <span className="text-sm">OK</span>
@@ -1107,7 +1139,7 @@ export default function InventoryManager() {
                   <button
                     type="button"
                     onClick={() => setIsPeriodModalOpen(false)}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
                   >
                     <X size={16} />
                     <span className="text-sm">Cancelar</span>
@@ -1122,44 +1154,12 @@ export default function InventoryManager() {
   );
 }
 
-function ToolbarButton({
-  icon,
-  label,
-  onClick,
-  active,
-  disabled = false,
-}: {
-  icon: React.ReactNode,
-  label: string,
-  onClick?: () => void,
-  active?: boolean,
-  disabled?: boolean
-}) {
-  return (
-    <button 
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 group ${
-        active ? 'bg-zinc-800 text-white' : 'text-zinc-400'
-      } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent' : ''}`}
-      title={disabled ? 'Selecione um produto primeiro' : undefined}
-    >
-      <div className={`mb-1 transition-transform ${disabled ? '' : 'group-hover:scale-110'}`}>
-        {icon}
-      </div>
-      <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">
-        {label}
-      </span>
-    </button>
-  );
-}
-
 function FilterCheckbox({ label, checked, onChange }: { label: string, checked: boolean, onChange: () => void }) {
   return (
     <label className="flex items-center gap-2 cursor-pointer group">
       <div 
         onClick={onChange}
-        className={`w-4 h-4 border border-zinc-700 rounded-sm flex items-center justify-center transition-colors ${checked ? 'bg-blue-600 border-blue-600' : 'bg-zinc-800 group-hover:border-zinc-500'}`}
+        className={`w-4 h-4 border border-zinc-700 rounded-sm flex items-center justify-center transition-colors ${checked ? 'bg-blue-600 border-blue-600' : 'bg-zinc-800 group-hover:border-[#0001fb]'}`}
       >
         {checked && <div className="w-2 h-2 bg-white rounded-sm" />}
       </div>
@@ -1179,7 +1179,7 @@ function StatBadge({ color, value }: { color: string, value: number }) {
 function HistoryTh({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
     <th
-      className={`border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap last:border-r-0 ${className}`}
+      className={`px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap ${className}`}
     >
       {children}
     </th>
@@ -1188,7 +1188,7 @@ function HistoryTh({ children, className = '' }: { children: React.ReactNode; cl
 
 function HistoryTd({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <td className={`border-r border-zinc-800/80 px-4 py-2.5 whitespace-nowrap last:border-r-0 ${className}`}>
+    <td className={`px-3 py-2 text-xs text-zinc-200 whitespace-nowrap ${className}`}>
       {children}
     </td>
   );
@@ -1240,12 +1240,24 @@ function buildCalendarDays(monthValue: string) {
   });
 }
 
-function HistoryPresetButton({ label, onClick }: { label: string; onClick: () => void }) {
+function HistoryPresetButton({
+  label,
+  onClick,
+  active = false,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="min-h-11 rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
+      className={`min-h-11 rounded-[0.4rem] border px-3 py-3 text-sm transition-colors ${
+        active
+          ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
+          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+      }`}
     >
       {label}
     </button>
@@ -1285,12 +1297,12 @@ function HistoryCalendarGrid({
               onClick={() => onSelect(day.value)}
               className={`w-full aspect-square rounded-xl text-sm transition-colors flex items-center justify-center ${
                 isSelected
-                  ? 'bg-emerald-500 text-white scale-110'
+                  ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday
-                    ? 'border border-emerald-500/70 text-white'
+                    ? 'border border-[#0001fb]/70 text-white'
                     : day.inMonth
-                      ? 'text-white hover:bg-zinc-700'
-                      : 'text-zinc-500 hover:bg-zinc-800'
+                      ? 'text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+                      : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
               }`}
             >
               {day.day}

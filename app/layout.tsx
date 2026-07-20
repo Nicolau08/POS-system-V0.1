@@ -1,6 +1,7 @@
 import type {Metadata} from 'next';
 import './globals.css';
 import { LicenseGuardProvider } from '@/components/LicenseGuardProvider';
+import { StationModeGate } from '@/components/StationModeGate';
 
 export const metadata: Metadata = {
   title: 'POSly',
@@ -19,7 +20,9 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="en" className="dark">
       <body className="bg-[#121212] text-white antialiased font-sans" suppressHydrationWarning>
-        <LicenseGuardProvider>{children}</LicenseGuardProvider>
+        <StationModeGate>
+          <LicenseGuardProvider>{children}</LicenseGuardProvider>
+        </StationModeGate>
       </body>
     </html>
   );

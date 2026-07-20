@@ -1,31 +1,43 @@
 'use client';
 
 import React from 'react';
-import { Archive, FileText, LogOut, Percent, User, Utensils } from 'lucide-react';
-import { SyncStatus } from '@/components/SyncStatus';
+import { Archive, FileText, LogOut, Percent, Printer, User, Utensils } from 'lucide-react';
 
 // Top bar actions extracted from the POS page to reduce page-level JSX size.
 export function Header({
   selectedCustomerName,
   selectedTableId,
+  tableDisplayLabel,
   salesMode,
   onOpenCustomer,
   onOpenDiscount,
   onOpenQuotation,
   onOpenCashDrawer,
   onOpenTable,
+  showTables = true,
+  tablesFloorOpen = false,
+  onOpenBillPreview,
+  billPreviewEnabled = false,
   onOpenAdminSidebar,
   userName,
   onLogout,
 }: {
   selectedCustomerName: string | null;
   selectedTableId: string | null;
+  /** Nome opcional dado ao abrir a mesa no POS */
+  tableDisplayLabel?: string | null;
   salesMode: 'customer' | 'table';
   onOpenCustomer: () => void;
   onOpenDiscount: () => void;
   onOpenQuotation: () => void;
   onOpenCashDrawer?: () => void;
   onOpenTable: () => void;
+  /** False = licença retalho/farmácia — oculta botão Mesas */
+  showTables?: boolean;
+  /** Grelha de mesas a substituir os produtos */
+  tablesFloorOpen?: boolean;
+  onOpenBillPreview?: () => void;
+  billPreviewEnabled?: boolean;
   onOpenAdminSidebar: () => void;
   userName?: string | null;
   onLogout?: () => void;
@@ -68,21 +80,36 @@ export function Header({
       <div className="w-px h-8 bg-zinc-800 mx-1" />
 
       <HeaderButton icon={<Archive size={20} />} label="Gaveta de dinheiro" onClick={onOpenCashDrawer} />
+      {showTables !== false ? (
+        <HeaderButton
+          icon={<Utensils size={20} />}
+          label={
+            selectedTableId
+              ? tableDisplayLabel
+                ? `Mesa ${selectedTableId} · ${tableDisplayLabel}`
+                : `Mesa ${selectedTableId}`
+              : 'Mesas'
+          }
+          active={tablesFloorOpen || salesMode === 'table'}
+          onClick={onOpenTable}
+        />
+      ) : null}
+
+      <div className="w-px h-8 bg-zinc-800 mx-1" />
+
       <HeaderButton
-        icon={<Utensils size={20} />}
-        label={selectedTableId ? `Mesa ${selectedTableId}` : 'Mesas'}
-        active={salesMode === 'table'}
-        onClick={onOpenTable}
+        icon={<Printer size={20} />}
+        label="Conta"
+        onClick={onOpenBillPreview}
+        disabled={!billPreviewEnabled}
       />
 
       <div className="flex-grow" />
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-zinc-300">{displayName}</span>
-        <span className="opacity-50 text-zinc-500">|</span>
-        <SyncStatus />
         <button
           onClick={handleLogout}
-          className="p-1 rounded hover:bg-zinc-700 transition text-zinc-400 hover:text-white"
+          className="rounded border border-transparent p-1 text-zinc-400 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
           title="Terminar sessão"
           aria-label="Terminar sessão"
         >
@@ -91,7 +118,7 @@ export function Header({
       </div>
       <button
         onClick={onOpenAdminSidebar}
-        className="p-2 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors"
+        className="p-2 rounded text-zinc-400 transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] focus-visible:outline-offset-1"
         title="Configurações"
       >
         <svg
@@ -118,20 +145,28 @@ function HeaderButton({
   icon,
   label,
   active,
+  disabled,
   className,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   active?: boolean;
+  disabled?: boolean;
   className?: string;
   onClick?: () => void;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`h-10 min-w-[65px] px-2 flex flex-col items-center justify-center rounded text-[8px] uppercase font-bold transition-colors ${
-        active ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+      disabled={disabled}
+      className={`h-10 min-w-[65px] px-2 flex flex-col items-center justify-center rounded text-[8px] uppercase font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] focus-visible:outline-offset-1 ${
+        disabled
+          ? 'cursor-not-allowed text-zinc-700 opacity-50'
+          : active
+            ? 'bg-[var(--pos-brand-selected-bg)] text-white shadow-[inset_0_-2px_0_0_#0001fb]'
+            : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200'
       } ${className || ''}`}
     >
       {icon}

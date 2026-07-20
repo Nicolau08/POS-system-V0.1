@@ -16,6 +16,7 @@ import {
   materializeMachineLicenseFromVoucher,
   verifyActivationVoucher,
 } from '../../lib/licensing/signMachineLicense.js';
+import { LICENSE_IN_USE_MESSAGE } from '../../lib/licensing/licenseConflict.js';
 
 const { machineIdSync } = machineIdModule;
 
@@ -180,12 +181,18 @@ export function validateMachineBoundLicense(payload, expectedTenantId = null) {
   if (!expirationRaw) return { ok: false, error: 'Licença sem expiração.' };
 
   if (expectedTenantId && tenantId !== normalizeText(expectedTenantId)) {
-    return { ok: false, error: 'tenant_id da licença não corresponde ao tenant local.' };
+    return {
+      ok: false,
+      error: LICENSE_IN_USE_MESSAGE,
+    };
   }
 
   const localMachineId = machineIdSync({ original: true });
   if (machineId !== localMachineId) {
-    return { ok: false, error: 'Licença vinculada a outra máquina.' };
+    return {
+      ok: false,
+      error: LICENSE_IN_USE_MESSAGE,
+    };
   }
 
   const expiresAt = new Date(expirationRaw);
@@ -402,7 +409,7 @@ export async function runInitialSetup(payload) {
         voucherTenantId !== normalizeText(status.tenantId)
       ) {
         return {
-          error: 'Este código não corresponde ao tenant desta instalação.',
+          error: LICENSE_IN_USE_MESSAGE,
           status: 400,
         };
       }
@@ -713,6 +720,7 @@ export async function runInitializeFromSerial(payload) {
   const nuit = normalizeText(data.nuit);
   const expiresAt = normalizeText(data.expires_at) || null;
   const plan = normalizeText(data.plan) || 'LITE';
+  const commerceType = normalizeText(data.commerce_type) || 'retalho';
   const licensePayload =
     data.license && typeof data.license === 'object'
       ? data.license
@@ -743,13 +751,15 @@ export async function runInitializeFromSerial(payload) {
   );
 
   await runDb(
-    `INSERT INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-     VALUES (?, ?, ?, 'LOCAL', ?, ?)
+    `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        nuit = excluded.nuit,
+       license_type = excluded.license_type,
+       commerce_type = excluded.commerce_type,
        updated_at = excluded.updated_at`,
-    [tenantId, storeName, nuit, now, now],
+    [tenantId, storeName, nuit, plan, commerceType, now, now],
   );
 
   await runDb(

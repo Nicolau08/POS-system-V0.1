@@ -293,7 +293,7 @@ export function DocumentPaymentModal({
               value={documentNumber}
               onChange={(event) => setDocumentNumber(event.target.value)}
               placeholder="FT/2026/00004 ou FP/2026/0001"
-              className="h-11 w-full rounded border border-zinc-500 bg-transparent px-4 text-center text-lg font-bold text-white outline-none focus:border-[#00a3e0]"
+              className="h-11 w-full rounded border border-zinc-500 bg-transparent px-4 text-center text-lg font-bold text-white outline-none focus:border-[#0001fb]"
             />
           </div>
 
@@ -302,7 +302,7 @@ export function DocumentPaymentModal({
           ) : null}
 
           {preview ? (
-            <div className="mx-auto mt-6 max-w-[520px] rounded border border-[#00a3e0]/40 bg-[#00364b]/40 px-5 py-4 text-left">
+            <div className="mx-auto mt-6 max-w-[520px] rounded border border-[#0001fb]/40 bg-[rgba(0,1,251,0.35)]/40 px-5 py-4 text-left">
               <div className="grid gap-2 text-sm">
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-zinc-400">Cliente</span>
@@ -310,11 +310,11 @@ export function DocumentPaymentModal({
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-zinc-400">Valor a pagar</span>
-                  <span className="text-lg font-bold text-[#00a3e0]">{formatMoneyMt(preview.total)}</span>
+                  <span className="text-lg font-bold text-[#0001fb]">{formatMoneyMt(preview.total)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-zinc-700/60 pt-2">
                   <span className="text-zinc-400">Documento a gerar</span>
-                  <span className="font-semibold text-emerald-300">{preview.generatedDocumentLabel}</span>
+                  <span className="font-semibold text-[#a5b4fc]">{preview.generatedDocumentLabel}</span>
                 </div>
                 <p className="text-xs text-zinc-500">
                   O valor entra no caixa e nos relatórios na data de hoje (sessão actual).
@@ -344,12 +344,12 @@ export function DocumentPaymentModal({
                     onClick={() => setPaymentMethod(option.code)}
                     className={`relative flex min-h-[92px] flex-col items-center justify-center rounded border px-3 py-4 text-xs font-bold uppercase tracking-wide transition-colors ${
                       selected
-                        ? 'border-[#00a3e0] bg-[#00364b] text-white'
-                        : 'border-zinc-600 bg-[#171717] text-zinc-300 hover:border-zinc-500'
+                        ? 'border-[#0001fb] bg-[rgba(0,1,251,0.35)] text-white'
+                        : 'border-zinc-600 bg-[#171717] text-zinc-300 hover:border-[#0001fb]'
                     }`}
                   >
                     {selected ? (
-                      <span className="absolute -top-3 left-1/2 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full bg-[#00a3e0] text-white">
+                      <span className="absolute -top-3 left-1/2 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full bg-[#0001fb] text-white">
                         <Check size={14} />
                       </span>
                     ) : null}
@@ -373,7 +373,7 @@ export function DocumentPaymentModal({
             type="button"
             onClick={() => void handleSubmit()}
             disabled={!canSubmit}
-            className="flex min-w-[120px] items-center justify-center gap-2 rounded bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex min-w-[120px] items-center justify-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Check size={16} />
             OK

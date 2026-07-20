@@ -30,16 +30,21 @@ function normalizeText(value) {
 
 function isActivationSecretValid(req) {
   const expected = normalizeText(process.env.POS_LICENSE_ACTIVATION_SECRET);
-  if (!expected) return true;
+  // Fail-closed: sem secret configurado, bind remoto fica bloqueado.
+  if (!expected) return false;
   const got = normalizeText(req.headers?.['x-license-activation-secret']);
   return got === expected;
 }
 
 function isLocalRequest(req) {
   const localhostCandidates = new Set(['127.0.0.1', '::1', 'localhost']);
-  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-  const remote = String(req.socket?.remoteAddress ?? '').trim();
-  const candidate = forwarded || remote;
+  // Não confiar em X-Forwarded-For (salvo TRUST_PROXY=true).
+  const trustProxy = String(process.env.TRUST_PROXY ?? 'false').toLowerCase() === 'true';
+  let candidate = String(req.socket?.remoteAddress ?? '').trim();
+  if (trustProxy) {
+    const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
+    if (forwarded) candidate = forwarded;
+  }
   if (!candidate) return false;
   if (candidate.startsWith('::ffff:')) {
     return localhostCandidates.has(candidate.replace('::ffff:', ''));

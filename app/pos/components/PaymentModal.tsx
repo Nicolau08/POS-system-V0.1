@@ -207,7 +207,7 @@ export function PaymentModal({
                     onClick={onToggleMultiplePayment}
                     className={`h-9 px-4 rounded font-bold text-xs transition-colors ${
                       isMultiplePayment
-                        ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                        ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff]'
                         : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200'
                     }`}
                   >
@@ -249,7 +249,7 @@ export function PaymentModal({
                         value={multiplePaymentAmount}
                         onChange={(e) => setMultiplePaymentAmount(e.target.value)}
                         placeholder="Valor"
-                        className="flex-1 h-11 px-3 bg-zinc-900 border border-zinc-700 rounded text-right text-emerald-400 font-bold outline-none focus:border-emerald-500"
+                        className="flex-1 h-11 px-3 bg-zinc-900 border border-zinc-700 rounded text-right text-[#a5b4fc] font-bold outline-none focus:border-[#0001fb]"
                       />
                       <button
                         onClick={() => {
@@ -289,7 +289,7 @@ export function PaymentModal({
                           <span>{formatPrice(missingAmount)}</span>
                         </div>
                         {multiChange > 0 && (
-                          <div className="flex justify-between text-emerald-400 font-bold">
+                          <div className="flex justify-between text-[#a5b4fc] font-bold">
                             <span>Troco</span>
                             <span>{formatPrice(multiChange)}</span>
                           </div>
@@ -307,7 +307,7 @@ export function PaymentModal({
                       value={receivedAmount}
                       onChange={(e) => setReceivedAmount(e.target.value)}
                       placeholder="Valor recebido"
-                      className="w-full h-11 px-3 bg-zinc-950 border border-zinc-700 rounded text-right text-emerald-400 font-bold outline-none focus:border-emerald-500"
+                      className="w-full h-11 px-3 bg-zinc-950 border border-zinc-700 rounded text-right text-[#a5b4fc] font-bold outline-none focus:border-[#0001fb]"
                     />
                     <div className="flex justify-between text-zinc-300 text-sm">
                       <span>Troco:</span>
@@ -328,7 +328,7 @@ export function PaymentModal({
                 disabled={!canFinalize || isFinalizing}
                 className={`flex-1 h-12 rounded text-sm font-medium transition-all flex items-center justify-center gap-2 ${
                   canFinalize && !isFinalizing
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    ? 'bg-[#0001fb] hover:bg-[#1a1bff] text-white'
                     : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
                 }`}
               >
@@ -401,8 +401,8 @@ function PaymentMethodButton({
       onClick={onClick}
       className={`h-20 px-2 flex flex-col items-center justify-center rounded border transition-colors ${
         active
-          ? 'bg-emerald-500/15 border-emerald-500 text-emerald-400'
-          : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300'
+          ? 'bg-[#0001fb]/15 border-[#0001fb] text-[#a5b4fc]'
+          : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:border-[#0001fb] hover:text-zinc-300'
       }`}
     >
       <div className="mb-1">{icon}</div>

@@ -28,7 +28,7 @@ export function ConfirmDialog({
   const confirmClass =
     tone === 'danger'
       ? 'bg-red-600 hover:bg-red-500 text-white'
-      : 'bg-emerald-600 hover:bg-emerald-500 text-white';
+      : 'bg-[#0001fb] hover:bg-[#1a1bff] text-white';
 
   return (
     <AnimatePresence>
@@ -85,7 +85,7 @@ export function ConfirmDialog({
               <button
                 type="button"
                 onClick={onCancel}
-                className="h-11 min-w-[110px] px-4 rounded border border-zinc-700 bg-[#1f1f1f] text-sm font-medium text-zinc-200 hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
+                className="h-11 min-w-[110px] px-4 rounded border border-zinc-700 bg-[#1f1f1f] text-sm font-medium text-zinc-200 hover:bg-zinc-800 hover:border-[#0001fb] transition-colors"
               >
                 {cancelLabel}
               </button>

@@ -3,6 +3,7 @@ import { enqueueSync } from '../syncQueue.js';
 import { parsePagination, parseSearchTerm, withPaginationPayload } from './queryOptions.service.js';
 import { HttpError } from '../utils/response.js';
 import { requireTenantId } from '../utils/tenant.js';
+import { normalizeHex, pickCategoryColor } from '../utils/categoryColors.js';
 import {
   countActiveProductsByCategory,
   countCategories,
@@ -25,6 +26,7 @@ function normalizeCategoryRow(row) {
     ...row,
     id: String(row.id),
     parent_id: row.parent_id ? String(row.parent_id) : null,
+    color: row.color ? String(row.color) : null,
   };
 }
 
@@ -33,6 +35,13 @@ function resolveParentId(parentIdRaw) {
     return null;
   }
   return Number(parentIdRaw);
+}
+
+function resolveColor(payloadColor, name, { required = false } = {}) {
+  const fromPayload = normalizeHex(payloadColor);
+  if (fromPayload) return fromPayload;
+  if (required) return pickCategoryColor(name);
+  return null;
 }
 
 function resolveTenantFromUser(user) {
@@ -74,10 +83,14 @@ export async function createCategoria(payload = {}, user = null) {
   const tenantId = resolveTenantFromUser(user);
   const name = String(payload.name ?? '').trim();
   const parentIdParsed = resolveParentId(payload.parent_id);
+  const color = resolveColor(payload.color, name, { required: true });
 
   if (!name) throw new HttpError(400, 'name e obrigatorio');
   if (parentIdParsed !== null && !Number.isInteger(parentIdParsed)) {
     throw new HttpError(400, 'parent_id invalido');
+  }
+  if (payload.color != null && String(payload.color).trim() !== '' && !normalizeHex(payload.color)) {
+    throw new HttpError(400, 'color invalida (use #RRGGBB)');
   }
 
   if (parentIdParsed !== null) {
@@ -96,6 +109,7 @@ export async function createCategoria(payload = {}, user = null) {
       cloudId,
       updatedAt: now,
       tenantId,
+      color,
     });
   } catch (err) {
     if (String(err?.message || '').includes('UNIQUE constraint failed')) {
@@ -112,6 +126,7 @@ export async function createCategoria(payload = {}, user = null) {
       cloud_id: cloudId,
       name,
       parent_id: parentIdParsed ?? null,
+      color,
       tenant_id: tenantId,
       updated_at: now,
       deleted: false,
@@ -125,6 +140,7 @@ export async function createCategoria(payload = {}, user = null) {
     id: String(insertResult.lastID),
     name,
     parent_id: parentIdParsed ? String(parentIdParsed) : null,
+    color,
   };
 }
 
@@ -142,9 +158,17 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
   if (parentIdParsed !== null && parentIdParsed === categoryId) {
     throw new HttpError(400, 'Um grupo nao pode ser pai dele mesmo');
   }
+  if (payload.color != null && String(payload.color).trim() !== '' && !normalizeHex(payload.color)) {
+    throw new HttpError(400, 'color invalida (use #RRGGBB)');
+  }
 
   const currentRow = await findCategoryById(categoryId, tenantId);
   if (!currentRow) throw new HttpError(404, 'Grupo nao encontrado');
+
+  const color =
+    resolveColor(payload.color, name, { required: false }) ??
+    normalizeHex(currentRow.color) ??
+    pickCategoryColor(name);
 
   const ensuredCloudId =
     currentRow?.cloud_id && isUuidString(String(currentRow.cloud_id)) ? String(currentRow.cloud_id) : uuidv4();
@@ -164,6 +188,7 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
       cloudId: ensuredCloudId,
       updatedAt: now,
       tenantId,
+      color,
     });
   } catch (err) {
     if (String(err?.message || '').includes('UNIQUE constraint failed')) {
@@ -174,12 +199,27 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
 
   await deleteCategoryTombstonesByNameOrCloudId(name, ensuredCloudId, tenantId).catch(() => {});
 
+  // Propaga a cor do grupo para os produtos dessa familia
+  try {
+    await run(
+      `UPDATE products
+       SET color = ?, updated_at = ?
+       WHERE category_id = ?
+         AND tenant_id = ?
+         AND COALESCE(deleted, 0) = 0`,
+      [color, now, categoryId, tenantId]
+    );
+  } catch (propagateErr) {
+    console.warn('[categorias] falha ao propagar cor aos produtos:', propagateErr?.message || propagateErr);
+  }
+
   try {
     await enqueueSync('category', {
       id: Number(categoryId),
       cloud_id: ensuredCloudId,
       name,
       parent_id: parentIdParsed ?? null,
+      color,
       tenant_id: tenantId,
       updated_at: now,
       deleted: false,
@@ -194,6 +234,7 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
     id: String(categoryId),
     name,
     parent_id: parentIdParsed ? String(parentIdParsed) : null,
+    color,
   };
 }
 

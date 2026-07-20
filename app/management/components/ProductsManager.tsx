@@ -5,14 +5,22 @@ import {
   RotateCcw, FolderPlus, Edit, Trash2, Plus, Edit3, Trash, 
   Printer, FileText, Hash, Download, 
   Upload, Search, ChevronRight, ChevronDown, Package, Folder,
-  Check, X, Loader2, ArrowRight, AlertTriangle
+  Check, X, Loader2, AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt, moneyFieldLabel, POS_MONEY_PLACEHOLDER } from '@/lib/currency';
+import {
+  CATEGORY_COLOR_PALETTE,
+  pickCategoryColor,
+  randomCategoryColor,
+  resolveCategoryColor,
+} from '@/lib/categoryColors';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 function parseMoneyInput(raw: string): number {
   const n = Number(String(raw).replace(',', '.'));
@@ -25,6 +33,34 @@ function moneyInputValue(value: number | null | undefined): string | number {
   return value;
 }
 
+/** Gera EAN-13 interno (prefixo 200) com dígito de controlo. */
+function generateEan13Barcode(existing: Iterable<string | null | undefined> = []): string {
+  const used = new Set(
+    Array.from(existing, (v) => String(v ?? '').trim()).filter(Boolean)
+  );
+
+  const checkDigit = (twelve: string) => {
+    let sum = 0;
+    for (let i = 0; i < 12; i += 1) {
+      const n = Number(twelve[i]);
+      sum += i % 2 === 0 ? n : n * 3;
+    }
+    return String((10 - (sum % 10)) % 10);
+  };
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const rand = Math.floor(Math.random() * 1e9)
+      .toString()
+      .padStart(9, '0');
+    const twelve = `200${rand}`.slice(0, 12);
+    const code = `${twelve}${checkDigit(twelve)}`;
+    if (!used.has(code)) return code;
+  }
+
+  const fallback = `200${Date.now().toString().slice(-9)}`.padStart(12, '0').slice(0, 12);
+  return `${fallback}${checkDigit(fallback)}`;
+}
+
 interface Product {
   id: string;
   code?: number;
@@ -33,6 +69,12 @@ interface Product {
   barcode?: string;
   cost?: number;
   price: number;
+  tax_rate_id?: string | null;
+  tax_rate_name?: string | null;
+  tax_rate_code?: string | null;
+  tax_rate_percent?: number;
+  tax_rate_is_fixed?: boolean;
+  tax_rate_price_includes_tax?: boolean;
   tax?: number;
   final_price?: number;
   active: boolean;
@@ -40,6 +82,7 @@ interface Product {
   description?: string;
   age_restriction?: number;
   is_service?: boolean;
+  product_kind?: 'simple' | 'composed' | 'ingredient' | 'service';
   default_quantity?: boolean;
   stock_quantity: number;
   min_stock?: number;
@@ -52,15 +95,98 @@ interface Product {
   };
 }
 
+type ProductKind = 'simple' | 'composed' | 'ingredient' | 'service';
+
+type BomLineDraft = {
+  component_product_id: string;
+  quantity: number;
+  component_name?: string;
+  component_unit?: string;
+};
+
 interface Category {
   id: string;
   name: string;
-  parent_id?: string;
+  parent_id?: string | null;
+  color?: string | null;
+}
+
+interface TaxRate {
+  id: string;
+  name: string;
+  code: string;
+  rate: number;
+  isFixed: boolean;
+  priceIncludesTax?: boolean;
+  isDefault?: boolean;
+  enabled: boolean;
+}
+
+function buildCategoryPathLabel(
+  categories: Category[],
+  categoryId: string | null | undefined,
+  options?: { includeSelf?: boolean; leafName?: string }
+): string {
+  const byId = new Map(categories.map((c) => [String(c.id), c]));
+  const parts: string[] = ['Produtos'];
+  if (!categoryId) {
+    if (options?.leafName) parts.push(options.leafName);
+    return parts.join(' › ');
+  }
+
+  const chain: string[] = [];
+  let current: Category | undefined = byId.get(String(categoryId));
+  const guard = new Set<string>();
+  while (current && !guard.has(String(current.id))) {
+    guard.add(String(current.id));
+    chain.unshift(current.name);
+    const parentKey = current.parent_id ? String(current.parent_id) : '';
+    current = parentKey ? byId.get(parentKey) : undefined;
+  }
+
+  if (options?.includeSelf === false && chain.length > 0) {
+    chain.pop();
+  }
+  parts.push(...chain);
+  if (options?.leafName) parts.push(options.leafName);
+  return parts.join(' › ');
+}
+
+/** Árvore plana ordenada (pais antes dos filhos) com profundidade para indentação. */
+function flattenCategoryTree(categories: Category[]): Array<Category & { depth: number }> {
+  const byParent = new Map<string, Category[]>();
+  for (const cat of categories) {
+    const key = cat.parent_id ? String(cat.parent_id) : '';
+    const list = byParent.get(key) ?? [];
+    list.push(cat);
+    byParent.set(key, list);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
+  const result: Array<Category & { depth: number }> = [];
+  const visit = (parentKey: string, depth: number) => {
+    for (const cat of byParent.get(parentKey) ?? []) {
+      result.push({ ...cat, depth });
+      visit(String(cat.id), depth + 1);
+    }
+  };
+  visit('', 0);
+
+  // Categorias órfãs (parent inexistente) no fim
+  const seen = new Set(result.map((c) => String(c.id)));
+  for (const cat of categories) {
+    if (seen.has(String(cat.id))) continue;
+    result.push({ ...cat, depth: 0 });
+  }
+  return result;
 }
 
 export default function ProductsManager() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [taxRates, setTaxRates] = useState<TaxRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -92,6 +218,31 @@ export default function ProductsManager() {
   };
 
   const formatPrice = (value: number) => formatMoneyMt(value);
+
+  const calculateTaxValues = (priceRaw: number, taxRateId: string | null | undefined) => {
+    const price = Number(priceRaw) || 0;
+    const rate = taxRates.find((item) => item.id === String(taxRateId ?? ''));
+    if (!rate) return { tax: 0, final_price: price };
+    const priceIncludesTax = Number(rate.rate) === 0 ? false : rate.priceIncludesTax !== false;
+    if (rate.isFixed) {
+      if (priceIncludesTax) {
+        const tax = Math.min(price, Number(rate.rate));
+        return { tax: Math.round(tax * 100) / 100, final_price: Math.round(price * 100) / 100 };
+      }
+      const tax = Math.round(Number(rate.rate) * 100) / 100;
+      return { tax, final_price: Math.round((price + tax) * 100) / 100 };
+    }
+    const rateValue = Number(rate.rate) || 0;
+    if (priceIncludesTax) {
+      const tax =
+        rateValue > 0
+          ? Math.round((price - price / (1 + rateValue / 100)) * 100) / 100
+          : 0;
+      return { tax, final_price: Math.round(price * 100) / 100 };
+    }
+    const tax = Math.round(((price * rateValue) / 100) * 100) / 100;
+    return { tax, final_price: Math.round((price + tax) * 100) / 100 };
+  };
 
   const startResizing = (e: React.MouseEvent) => {
     resizeStartXRef.current = e.clientX;
@@ -145,11 +296,15 @@ export default function ProductsManager() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [categoryModalMode, setCategoryModalMode] = useState<'create' | 'edit'>('create');
-  const [categoryForm, setCategoryForm] = useState({ name: '', parent_id: '' });
+  const [categoryForm, setCategoryForm] = useState({ name: '', parent_id: '', color: pickCategoryColor('novo') });
   const [isDeleteCategoryConfirmOpen, setIsDeleteCategoryConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('detalhes');
   const newImageInputRef = useRef<HTMLInputElement | null>(null);
   const editImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [newBomLines, setNewBomLines] = useState<BomLineDraft[]>([]);
+  const [editBomLines, setEditBomLines] = useState<BomLineDraft[]>([]);
+  const [bomIngredientId, setBomIngredientId] = useState('');
+  const [bomQuantity, setBomQuantity] = useState('1');
   const [newProduct, setNewProduct] = useState({
     code: '',
     name: '',
@@ -157,6 +312,7 @@ export default function ProductsManager() {
     category_id: '',
     barcode: '',
     cost: 0,
+    tax_rate_id: '',
     tax: 0,
     final_price: 0,
     active: true,
@@ -164,13 +320,45 @@ export default function ProductsManager() {
     description: '',
     age_restriction: '',
     is_service: false,
+    product_kind: 'simple' as ProductKind,
     default_quantity: true,
     stock_quantity: 0,
     min_stock: 0,
     image: '',
   });
 
+  const ingredientOptions = React.useMemo(
+    () =>
+      products
+        .filter((p) => (p.product_kind ?? 'simple') === 'ingredient')
+        .map((p) => ({
+          value: String(p.id),
+          label: `${p.name}${p.unit ? ` (${p.unit})` : ''}`,
+          unit: p.unit || 'un',
+          name: p.name,
+        })),
+    [products]
+  );
+
+  const applyProductKind = <T extends { product_kind?: ProductKind; is_service?: boolean }>(
+    prev: T,
+    product_kind: ProductKind
+  ): T => ({
+    ...prev,
+    product_kind,
+    is_service:
+      product_kind === 'composed' || product_kind === 'service'
+        ? true
+        : product_kind === 'ingredient'
+          ? false
+          : false,
+  });
+
   const openNewProductModal = () => {
+    const defaultTaxRate =
+      taxRates.find((rate) => rate.isDefault && rate.enabled) ??
+      taxRates.find((rate) => rate.code === 'IVA16' && rate.enabled) ??
+      taxRates.find((rate) => rate.enabled);
     setNewProduct({
       code: '',
       name: '',
@@ -178,6 +366,7 @@ export default function ProductsManager() {
       category_id: selectedCategory ? String(selectedCategory) : '',
       barcode: '',
       cost: 0,
+      tax_rate_id: defaultTaxRate?.id ?? '',
       tax: 0,
       final_price: 0,
       active: true,
@@ -185,11 +374,15 @@ export default function ProductsManager() {
       description: '',
       age_restriction: '',
       is_service: false,
+      product_kind: 'simple',
       default_quantity: true,
       stock_quantity: 0,
       min_stock: 0,
       image: '',
     });
+    setNewBomLines([]);
+    setBomIngredientId('');
+    setBomQuantity('1');
     setActiveTab('detalhes');
     setIsNewProductModalOpen(true);
   };
@@ -198,16 +391,29 @@ export default function ProductsManager() {
     setLoading(true);
     try {
       const directApiBase = getPosApiDirectBase();
-      const [catRes, prodRes] = await Promise.all([
+      const [catRes, prodRes, taxRes] = await Promise.all([
         fetch(`${directApiBase}/categorias`),
-        fetch(`${directApiBase}/produtos`)
+        fetch(`${directApiBase}/produtos`),
+        fetch(`${directApiBase}/tax-rates`)
       ]);
       if (!catRes.ok) throw new Error(`Falha ao carregar categorias (${catRes.status})`);
       if (!prodRes.ok) throw new Error(`Falha ao carregar produtos (${prodRes.status})`);
+      if (!taxRes.ok) throw new Error(`Falha ao carregar impostos (${taxRes.status})`);
       const catData = unwrapApiSuccessPayload<any[]>(await catRes.json());
       const prodData = unwrapApiSuccessPayload<any[]>(await prodRes.json());
+      const taxData = unwrapApiSuccessPayload<TaxRate[]>(await taxRes.json());
       setCategories(catData || []);
       setProducts(prodData || []);
+      setTaxRates(
+        Array.isArray(taxData)
+          ? taxData.map((row) => ({
+              ...row,
+              priceIncludesTax:
+                Number(row.rate) === 0 ? false : row.priceIncludesTax !== false,
+              isDefault: Boolean(row.isDefault),
+            }))
+          : [],
+      );
     } catch (error) {
       console.error('Error fetching products/categories:', error);
     } finally {
@@ -223,8 +429,14 @@ export default function ProductsManager() {
     e.preventDefault();
     const productName = String(newProduct.name ?? '').trim();
     const productPrice = Number(newProduct.price);
-    if (!productName || !Number.isFinite(productPrice)) {
-      showToast('Informe nome e preco valido para salvar o produto.', 'error');
+    const isIngredient = newProduct.product_kind === 'ingredient';
+    if (!productName || (!isIngredient && !Number.isFinite(productPrice))) {
+      showToast(
+        isIngredient
+          ? 'Informe o nome do ingrediente.'
+          : 'Informe nome e preco valido para salvar o produto.',
+        'error'
+      );
       return;
     }
 
@@ -244,28 +456,41 @@ export default function ProductsManager() {
         body: JSON.stringify({
           code: finalCode,
           name: newProduct.name,
-          price: Number(newProduct.price),
+          price: isIngredient ? Number(newProduct.price) || 0 : Number(newProduct.price),
           category_id: newProduct.category_id || null,
           barcode: newProduct.barcode || null,
           cost: Number(newProduct.cost),
-          tax: Number(newProduct.tax),
-          final_price: Number(newProduct.final_price) || Number(newProduct.price),
+          tax_rate_id: newProduct.tax_rate_id || null,
           active: newProduct.active,
           unit: newProduct.unit,
           description: newProduct.description,
           age_restriction: Number(newProduct.age_restriction) || null,
-          is_service: newProduct.is_service,
+          is_service:
+            newProduct.product_kind === 'composed' || newProduct.product_kind === 'service',
+          product_kind: newProduct.product_kind || 'simple',
           default_quantity: newProduct.default_quantity,
           stock_quantity: Number(newProduct.stock_quantity) || 0,
-          min_stock: Number(newProduct.min_stock) || 0
-          ,
-          image: newProduct.image || null
+          min_stock: Number(newProduct.min_stock) || 0,
+          image: newProduct.image || null,
+          bom_lines:
+            newProduct.product_kind === 'composed'
+              ? newBomLines.map((line) => ({
+                  component_product_id: line.component_product_id,
+                  quantity: line.quantity,
+                }))
+              : [],
         })
       });
-      if (!response.ok) throw new Error('Falha ao criar produto');
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(
+          String((errJson as any)?.error?.message ?? (errJson as any)?.error ?? 'Falha ao criar produto')
+        );
+      }
       const createdResult = unwrapApiSuccessPayload<any>(await response.json());
       
       setIsNewProductModalOpen(false);
+      setNewBomLines([]);
       setNewProduct({
         code: '',
         name: '',
@@ -273,6 +498,7 @@ export default function ProductsManager() {
         category_id: '',
         barcode: '',
         cost: 0,
+        tax_rate_id: '',
         tax: 0,
         final_price: 0,
         active: true,
@@ -280,6 +506,7 @@ export default function ProductsManager() {
         description: '',
         age_restriction: '',
         is_service: false,
+        product_kind: 'simple',
         default_quantity: true,
         stock_quantity: 0,
         min_stock: 0,
@@ -324,8 +551,14 @@ export default function ProductsManager() {
     if (!editingProduct) return;
     const productName = String(editingProduct.name ?? '').trim();
     const productPrice = Number(editingProduct.price);
-    if (!productName || !Number.isFinite(productPrice)) {
-      showToast('Informe nome e preco valido para atualizar o produto.', 'error');
+    const isIngredient = (editingProduct.product_kind ?? 'simple') === 'ingredient';
+    if (!productName || (!isIngredient && !Number.isFinite(productPrice))) {
+      showToast(
+        isIngredient
+          ? 'Informe o nome do ingrediente.'
+          : 'Informe nome e preco valido para atualizar o produto.',
+        'error'
+      );
       return;
     }
 
@@ -337,24 +570,38 @@ export default function ProductsManager() {
         body: JSON.stringify({
           code: Number(editingProduct.code),
           name: editingProduct.name,
-          price: Number(editingProduct.price),
+          price: isIngredient ? Number(editingProduct.price) || 0 : Number(editingProduct.price),
           category_id: editingProduct.category_id || null,
           barcode: editingProduct.barcode || null,
           cost: Number(editingProduct.cost),
-          tax: Number(editingProduct.tax),
-          final_price: Number(editingProduct.final_price) || Number(editingProduct.price),
+          tax_rate_id: editingProduct.tax_rate_id || null,
           active: editingProduct.active,
           unit: editingProduct.unit,
           description: editingProduct.description,
           age_restriction: Number(editingProduct.age_restriction) || null,
-          is_service: editingProduct.is_service,
+          is_service:
+            (editingProduct.product_kind ?? 'simple') === 'composed' ||
+            (editingProduct.product_kind ?? 'simple') === 'service',
+          product_kind: editingProduct.product_kind || 'simple',
           default_quantity: editingProduct.default_quantity,
           stock_quantity: Number(editingProduct.stock_quantity) || 0,
           min_stock: Number(editingProduct.min_stock) || 0,
-          image: editingProduct.image || null
+          image: editingProduct.image || null,
+          bom_lines:
+            (editingProduct.product_kind ?? 'simple') === 'composed'
+              ? editBomLines.map((line) => ({
+                  component_product_id: line.component_product_id,
+                  quantity: line.quantity,
+                }))
+              : [],
         })
       });
-      if (!response.ok) throw new Error('Falha ao atualizar produto');
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(
+          String((errJson as any)?.error?.message ?? (errJson as any)?.error ?? 'Falha ao atualizar produto')
+        );
+      }
       const updatedResult = unwrapApiSuccessPayload<any>(await response.json());
       
       const editedCategoryId = editingProduct.category_id ? String(editingProduct.category_id) : null;
@@ -382,22 +629,103 @@ export default function ProductsManager() {
   const filteredProducts = products.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                          (p.barcode && p.barcode.includes(searchQuery));
-    const matchesCategory = !selectedCategory || p.category_id === selectedCategory;
+    if (!selectedCategory) {
+      return matchesSearch;
+    }
+    // Inclui produtos do grupo e dos subgrupos
+    const allowedIds = new Set<string>([String(selectedCategory)]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const cat of categories) {
+        const parentKey = cat.parent_id ? String(cat.parent_id) : '';
+        const id = String(cat.id);
+        if (parentKey && allowedIds.has(parentKey) && !allowedIds.has(id)) {
+          allowedIds.add(id);
+          grew = true;
+        }
+      }
+    }
+    const matchesCategory = p.category_id != null && allowedIds.has(String(p.category_id));
     return matchesSearch && matchesCategory;
   });
 
-  const primaryTabs = [
+  const currentFormKind: ProductKind = isEditProductModalOpen
+    ? ((editingProduct?.product_kind as ProductKind) ?? 'simple')
+    : newProduct.product_kind;
+  const resolvedPrimaryTabs = [
     { key: 'detalhes', label: 'Detalhes' },
-    { key: 'preco', label: 'Preço & impostos' },
-    { key: 'estoque', label: 'Controle de estoque' },
-  ] as const;
+    {
+      key: 'preco',
+      label: currentFormKind === 'ingredient' ? 'Custo' : 'Preço & impostos',
+    },
+    ...(currentFormKind === 'composed' ? [{ key: 'ficha', label: 'Ficha técnica' }] : []),
+    ...(currentFormKind === 'composed' || currentFormKind === 'service'
+      ? []
+      : [{ key: 'estoque', label: 'Controle de estoque' }]),
+  ];
   const secondaryTabs = [
     { key: 'comentarios', label: 'Comentários' },
     { key: 'imagem', label: 'Imagem & cor' },
   ] as const;
   const activeIsSecondary = secondaryTabs.some((tab) => tab.key === activeTab);
-  const topTabs = activeIsSecondary ? primaryTabs : secondaryTabs;
-  const bottomTabs = activeIsSecondary ? secondaryTabs : primaryTabs;
+  const topTabs = activeIsSecondary ? resolvedPrimaryTabs : secondaryTabs;
+  const bottomTabs = activeIsSecondary ? secondaryTabs : resolvedPrimaryTabs;
+
+  const loadBomForProduct = async (productId: string) => {
+    try {
+      const res = await fetch(`${getPosApiDirectBase()}/produtos/${productId}/bom`);
+      if (!res.ok) {
+        setEditBomLines([]);
+        return;
+      }
+      const data = unwrapApiSuccessPayload<BomLineDraft[]>(await res.json());
+      setEditBomLines(
+        Array.isArray(data)
+          ? data.map((line) => ({
+              component_product_id: String(line.component_product_id),
+              quantity: Number(line.quantity ?? 0),
+              component_name: line.component_name,
+              component_unit: line.component_unit,
+            }))
+          : []
+      );
+    } catch {
+      setEditBomLines([]);
+    }
+  };
+
+  const addBomLine = (target: 'new' | 'edit') => {
+    if (!bomIngredientId) return;
+    const qty = Number(String(bomQuantity).replace(',', '.'));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      showToast('Informe uma quantidade válida na ficha técnica.', 'error');
+      return;
+    }
+    const option = ingredientOptions.find((item) => item.value === bomIngredientId);
+    if (!option) {
+      showToast('Selecione um ingrediente.', 'error');
+      return;
+    }
+    const setter = target === 'new' ? setNewBomLines : setEditBomLines;
+    setter((prev) => {
+      if (prev.some((line) => line.component_product_id === bomIngredientId)) {
+        showToast('Este ingrediente já está na ficha técnica.', 'error');
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          component_product_id: bomIngredientId,
+          quantity: qty,
+          component_name: option.name,
+          component_unit: option.unit,
+        },
+      ];
+    });
+    setBomIngredientId('');
+    setBomQuantity('1');
+  };
 
   const handleNewImageSelected = (file: File | null) => {
     if (!file) return;
@@ -421,9 +749,35 @@ export default function ProductsManager() {
     ? categories.find((cat) => String(cat.id) === String(selectedCategory)) ?? null
     : null;
 
+  const categoryTree = React.useMemo(() => flattenCategoryTree(categories), [categories]);
+
+  const categoryPathPreview = React.useMemo(() => {
+    const parentId = categoryForm.parent_id || null;
+    const leaf =
+      categoryModalMode === 'edit'
+        ? categoryForm.name.trim() || selectedCategoryData?.name || 'Grupo'
+        : categoryForm.name.trim() || 'Novo grupo';
+    if (categoryModalMode === 'edit' && selectedCategoryData) {
+      // Path até o pai + nome em edição
+      return buildCategoryPathLabel(categories, parentId || null, { leafName: leaf });
+    }
+    return buildCategoryPathLabel(categories, parentId, { leafName: leaf });
+  }, [
+    categories,
+    categoryForm.parent_id,
+    categoryForm.name,
+    categoryModalMode,
+    selectedCategoryData,
+  ]);
+
   const openCreateCategoryModal = () => {
     setCategoryModalMode('create');
-    setCategoryForm({ name: '', parent_id: '' });
+    setCategoryForm({
+      name: '',
+      // Se um grupo estiver seleccionado, o novo grupo nasce como subgrupo desse.
+      parent_id: selectedCategory ? String(selectedCategory) : '',
+      color: randomCategoryColor(),
+    });
     setIsCategoryModalOpen(true);
   };
 
@@ -436,6 +790,7 @@ export default function ProductsManager() {
     setCategoryForm({
       name: selectedCategoryData.name ?? '',
       parent_id: selectedCategoryData.parent_id ? String(selectedCategoryData.parent_id) : '',
+      color: resolveCategoryColor(selectedCategoryData.color, selectedCategoryData.name ?? 'grupo'),
     });
     setIsCategoryModalOpen(true);
   };
@@ -465,6 +820,7 @@ export default function ProductsManager() {
         body: JSON.stringify({
           name: trimmedName,
           parent_id: categoryForm.parent_id || null,
+          color: categoryForm.color || pickCategoryColor(trimmedName),
         }),
       });
       const rawBody = await response.text();
@@ -535,53 +891,63 @@ export default function ProductsManager() {
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       {/* Toolbar */}
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
-        <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
-        <ToolbarButton icon={<FolderPlus size={20} />} label="Novo grupo" onClick={openCreateCategoryModal} />
-        <ToolbarButton icon={<Edit size={20} />} label="Editar grupo" onClick={openEditCategoryModal} disabled={!selectedCategoryData} />
-        <ToolbarButton icon={<Trash2 size={20} />} label="Deletar grupo" onClick={() => {
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
+        <ManagementToolbarButton icon={<FolderPlus size={20} />} label="Novo grupo" onClick={openCreateCategoryModal} />
+        <ManagementToolbarButton icon={<Edit size={20} />} label="Editar grupo" onClick={openEditCategoryModal} disabled={!selectedCategoryData} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar grupo" onClick={() => {
           if (!selectedCategoryData) {
             showToast('Selecione um grupo para excluir.', 'error');
             return;
           }
           setIsDeleteCategoryConfirmOpen(true);
         }} disabled={!selectedCategoryData} />
-        <ToolbarButton 
+        <ManagementToolbarButton 
           icon={<Plus size={20} />} 
           label="Novo produto" 
           active={isNewProductModalOpen}
           onClick={openNewProductModal}
         />
-        <ToolbarButton 
+        <ManagementToolbarButton 
           icon={<Edit3 size={20} />} 
           label="Editar produto" 
           active={isEditProductModalOpen}
           onClick={() => {
             if (selectedProductId) {
-              const p = products.find(prod => prod.id === selectedProductId);
+              const p = products.find((prod) => String(prod.id) === String(selectedProductId));
               if (p) {
-                setEditingProduct(p);
+                setEditingProduct({
+                  ...p,
+                  product_kind: (p.product_kind as ProductKind) || 'simple',
+                });
+                setBomIngredientId('');
+                setBomQuantity('1');
                 setActiveTab('detalhes');
                 setIsEditProductModalOpen(true);
+                if ((p.product_kind || 'simple') === 'composed') {
+                  void loadBomForProduct(String(p.id));
+                } else {
+                  setEditBomLines([]);
+                }
               }
             }
           }}
         />
-        <ToolbarButton 
+        <ManagementToolbarButton 
           icon={<Trash size={20} />} 
           label="Deletar produto" 
           active={isDeleteConfirmOpen}
           onClick={() => {
             if (selectedProductId) {
-              setProductToDelete(selectedProductId);
+              setProductToDelete(String(selectedProductId));
               setIsDeleteConfirmOpen(true);
             }
           }}
         />
-        <ToolbarButton icon={<Printer size={20} />} label="Imprimir" />
-        <ToolbarButton icon={<FileText size={20} />} label="Salvar como PDF" />
-        <ToolbarButton icon={<Hash size={20} />} label="Etiquetas de preço" />
-        <ToolbarButton icon={<Download size={20} />} label="Importar" />
-        <ToolbarButton icon={<Upload size={20} />} label="Exportar" />
+        <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" />
+        <ManagementToolbarButton icon={<FileText size={20} />} label="Salvar como PDF" />
+        <ManagementToolbarButton icon={<Hash size={20} />} label="Etiquetas de preço" />
+        <ManagementToolbarButton icon={<Download size={20} />} label="Importar" />
+        <ManagementToolbarButton icon={<Upload size={20} />} label="Exportar" />
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -593,13 +959,15 @@ export default function ProductsManager() {
           <div className="p-2 border-b border-zinc-800/50 flex items-center gap-2">
             <button 
               onClick={() => setIsTreeExpanded(!isTreeExpanded)}
-              className="p-1 hover:bg-zinc-800 rounded"
+              className="rounded p-1 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
             >
               {isTreeExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            <Folder size={16} className="text-blue-500" />
+            <Folder size={16} className="text-[#0001fb]" />
             <span 
-              className={`text-xs font-bold cursor-pointer ${!selectedCategory ? 'text-white' : 'text-zinc-400'}`}
+              className={`text-xs font-bold cursor-pointer transition-colors ${
+                !selectedCategory ? 'text-white hover:text-[#0001fb]' : 'text-zinc-400 hover:text-[#0001fb]'
+              }`}
               onClick={() => setSelectedCategory(null)}
             >
               Produtos
@@ -607,15 +975,24 @@ export default function ProductsManager() {
           </div>
           {isTreeExpanded && (
             <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
-              {categories.map(cat => (
+              {categoryTree.map((cat) => (
                 <div 
                   key={cat.id}
-                  onClick={() => setSelectedCategory(cat.id)}
-                  className={`flex items-center gap-2 px-6 py-1.5 rounded cursor-pointer transition-colors text-xs ${
-                    selectedCategory === cat.id ? 'bg-zinc-800/50 text-white' : 'hover:bg-zinc-800/50 text-zinc-400'
+                  onClick={() => setSelectedCategory(String(cat.id))}
+                  style={{ paddingLeft: `${12 + cat.depth * 14}px` }}
+                  className={`flex items-center gap-2 pr-2 py-1.5 rounded cursor-pointer transition-colors text-xs ${
+                    String(selectedCategory) === String(cat.id)
+                      ? 'bg-[var(--pos-brand-selected-bg)] text-white'
+                      : 'text-zinc-400 hover:text-[#0001fb]'
                   }`}
                 >
-                  <Folder size={14} />
+                  <Folder size={14} className="shrink-0" />
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/20"
+                    style={{
+                      backgroundColor: resolveCategoryColor(cat.color, cat.name),
+                    }}
+                  />
                   <span className="truncate">{cat.name}</span>
                 </div>
               ))}
@@ -653,10 +1030,10 @@ export default function ProductsManager() {
           </div>
 
           {/* Table */}
-          <div className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]">
-            <table className="min-w-full text-left text-xs border-collapse table-fixed">
-              <thead className="sticky top-0 bg-[#141414] z-10">
-                <tr className="text-zinc-400">
+          <div className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]">
+            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+              <thead className="sticky top-0 z-10 bg-[#141414]">
+                <tr className="border-b border-[#0001fb]/70">
                   <ResizableHeader width={columnWidths.code} label="Cód. Prod." onResize={(e) => startResizingColumn(e, 'code')} />
                   <ResizableHeader width={columnWidths.name} label="Nome" onResize={(e) => startResizingColumn(e, 'name')} />
                   <ResizableHeader width={columnWidths.category} label="Grupo" onResize={(e) => startResizingColumn(e, 'category')} />
@@ -688,37 +1065,58 @@ export default function ProductsManager() {
                     </td>
                   </tr>
                 ) : (
-                  filteredProducts.map((p, i) => (
+                  filteredProducts.map((p, i) => {
+                    const productId = String(p.id);
+                    const isSelected = selectedProductId === productId;
+                    return (
                     <tr 
-                      key={p.id} 
-                      onClick={() => setSelectedProductId(p.id)}
+                      key={productId} 
+                      onClick={() => setSelectedProductId(productId)}
                       onDoubleClick={() => {
-                        setEditingProduct(p);
+                        setSelectedProductId(productId);
+                        setEditingProduct({
+                          ...p,
+                          product_kind: (p.product_kind as ProductKind) || 'simple',
+                        });
+                        setBomIngredientId('');
+                        setBomQuantity('1');
                         setActiveTab('detalhes');
                         setIsEditProductModalOpen(true);
+                        if ((p.product_kind || 'simple') === 'composed') {
+                          void loadBomForProduct(productId);
+                        } else {
+                          setEditBomLines([]);
+                        }
                       }}
-                      className={`border-b border-zinc-800/70 transition-colors cursor-pointer ${
-                        selectedProductId === p.id ? 'bg-zinc-800/50' : i % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#141414]'
-                      } hover:bg-zinc-800/30`}
+                      className={`transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'bg-[var(--pos-brand-selected-bg)]'
+                          : i % 2
+                            ? 'bg-[#171717]'
+                            : 'bg-[#1d1d1d]'
+                      } hover:bg-[var(--pos-brand-hover-bg)]`}
                     >
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 whitespace-nowrap truncate">{p.code || '---'}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-medium border-r border-zinc-800/80 whitespace-nowrap truncate">{p.name}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 whitespace-nowrap truncate">{p.categories?.name || 'Geral'}</td>
-                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{p.barcode || '---'}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.cost || 0)}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.price)}</td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.tax || 0)}</td>
-                      <td className="px-4 py-2.5 text-zinc-200 font-bold border-r border-zinc-800/80 text-right whitespace-nowrap truncate">{formatPrice(p.final_price || p.price)}</td>
-                      <td className="px-4 py-2.5 border-r border-zinc-800/80 text-center whitespace-nowrap">
+                      <td className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap truncate">{p.code || '---'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap truncate">{p.name}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 whitespace-nowrap truncate">{p.categories?.name || 'Geral'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 whitespace-nowrap truncate">{p.barcode || '---'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap truncate">{formatPrice(p.cost || 0)}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap truncate">{formatPrice(p.price)}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap truncate">
+                        {p.tax_rate_name ? `${p.tax_rate_name} (${Number(p.tax_rate_percent ?? 0)}%)` : '---'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap truncate">{formatPrice(p.final_price || p.price)}</td>
+                      <td className="px-3 py-2 text-xs text-center whitespace-nowrap">
                         <div className="flex justify-center">
                           {p.active ? <Check size={14} className="text-emerald-500" /> : <X size={14} className="text-rose-500" />}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-zinc-400 border-r border-zinc-800/80 text-center whitespace-nowrap truncate">{p.unit || 'un'}</td>
-                      <td className="px-4 py-2.5 text-zinc-500 border-r border-zinc-800/80 whitespace-nowrap truncate">{new Date(p.created_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-2.5 text-zinc-500 whitespace-nowrap truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-center whitespace-nowrap truncate">{p.unit || 'un'}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 whitespace-nowrap truncate">{new Date(p.created_at).toLocaleDateString()}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 whitespace-nowrap truncate">{new Date(p.updated_at).toLocaleDateString()}</td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -736,25 +1134,29 @@ export default function ProductsManager() {
             className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 flex items-center justify-between bg-[#1a1a1a]">
+            <div className="p-4 flex items-center bg-[#1a1a1a]">
               <h3 className="text-xl text-zinc-200">
                 {categoryModalMode === 'edit' ? 'Editar grupo' : 'Novo grupo'}
               </h3>
-              <ArrowRight size={24} className="text-zinc-200" />
             </div>
 
             <div className="flex border-b border-zinc-800">
               <button
                 type="button"
-                className="relative px-6 py-2 text-[11px] font-medium bg-[#2da8df] text-white"
+                className="relative px-6 py-2 text-[11px] font-medium bg-[#0001fb] text-white"
               >
                 Detalhes
-                <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
               </button>
-              <div className="flex-1 border-b border-[#00a3e0]" />
+              <div className="flex-1 border-b border-[#0001fb]" />
             </div>
 
             <form id="category-form" onSubmit={handleSaveCategory} className="p-6 space-y-5 bg-[#1a1a1a]">
+              <div className="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-[11px] text-zinc-400">
+                Caminho:{' '}
+                <span className="font-medium text-zinc-200">{categoryPathPreview}</span>
+              </div>
+
               <div className="space-y-2">
                 <label className="text-xs text-zinc-400">Nome</label>
                 <input
@@ -768,18 +1170,72 @@ export default function ProductsManager() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-400">Grupo</label>
+                <label className="text-xs text-zinc-400">Grupo pai</label>
                 <PosSelect
                   value={categoryForm.parent_id}
                   onChange={(v) => setCategoryForm((prev) => ({ ...prev, parent_id: v }))}
                   size="md"
                   options={[
                     { value: '', label: 'Produtos' },
-                    ...categories
+                    ...categoryTree
                       .filter((cat) => categoryModalMode !== 'edit' || String(cat.id) !== String(selectedCategoryData?.id))
-                      .map((cat) => ({ value: String(cat.id), label: cat.name })),
+                      .map((cat) => ({
+                        value: String(cat.id),
+                        label: `${'— '.repeat(cat.depth)}${cat.name}`,
+                      })),
                   ]}
                 />
+                <p className="text-[10px] text-zinc-500">
+                  Com um grupo seleccionado na árvore, «Novo grupo» cria automaticamente um subgrupo.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs text-zinc-400">Cor</label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCategoryForm((prev) => ({
+                        ...prev,
+                        color: randomCategoryColor(prev.color),
+                      }))
+                    }
+                    className="text-[10px] font-medium uppercase tracking-wide text-zinc-400 hover:text-white transition-colors"
+                  >
+                    Gerar outra
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {CATEGORY_COLOR_PALETTE.map((swatch) => {
+                    const active = categoryForm.color.toLowerCase() === swatch.toLowerCase();
+                    return (
+                      <button
+                        key={swatch}
+                        type="button"
+                        title={swatch}
+                        onClick={() => setCategoryForm((prev) => ({ ...prev, color: swatch }))}
+                        className={`h-8 w-8 rounded border-2 transition-transform ${
+                          active ? 'border-white scale-110' : 'border-transparent hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: swatch }}
+                      />
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="h-9 w-9 shrink-0 rounded border border-zinc-700"
+                    style={{ backgroundColor: categoryForm.color || '#2563eb' }}
+                  />
+                  <input
+                    type="text"
+                    value={categoryForm.color}
+                    onChange={(e) => setCategoryForm((prev) => ({ ...prev, color: e.target.value }))}
+                    placeholder="#2563eb"
+                    className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white font-mono focus:border-blue-500 outline-none transition-colors"
+                  />
+                </div>
               </div>
             </form>
 
@@ -787,7 +1243,7 @@ export default function ProductsManager() {
               <button
                 type="submit"
                 form="category-form"
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
               >
                 <Check size={16} />
                 Salvar
@@ -795,7 +1251,7 @@ export default function ProductsManager() {
               <button
                 type="button"
                 onClick={() => setIsCategoryModalOpen(false)}
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
               >
                 <X size={16} />
                 Cancelar
@@ -810,9 +1266,8 @@ export default function ProductsManager() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setIsNewProductModalOpen(false)}>
           <div className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
             {/* Header */}
-            <div className="p-4 flex items-center justify-between bg-[#1a1a1a]">
+            <div className="p-4 flex items-center bg-[#1a1a1a]">
               <h3 className="text-xl text-zinc-200">Novo produto</h3>
-              <ArrowRight size={24} className="text-zinc-200" />
             </div>
 
             {/* Tabs */}
@@ -824,29 +1279,29 @@ export default function ProductsManager() {
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
-                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                      activeTab === tab.key ? 'bg-[#0001fb] text-white' : 'text-zinc-400 hover:text-[#0001fb]'
                     }`}
                   >
                     {tab.label}
                     {activeTab === tab.key && (
-                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
                     )}
                   </button>
                 ))}
               </div>
-              <div className="flex border-b border-[#00a3e0]">
+              <div className="flex border-b border-[#0001fb]">
                 {bottomTabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
-                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                      activeTab === tab.key ? 'bg-[#0001fb] text-white' : 'text-zinc-400 hover:text-[#0001fb]'
                     }`}
                   >
                     {tab.label}
                     {activeTab === tab.key && (
-                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
                     )}
                   </button>
                 ))}
@@ -879,13 +1334,20 @@ export default function ProductsManager() {
 
                   <div className="space-y-2">
                     <label className="text-xs text-zinc-400 mr-2">Código de barras</label>
-                    <input 
-                      type="text" 
+                    <BarcodeChipField
                       value={newProduct.barcode ?? ''}
-                      onChange={(e) => setNewProduct({...newProduct, barcode: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                      onChange={(barcode) => setNewProduct((prev) => ({ ...prev, barcode }))}
                     />
-                    <button type="button" className="mt-1 text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const code = generateEan13Barcode(products.map((p) => p.barcode));
+                        setNewProduct((prev) => ({ ...prev, barcode: code }));
+                      }}
+                      className="mt-1 text-[11px] text-[#0001fb] hover:text-[#1a1bff] hover:underline"
+                    >
+                      Gerar código de barras
+                    </button>
                   </div>
 
                   <div className="space-y-2">
@@ -911,39 +1373,52 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-3 pt-2">
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setNewProduct({...newProduct, active: !newProduct.active})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${newProduct.active ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${newProduct.active ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Ativo</span>
-                    </div>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Tipo de produto</label>
+                    <PosSelect
+                      value={newProduct.product_kind}
+                      onChange={(v) => {
+                        const kind = (v as ProductKind) || 'simple';
+                        setNewProduct((prev) => applyProductKind(prev, kind));
+                        if (kind !== 'composed') setNewBomLines([]);
+                        setActiveTab((tab) => {
+                          if ((kind === 'service' || kind === 'composed') && tab === 'estoque') {
+                            return kind === 'composed' ? 'ficha' : 'detalhes';
+                          }
+                          if (kind !== 'composed' && tab === 'ficha') return 'detalhes';
+                          return tab;
+                        });
+                      }}
+                      size="md"
+                      options={[
+                        { value: 'simple', label: 'Simples (venda + stock)' },
+                        { value: 'service', label: 'Serviço (venda sem stock)' },
+                        { value: 'composed', label: 'Composto (ficha técnica)' },
+                        { value: 'ingredient', label: 'Ingrediente (só stock)' },
+                      ]}
+                    />
+                    {newProduct.product_kind === 'ingredient' ? (
+                      <p className="text-[10px] text-zinc-500">Não aparece no POS para venda — só compras e ficha técnica.</p>
+                    ) : null}
+                    {newProduct.product_kind === 'service' ? (
+                      <p className="text-[10px] text-zinc-500">Vende no POS sem controlar stock.</p>
+                    ) : null}
+                    {newProduct.product_kind === 'composed' ? (
+                      <p className="text-[10px] text-zinc-500">Não controla stock próprio; a venda baixa os ingredientes da ficha técnica.</p>
+                    ) : null}
+                  </div>
 
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setNewProduct({...newProduct, default_quantity: !newProduct.default_quantity})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${newProduct.default_quantity ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${newProduct.default_quantity ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Quantidade padrão</span>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setNewProduct({...newProduct, is_service: !newProduct.is_service})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${newProduct.is_service ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${newProduct.is_service ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Não controlar estoque (serviço)</span>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-x-8 gap-y-2 pt-2">
+                    <PosSwitch
+                      label="Ativo"
+                      checked={Boolean(newProduct.active)}
+                      onChange={(active) => setNewProduct({ ...newProduct, active })}
+                    />
+                    <PosSwitch
+                      label="Quantidade padrão"
+                      checked={Boolean(newProduct.default_quantity)}
+                      onChange={(default_quantity) => setNewProduct({ ...newProduct, default_quantity })}
+                    />
                   </div>
 
                   <div className="space-y-2">
@@ -960,67 +1435,204 @@ export default function ProductsManager() {
 
               {activeTab === 'preco' && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
-                      <input 
-                        type="number" 
-                        required
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(newProduct.price)}
-                        onChange={(e) => {
-                          const val = parseMoneyInput(e.target.value);
-                          setNewProduct({...newProduct, price: val, final_price: val + (newProduct.tax || 0)});
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(newProduct.cost)}
-                        onChange={(e) => setNewProduct({...newProduct, cost: parseMoneyInput(e.target.value)})}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
-                      />
-                    </div>
-                  </div>
+                  {newProduct.product_kind === 'ingredient' ? (
+                    <>
+                      <p className="text-xs text-zinc-500">
+                        Ingredientes não vendem no POS. O preço de venda é opcional (fica 0 se vazio). Use o custo para compras e valorização.
+                      </p>
+                      <div className="space-y-1">
+                        <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          placeholder={POS_MONEY_PLACEHOLDER}
+                          value={moneyInputValue(newProduct.cost)}
+                          onChange={(e) => setNewProduct({ ...newProduct, cost: parseMoneyInput(e.target.value) })}
+                          className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda (opcional)')}</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          placeholder={POS_MONEY_PLACEHOLDER}
+                          value={moneyInputValue(newProduct.price)}
+                          onChange={(e) => {
+                            const val = parseMoneyInput(e.target.value);
+                            setNewProduct({
+                              ...newProduct,
+                              price: val,
+                              ...calculateTaxValues(val, newProduct.tax_rate_id),
+                            });
+                          }}
+                          className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
+                          <input 
+                            type="number" 
+                            required
+                            step="0.01"
+                            min="0"
+                            inputMode="decimal"
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(newProduct.price)}
+                            onChange={(e) => {
+                              const val = parseMoneyInput(e.target.value);
+                              setNewProduct({
+                                ...newProduct,
+                                price: val,
+                                ...calculateTaxValues(val, newProduct.tax_rate_id),
+                              });
+                            }}
+                            className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            min="0"
+                            inputMode="decimal"
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(newProduct.cost)}
+                            onChange={(e) => setNewProduct({...newProduct, cost: parseMoneyInput(e.target.value)})}
+                            className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                          />
+                        </div>
+                      </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">Imposto</label>
+                          <PosSelect
+                            value={newProduct.tax_rate_id}
+                            onChange={(tax_rate_id) =>
+                              setNewProduct({
+                                ...newProduct,
+                                tax_rate_id,
+                                ...calculateTaxValues(newProduct.price, tax_rate_id),
+                              })
+                            }
+                            options={taxRates
+                              .filter((rate) => rate.enabled)
+                              .map((rate) => ({
+                                value: rate.id,
+                                label: (() => {
+                                  if (Number(rate.rate) === 0) return `${rate.name} (isento)`;
+                                  const mode =
+                                    rate.priceIncludesTax === false ? ' + imposto' : ' c/ imposto';
+                                  return rate.isFixed
+                                    ? `${rate.name} (${rate.rate.toFixed(2)} MT)${mode}`
+                                    : `${rate.name} (${rate.rate}%)${mode}`;
+                                })(),
+                              }))}
+                          />
+                          <p className="text-[10px] text-zinc-500">Valor calculado: {formatPrice(newProduct.tax || 0)}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
+                          <input 
+                            type="number" 
+                            disabled
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(newProduct.final_price)}
+                            className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'ficha' && newProduct.product_kind === 'composed' && (
+                <div className="space-y-4">
+                  <p className="text-xs text-zinc-500">
+                    Adicione ingredientes (tipo Ingrediente). Ao vender este produto, o stock baixa nestes itens.
+                  </p>
+                  <div className="grid grid-cols-[1fr_88px_auto] gap-2 items-end">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Imposto')}</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(newProduct.tax)}
-                        onChange={(e) => {
-                          const val = parseMoneyInput(e.target.value);
-                          setNewProduct({...newProduct, tax: val, final_price: (newProduct.price || 0) + val});
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                      <label className="text-xs text-zinc-400">Ingrediente</label>
+                      <PosSelect
+                        value={bomIngredientId}
+                        onChange={setBomIngredientId}
+                        size="md"
+                        placeholder={ingredientOptions.length ? 'Selecionar…' : 'Crie ingredientes primeiro'}
+                        options={[
+                          { value: '', label: ingredientOptions.length ? 'Selecionar…' : 'Sem ingredientes' },
+                          ...ingredientOptions.map((opt) => ({ value: opt.value, label: opt.label })),
+                        ]}
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
-                      <input 
-                        type="number" 
-                        disabled
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(newProduct.final_price)}
-                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
+                      <label className="text-xs text-zinc-400">Qtd</label>
+                      <input
+                        type="number"
+                        min="0.001"
+                        step="0.001"
+                        value={bomQuantity}
+                        onChange={(e) => setBomQuantity(e.target.value)}
+                        className="w-full rounded border border-zinc-800 bg-[#1a1a1a] px-2 py-2 text-sm text-white outline-none focus:border-blue-500"
                       />
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => addBomLine('new')}
+                      className="h-10 rounded bg-[#0001fb] px-3 text-xs font-medium text-white hover:bg-[#1a1bff]"
+                    >
+                      Adicionar
+                    </button>
                   </div>
+                  {newBomLines.length === 0 ? (
+                    <p className="py-6 text-center text-xs text-zinc-600 italic">Nenhum ingrediente na ficha técnica</p>
+                  ) : (
+                    <div className="overflow-hidden rounded border border-zinc-800">
+                      <table className="w-full border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+                        <thead className="bg-[#141414]">
+                          <tr className="border-b border-[#0001fb]/70">
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Ingrediente</th>
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Qtd</th>
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Un.</th>
+                            <th className="px-3 py-2" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {newBomLines.map((line) => (
+                            <tr key={line.component_product_id} className="border-t border-zinc-800/70">
+                              <td className="px-3 py-2 text-zinc-200">{line.component_name}</td>
+                              <td className="px-3 py-2 text-zinc-300">{line.quantity}</td>
+                              <td className="px-3 py-2 text-zinc-500">{line.component_unit || 'un'}</td>
+                              <td className="px-3 py-2 text-right">
+                                <button
+                                  type="button"
+                                  className="text-rose-400 hover:text-rose-300"
+                                  onClick={() =>
+                                    setNewBomLines((prev) =>
+                                      prev.filter((item) => item.component_product_id !== line.component_product_id)
+                                    )
+                                  }
+                                >
+                                  Remover
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1097,7 +1709,7 @@ export default function ProductsManager() {
               <button 
                 type="submit"
                 form="new-product-form"
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
               >
                 <Check size={16} />
                 Salvar
@@ -1105,7 +1717,7 @@ export default function ProductsManager() {
               <button 
                 type="button"
                 onClick={() => setIsNewProductModalOpen(false)}
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
               >
                 <X size={16} />
                 Cancelar
@@ -1120,9 +1732,8 @@ export default function ProductsManager() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => { setIsEditProductModalOpen(false); setEditingProduct(null); }}>
           <div className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
             {/* Header */}
-            <div className="p-4 flex items-center justify-between bg-[#1a1a1a]">
+            <div className="p-4 flex items-center bg-[#1a1a1a]">
               <h3 className="text-xl text-zinc-200">Editar produto</h3>
-              <ArrowRight size={24} className="text-zinc-200" />
             </div>
 
             {/* Tabs */}
@@ -1134,29 +1745,29 @@ export default function ProductsManager() {
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
-                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                      activeTab === tab.key ? 'bg-[#0001fb] text-white' : 'text-zinc-400 hover:text-[#0001fb]'
                     }`}
                   >
                     {tab.label}
                     {activeTab === tab.key && (
-                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
                     )}
                   </button>
                 ))}
               </div>
-              <div className="flex border-b border-[#00a3e0]">
+              <div className="flex border-b border-[#0001fb]">
                 {bottomTabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
-                      activeTab === tab.key ? 'bg-[#2da8df] text-white' : 'text-zinc-400 hover:text-zinc-200'
+                      activeTab === tab.key ? 'bg-[#0001fb] text-white' : 'text-zinc-400 hover:text-[#0001fb]'
                     }`}
                   >
                     {tab.label}
                     {activeTab === tab.key && (
-                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#2da8df]" />
+                      <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
                     )}
                   </button>
                 ))}
@@ -1189,13 +1800,22 @@ export default function ProductsManager() {
 
                   <div className="space-y-2">
                     <label className="text-xs text-zinc-400 mr-2">Código de barras</label>
-                    <input 
-                      type="text" 
+                    <BarcodeChipField
                       value={editingProduct.barcode ?? ''}
-                      onChange={(e) => setEditingProduct({...editingProduct, barcode: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                      onChange={(barcode) =>
+                        setEditingProduct((prev) => (prev ? { ...prev, barcode } : prev))
+                      }
                     />
-                    <button type="button" className="mt-1 text-[11px] text-blue-500 hover:underline">Gerar código de barras</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const code = generateEan13Barcode(products.map((p) => p.barcode));
+                        setEditingProduct((prev) => (prev ? { ...prev, barcode: code } : prev));
+                      }}
+                      className="mt-1 text-[11px] text-[#0001fb] hover:text-[#1a1bff] hover:underline"
+                    >
+                      Gerar código de barras
+                    </button>
                   </div>
 
                   <div className="space-y-2">
@@ -1221,39 +1841,52 @@ export default function ProductsManager() {
                     />
                   </div>
 
-                  <div className="space-y-3 pt-2">
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setEditingProduct({...editingProduct, active: !editingProduct.active})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${editingProduct.active ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${editingProduct.active ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Ativo</span>
-                    </div>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 mr-2">Tipo de produto</label>
+                    <PosSelect
+                      value={(editingProduct.product_kind as ProductKind) || 'simple'}
+                      onChange={(v) => {
+                        const kind = (v as ProductKind) || 'simple';
+                        setEditingProduct((prev) => (prev ? applyProductKind(prev, kind) : prev));
+                        if (kind !== 'composed') setEditBomLines([]);
+                        setActiveTab((tab) => {
+                          if ((kind === 'service' || kind === 'composed') && tab === 'estoque') {
+                            return kind === 'composed' ? 'ficha' : 'detalhes';
+                          }
+                          if (kind !== 'composed' && tab === 'ficha') return 'detalhes';
+                          return tab;
+                        });
+                      }}
+                      size="md"
+                      options={[
+                        { value: 'simple', label: 'Simples (venda + stock)' },
+                        { value: 'service', label: 'Serviço (venda sem stock)' },
+                        { value: 'composed', label: 'Composto (ficha técnica)' },
+                        { value: 'ingredient', label: 'Ingrediente (só stock)' },
+                      ]}
+                    />
+                    {(editingProduct.product_kind || 'simple') === 'ingredient' ? (
+                      <p className="text-[10px] text-zinc-500">Não aparece no POS para venda — só compras e ficha técnica.</p>
+                    ) : null}
+                    {(editingProduct.product_kind || 'simple') === 'service' ? (
+                      <p className="text-[10px] text-zinc-500">Vende no POS sem controlar stock.</p>
+                    ) : null}
+                    {(editingProduct.product_kind || 'simple') === 'composed' ? (
+                      <p className="text-[10px] text-zinc-500">Não controla stock próprio; a venda baixa os ingredientes da ficha técnica.</p>
+                    ) : null}
+                  </div>
 
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setEditingProduct({...editingProduct, default_quantity: !editingProduct.default_quantity})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${editingProduct.default_quantity ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${editingProduct.default_quantity ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Quantidade padrão</span>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setEditingProduct({...editingProduct, is_service: !editingProduct.is_service})}
-                        className={`w-10 h-5 rounded-sm relative transition-colors ${editingProduct.is_service ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                      >
-                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${editingProduct.is_service ? 'right-0.5' : 'left-0.5'}`} />
-                      </button>
-                      <span className="text-xs text-zinc-200">Não controlar estoque (serviço)</span>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-x-8 gap-y-2 pt-2">
+                    <PosSwitch
+                      label="Ativo"
+                      checked={Boolean(editingProduct.active)}
+                      onChange={(active) => setEditingProduct({ ...editingProduct, active })}
+                    />
+                    <PosSwitch
+                      label="Quantidade padrão"
+                      checked={Boolean(editingProduct.default_quantity)}
+                      onChange={(default_quantity) => setEditingProduct({ ...editingProduct, default_quantity })}
+                    />
                   </div>
 
                   <div className="space-y-2">
@@ -1270,67 +1903,208 @@ export default function ProductsManager() {
 
               {activeTab === 'preco' && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
-                      <input 
-                        type="number" 
-                        required
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(editingProduct.price)}
-                        onChange={(e) => {
-                          const val = parseMoneyInput(e.target.value);
-                          setEditingProduct({...editingProduct, price: val, final_price: val + (editingProduct.tax || 0)});
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(editingProduct.cost)}
-                        onChange={(e) => setEditingProduct({...editingProduct, cost: parseMoneyInput(e.target.value)})}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
-                      />
-                    </div>
-                  </div>
+                  {(editingProduct.product_kind || 'simple') === 'ingredient' ? (
+                    <>
+                      <p className="text-xs text-zinc-500">
+                        Ingredientes não vendem no POS. O preço de venda é opcional (fica 0 se vazio). Use o custo para compras e valorização.
+                      </p>
+                      <div className="space-y-1">
+                        <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          placeholder={POS_MONEY_PLACEHOLDER}
+                          value={moneyInputValue(editingProduct.cost)}
+                          onChange={(e) =>
+                            setEditingProduct({ ...editingProduct, cost: parseMoneyInput(e.target.value) })
+                          }
+                          className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda (opcional)')}</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          placeholder={POS_MONEY_PLACEHOLDER}
+                          value={moneyInputValue(editingProduct.price)}
+                          onChange={(e) => {
+                            const val = parseMoneyInput(e.target.value);
+                            setEditingProduct({
+                              ...editingProduct,
+                              price: val,
+                              ...calculateTaxValues(val, editingProduct.tax_rate_id),
+                            });
+                          }}
+                          className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço de Venda')}</label>
+                          <input 
+                            type="number" 
+                            required
+                            step="0.01"
+                            min="0"
+                            inputMode="decimal"
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(editingProduct.price)}
+                            onChange={(e) => {
+                              const val = parseMoneyInput(e.target.value);
+                              setEditingProduct({
+                                ...editingProduct,
+                                price: val,
+                                ...calculateTaxValues(val, editingProduct.tax_rate_id),
+                              });
+                            }}
+                            className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Custo')}</label>
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            min="0"
+                            inputMode="decimal"
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(editingProduct.cost)}
+                            onChange={(e) => setEditingProduct({...editingProduct, cost: parseMoneyInput(e.target.value)})}
+                            className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                          />
+                        </div>
+                      </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">Imposto</label>
+                          <PosSelect
+                            value={editingProduct.tax_rate_id ?? ''}
+                            onChange={(tax_rate_id) =>
+                              setEditingProduct({
+                                ...editingProduct,
+                                tax_rate_id,
+                                ...calculateTaxValues(editingProduct.price, tax_rate_id),
+                              })
+                            }
+                            options={taxRates
+                              .filter((rate) => rate.enabled || rate.id === editingProduct.tax_rate_id)
+                              .map((rate) => ({
+                                value: rate.id,
+                                label: (() => {
+                                  if (Number(rate.rate) === 0) return `${rate.name} (isento)`;
+                                  const mode =
+                                    rate.priceIncludesTax === false ? ' + imposto' : ' c/ imposto';
+                                  return rate.isFixed
+                                    ? `${rate.name} (${rate.rate.toFixed(2)} MT)${mode}`
+                                    : `${rate.name} (${rate.rate}%)${mode}`;
+                                })(),
+                              }))}
+                          />
+                          <p className="text-[10px] text-zinc-500">Valor calculado: {formatPrice(editingProduct.tax || 0)}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
+                          <input 
+                            type="number" 
+                            disabled
+                            placeholder={POS_MONEY_PLACEHOLDER}
+                            value={moneyInputValue(editingProduct.final_price)}
+                            className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'ficha' && (editingProduct.product_kind || 'simple') === 'composed' && (
+                <div className="space-y-4">
+                  <p className="text-xs text-zinc-500">
+                    Adicione ingredientes (tipo Ingrediente). Ao vender este produto, o stock baixa nestes itens.
+                  </p>
+                  <div className="grid grid-cols-[1fr_88px_auto] gap-2 items-end">
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Imposto')}</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        min="0"
-                        inputMode="decimal"
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(editingProduct.tax)}
-                        onChange={(e) => {
-                          const val = parseMoneyInput(e.target.value);
-                          setEditingProduct({...editingProduct, tax: val, final_price: (editingProduct.price || 0) + val});
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
+                      <label className="text-xs text-zinc-400">Ingrediente</label>
+                      <PosSelect
+                        value={bomIngredientId}
+                        onChange={setBomIngredientId}
+                        size="md"
+                        placeholder={ingredientOptions.length ? 'Selecionar…' : 'Crie ingredientes primeiro'}
+                        options={[
+                          { value: '', label: ingredientOptions.length ? 'Selecionar…' : 'Sem ingredientes' },
+                          ...ingredientOptions
+                            .filter((opt) => opt.value !== String(editingProduct.id))
+                            .map((opt) => ({ value: opt.value, label: opt.label })),
+                        ]}
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-zinc-400">{moneyFieldLabel('Preço Final')}</label>
-                      <input 
-                        type="number" 
-                        disabled
-                        placeholder={POS_MONEY_PLACEHOLDER}
-                        value={moneyInputValue(editingProduct.final_price)}
-                        className="w-full bg-[#141414] border border-zinc-800 rounded px-3 py-1.5 text-sm text-zinc-500 outline-none placeholder:text-zinc-700"
+                      <label className="text-xs text-zinc-400">Qtd</label>
+                      <input
+                        type="number"
+                        min="0.001"
+                        step="0.001"
+                        value={bomQuantity}
+                        onChange={(e) => setBomQuantity(e.target.value)}
+                        className="w-full rounded border border-zinc-800 bg-[#1a1a1a] px-2 py-2 text-sm text-white outline-none focus:border-blue-500"
                       />
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => addBomLine('edit')}
+                      className="h-10 rounded bg-[#0001fb] px-3 text-xs font-medium text-white hover:bg-[#1a1bff]"
+                    >
+                      Adicionar
+                    </button>
                   </div>
+                  {editBomLines.length === 0 ? (
+                    <p className="py-6 text-center text-xs text-zinc-600 italic">Nenhum ingrediente na ficha técnica</p>
+                  ) : (
+                    <div className="overflow-hidden rounded border border-zinc-800">
+                      <table className="w-full border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+                        <thead className="bg-[#141414]">
+                          <tr className="border-b border-[#0001fb]/70">
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Ingrediente</th>
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Qtd</th>
+                            <th className="px-3 py-2 text-xs font-bold text-zinc-300">Un.</th>
+                            <th className="px-3 py-2" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {editBomLines.map((line) => (
+                            <tr key={line.component_product_id} className="border-t border-zinc-800/70">
+                              <td className="px-3 py-2 text-zinc-200">{line.component_name}</td>
+                              <td className="px-3 py-2 text-zinc-300">{line.quantity}</td>
+                              <td className="px-3 py-2 text-zinc-500">{line.component_unit || 'un'}</td>
+                              <td className="px-3 py-2 text-right">
+                                <button
+                                  type="button"
+                                  className="text-rose-400 hover:text-rose-300"
+                                  onClick={() =>
+                                    setEditBomLines((prev) =>
+                                      prev.filter((item) => item.component_product_id !== line.component_product_id)
+                                    )
+                                  }
+                                >
+                                  Remover
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1407,7 +2181,7 @@ export default function ProductsManager() {
               <button 
                 type="submit"
                 form="edit-product-form"
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
               >
                 <Check size={16} />
                 Salvar
@@ -1418,7 +2192,7 @@ export default function ProductsManager() {
                   setIsEditProductModalOpen(false);
                   setEditingProduct(null);
                 }}
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
               >
                 <X size={16} />
                 Cancelar
@@ -1509,7 +2283,7 @@ export default function ProductsManager() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 50 }}
             className={`fixed bottom-6 right-6 z-[200] px-6 py-3 rounded-lg flex items-center gap-3 border ${
-              toast.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-500' : 'bg-red-500/10 border-red-500/50 text-red-500'
+              toast.type === 'success' ? 'bg-emerald-500/10 border-[#0001fb]/50 text-emerald-500' : 'bg-red-500/10 border-red-500/50 text-red-500'
             }`}
           >
             {toast.type === 'success' ? <Check size={18} /> : <AlertTriangle size={18} />}
@@ -1521,45 +2295,52 @@ export default function ProductsManager() {
   );
 }
 
-function ToolbarButton({
-  icon,
-  label,
-  onClick,
-  active,
-  disabled,
+function BarcodeChipField({
+  value,
+  onChange,
 }: {
-  icon: React.ReactNode,
-  label: string,
-  onClick?: () => void,
-  active?: boolean,
-  disabled?: boolean
+  value: string;
+  onChange: (value: string) => void;
 }) {
-  return (
-    <button 
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all group ${
-        disabled
-          ? 'text-zinc-600 cursor-not-allowed'
-          : active
-            ? 'bg-zinc-800 text-white hover:bg-zinc-700'
-            : 'text-zinc-400 hover:bg-zinc-800'
-      }`}
-    >
-      <div className="mb-1 group-hover:scale-110 transition-transform">
-        {icon}
+  const [focused, setFocused] = React.useState(false);
+  const trimmed = String(value ?? '').trim();
+  const showChip = trimmed.length > 0 && !focused;
+
+  if (showChip) {
+    return (
+      <div className="flex min-h-[34px] w-full items-center rounded border border-zinc-800 bg-[#1a1a1a] px-2 py-1.5">
+        <span className="inline-flex max-w-full items-center gap-1.5 rounded bg-[#0001fb] px-2 py-0.5 text-sm font-medium text-white">
+          <span className="truncate font-mono tracking-wide text-white">{trimmed}</span>
+          <button
+            type="button"
+            title="Apagar código de barras"
+            onClick={() => onChange('')}
+            className="shrink-0 rounded p-0.5 leading-none text-white transition-colors hover:bg-white/20"
+          >
+            <X size={12} strokeWidth={2.5} />
+          </button>
+        </span>
       </div>
-      <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">
-        {label}
-      </span>
-    </button>
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      value={value ?? ''}
+      placeholder="Digite ou gere um código"
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded border border-zinc-800 bg-[#1a1a1a] px-3 py-1.5 text-sm text-white outline-none transition-colors placeholder:text-zinc-600 focus:border-blue-500"
+    />
   );
 }
 
 function ResizableHeader({ width, label, onResize, align = 'left' }: { width: number, label: string, onResize: (e: React.MouseEvent) => void, align?: 'left' | 'right' | 'center' }) {
   return (
     <th 
-      className={`border-b border-r border-zinc-700/80 px-4 py-2.5 font-medium whitespace-nowrap relative group select-none ${
+      className={`px-3 py-2 text-xs font-bold text-zinc-300 whitespace-nowrap relative group select-none ${
         align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'
       }`}
       style={{ width }}

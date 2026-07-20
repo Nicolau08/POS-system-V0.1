@@ -17,14 +17,23 @@ export function useProducts(
     return Array.from(
       new Set(
         sortedProducts
-          .filter((p) => p.active !== false && p.category && p.category !== 'Category')
+          .filter(
+            (p) =>
+              p.active !== false &&
+              (p.product_kind ?? 'simple') !== 'ingredient' &&
+              p.category &&
+              p.category !== 'Category'
+          )
           .map((p) => p.category)
       )
     ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [sortedProducts]);
 
   const sellableProducts = useMemo(
-    () => sortedProducts.filter((p) => p.active !== false),
+    () =>
+      sortedProducts.filter(
+        (p) => p.active !== false && (p.product_kind ?? 'simple') !== 'ingredient'
+      ),
     [sortedProducts]
   );
 

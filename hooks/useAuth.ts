@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@/app/pos/types';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, setStoredAuthToken } from '@/lib/apiBase';
 
 const LOGIN_KEY = 'isLoggedIn';
 const USER_KEY = 'currentUser';
@@ -53,11 +53,6 @@ export function useAuth() {
       return false;
     }
 
-    console.log("LOGIN REQUEST:", {
-      userId,
-      enteredPin,
-    });
-
     try {
       const response = await fetch(`${getPosApiBase()}/auth/login`, {
         method: 'POST',
@@ -95,6 +90,7 @@ export function useAuth() {
       setLoginPassword('');
       localStorage.setItem(LOGIN_KEY, 'true');
       localStorage.setItem(USER_KEY, JSON.stringify(loggedUser));
+      setStoredAuthToken(payload?.token ?? null);
       window.dispatchEvent(new Event('pos-auth-changed'));
       return true;
     } catch {

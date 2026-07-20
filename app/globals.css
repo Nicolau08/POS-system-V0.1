@@ -15,12 +15,47 @@ input[type=number] {
 @theme {
   --font-sans: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
   --animate-spin-slow: spin 3s linear infinite;
+  --color-pos-brand: #0001fb;
+  --color-pos-brand-hover: #1a1bff;
 }
 
 @layer base {
   :root {
     --background: 240 10% 3.9%;
     --foreground: 0 0% 98%;
+    /* POSly brand — usar em hover / focus / selected em todo o sistema */
+    --pos-brand: #0001fb;
+    --pos-brand-hover: #1a1bff;
+    --pos-brand-hover-bg: rgba(0, 1, 251, 0.22);
+    --pos-brand-selected-bg: rgba(0, 1, 251, 0.28);
+    --pos-brand-focus-ring: rgba(0, 1, 251, 0.45);
+    --pos-brand-border-hover: #0001fb;
+    --pos-accent: #0001fb; /* alias legado */
+  }
+
+  html {
+    accent-color: var(--pos-brand);
+  }
+
+  ::selection {
+    background: rgba(0, 1, 251, 0.45);
+    color: #ffffff;
+  }
+
+  /* Focus genérico em campos nativos que usam outline do browser */
+  :where(
+    input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+    textarea,
+    select
+  ):focus-visible {
+    outline: none;
+    border-color: var(--pos-brand);
+  }
+
+  /* Focus / teclado em botões — nunca verde de sistema */
+  :where(button, [role='button'], [role='tab'], [role='menuitem']):focus-visible {
+    outline: 2px solid var(--pos-brand);
+    outline-offset: 2px;
   }
 }
 
@@ -53,6 +88,38 @@ input[type=number] {
     background: #444;
   }
 
+  /* Utilitários de hover / selected para listas e menus */
+  .pos-hover:hover,
+  .pos-hover:focus-visible {
+    background: var(--pos-brand-hover-bg) !important;
+    color: #fafafa;
+  }
+
+  .pos-selected,
+  .pos-selected:hover {
+    background: var(--pos-brand-selected-bg) !important;
+    color: #ffffff;
+  }
+
+  /* Cartões / botões com borda: hover de borda = azul da marca */
+  .pos-border-hover {
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+  .pos-border-hover:hover:not(:disabled),
+  .pos-border-hover:focus-visible:not(:disabled) {
+    border-color: var(--pos-brand-border-hover) !important;
+  }
+
+  /* Botão primário da marca */
+  .pos-btn-brand {
+    background: var(--pos-brand);
+    color: #ffffff;
+    transition: background-color 120ms ease;
+  }
+  .pos-btn-brand:hover:not(:disabled) {
+    background: var(--pos-brand-hover);
+  }
+
   /* Dropdown / menu flutuante (Clientes, selects, autocomplete) */
   .pos-dropdown {
     min-width: 190px;
@@ -79,13 +146,13 @@ input[type=number] {
 
   .pos-dropdown-item:hover,
   .pos-dropdown-item:focus-visible {
-    background: #2a2a2a;
+    background: var(--pos-brand-hover-bg);
     color: #fafafa;
     outline: none;
   }
 
   .pos-dropdown-item.is-active {
-    background: #2a2a2a;
+    background: var(--pos-brand-selected-bg);
     color: #ffffff;
   }
 
@@ -104,13 +171,13 @@ input[type=number] {
   }
 
   .pos-select-trigger:hover:not(:disabled) {
-    border-color: #52525b;
-    background: #161616;
+    border-color: var(--pos-brand);
+    background: rgba(0, 1, 251, 0.08);
   }
 
   .pos-select-trigger:focus-visible,
   .pos-select-trigger.is-open {
-    border-color: #00a3e0;
+    border-color: var(--pos-brand);
   }
 
   .pos-select-trigger:disabled {
@@ -134,13 +201,13 @@ input[type=number] {
 }
 
 .pos-field:hover:not(:disabled) {
-  border-color: #52525b;
-  background-color: #161616;
+  border-color: var(--pos-brand);
+  background-color: rgba(0, 1, 251, 0.08);
 }
 
 .pos-field:focus,
 .pos-field:focus-visible {
-  border-color: #00a3e0;
+  border-color: var(--pos-brand);
 }
 
 .pos-field:disabled {

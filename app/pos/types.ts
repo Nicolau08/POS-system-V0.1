@@ -6,6 +6,7 @@ export interface Product {
   name: string;
   price: number;
   category: string;
+  category_id?: string | null;
   color?: string;
   // Used by some UI paths even if not currently rendered.
   image?: string;
@@ -15,6 +16,15 @@ export interface Product {
   /** Supabase `products.id` (UUID); obrigatorio para sync de vendas/estoque */
   cloud_id?: string;
   is_service?: boolean;
+  /** simple | composed | ingredient | service — ingredientes não vendem no POS */
+  product_kind?: 'simple' | 'composed' | 'ingredient' | 'service';
+  tax_rate_id?: string | null;
+  tax_rate_name?: string | null;
+  tax_rate_code?: string | null;
+  tax_rate_percent?: number;
+  tax_rate_is_fixed?: boolean;
+  /** true = preço de venda já inclui imposto; false = preço + imposto */
+  tax_rate_price_includes_tax?: boolean;
 }
 
 export interface CartItem extends Product {

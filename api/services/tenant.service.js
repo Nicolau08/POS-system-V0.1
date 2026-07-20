@@ -56,7 +56,7 @@ async function resolveLicenseTenantId(actorTenantId) {
 
 async function ensureTenantProfileRow(tenantId, fallbackName = 'Loja') {
   let tenantRow = await getDb(
-    `SELECT tp.name, tp.nuit, tp.license_type
+    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type
      FROM tenant_profile tp
      WHERE tp.id = ?
      LIMIT 1`,
@@ -69,16 +69,16 @@ async function ensureTenantProfileRow(tenantId, fallbackName = 'Loja') {
   const name = normalizeText(baseTenantRow?.name) || fallbackName;
   const now = new Date().toISOString();
   await runDb(
-    `INSERT INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        updated_at = excluded.updated_at`,
-    [tenantId, name, null, 'BASIC', now, now],
+    [tenantId, name, null, 'BASIC', 'retalho', now, now],
   );
 
   return getDb(
-    `SELECT tp.name, tp.nuit, tp.license_type
+    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type
      FROM tenant_profile tp
      WHERE tp.id = ?
      LIMIT 1`,
@@ -130,6 +130,7 @@ export async function readTenantInfo(actorUser = null) {
     name: normalizeText(tenantRow?.name) || 'Loja',
     nuit: normalizeText(tenantRow?.nuit) || '--',
     license_type: activeLicensePlan || normalizeText(tenantRow?.license_type) || 'BASIC',
+    commerce_type: normalizeText(tenantRow?.commerce_type) || 'retalho',
     license_expires_at: expiry.licenseExpiresAt,
     tenant_id: tenantId,
   };

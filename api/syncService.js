@@ -8,6 +8,7 @@ import { isUuidString, requireProductCloudId } from './cloudIdUtils.js';
 import { logSyncError, logSyncOperation } from './syncLogger.js';
 import { logError, logEvent, logWarn } from './utils/logger.js';
 import { ensureHashedPin, verifyPinAgainstStored } from './pinAuth.js';
+import { consolidateActiveAdmins } from './services/user.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({
@@ -451,7 +452,7 @@ async function syncCategoriesFromCloud(summary, tenantId) {
   const lastSyncAt = await getLastSyncAt(syncId);
   const rows = await fetchUpdatedRows(
     'categories',
-    'id,tenant_id,name,parent_id,updated_at,created_at',
+    'id,tenant_id,name,parent_id,color,updated_at,created_at',
     lastSyncAt,
     'updated_at',
     scopedTenantId
@@ -481,8 +482,8 @@ async function syncCategoriesFromCloud(summary, tenantId) {
     if (!existing) {
       try {
         await run(
-          `INSERT INTO categories (name, parent_id, cloud_id, updated_at, tenant_id) VALUES (?, ?, ?, ?, ?)`,
-          [row.name, parentLocalId, String(row.id), remoteTs, scopedTenantId]
+          `INSERT INTO categories (name, parent_id, cloud_id, updated_at, tenant_id, color) VALUES (?, ?, ?, ?, ?, ?)`,
+          [row.name, parentLocalId, String(row.id), remoteTs, scopedTenantId, row.color ? String(row.color) : null]
         );
         summary.inserted += 1;
       } catch (insertErr) {
@@ -505,10 +506,10 @@ async function syncCategoriesFromCloud(summary, tenantId) {
 
         await run(
           `UPDATE categories
-           SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ?
+           SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ?, color = ?
            WHERE id = ?
              AND tenant_id = ?`,
-          [row.name, parentLocalId, String(row.id), remoteTs, Number(byName.id), scopedTenantId]
+          [row.name, parentLocalId, String(row.id), remoteTs, row.color ? String(row.color) : null, Number(byName.id), scopedTenantId]
         );
         summary.updated += 1;
       }
@@ -522,16 +523,18 @@ async function syncCategoriesFromCloud(summary, tenantId) {
 
     await run(
       `UPDATE categories
-       SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ?
+       SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ?, color = ?
        WHERE id = ?
          AND tenant_id = ?`,
-      [row.name, parentLocalId, String(row.id), remoteTs, existing.id, scopedTenantId]
+      [row.name, parentLocalId, String(row.id), remoteTs, row.color ? String(row.color) : null, existing.id, scopedTenantId]
     );
     summary.updated += 1;
   }
 
   // Reconcile deletions from cloud: remove local categories that no longer exist remotely.
   // This prevents categories deleted locally->cloud from being resurrected on pull.
+  // IMPORTANT: never delete locals that still have outbound sync pending/failed — that
+  // deletes freshly created groups before they reach the cloud (or after a failed push).
   try {
     const remoteRows = await fetchAllRows('categories', 'id', 'id', scopedTenantId);
     const remoteIds = new Set((remoteRows ?? []).map((item) => String(item.id)));
@@ -543,11 +546,55 @@ async function syncCategoriesFromCloud(summary, tenantId) {
          AND TRIM(cloud_id) <> ''`,
       [scopedTenantId]
     );
-    const toDelete = (localCategories ?? []).filter((item) => !remoteIds.has(String(item.cloud_id)));
-    for (const item of toDelete) {
-      const removeResult = await run(`DELETE FROM categories WHERE id = ? AND tenant_id = ?`, [Number(item.id), scopedTenantId]);
-      if (Number(removeResult?.changes ?? 0) > 0) {
-        summary.updated += 1;
+
+    let pendingCloudIds = new Set();
+    try {
+      const pendingRows = await all(
+        `SELECT data
+         FROM sync_queue
+         WHERE tenant_id = ?
+           AND type = 'category'
+           AND status IN ('pending', 'failed', 'dead', 'processing')`,
+        [scopedTenantId]
+      );
+      pendingCloudIds = new Set(
+        (pendingRows || [])
+          .map((row) => {
+            try {
+              const payload = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+              return payload?.cloud_id ? String(payload.cloud_id).trim() : '';
+            } catch {
+              return '';
+            }
+          })
+          .filter(Boolean)
+      );
+    } catch {
+      pendingCloudIds = new Set();
+    }
+
+    const toDelete = (localCategories ?? []).filter((item) => {
+      const cid = String(item.cloud_id);
+      if (remoteIds.has(cid)) return false;
+      if (pendingCloudIds.has(cid)) return false;
+      return true;
+    });
+    // Evitar wipe: se a cloud ainda não tem categorias deste tenant, não apagar locals.
+    if (remoteIds.size === 0 && toDelete.length > 0) {
+      await logSyncOperation(
+        'pull-categories-delete-skip',
+        { tenant_id: scopedTenantId, pending_deletes: toDelete.length },
+        'skipped category reconcile delete because cloud has zero categories for tenant'
+      );
+    } else {
+      for (const item of toDelete) {
+        const removeResult = await run(`DELETE FROM categories WHERE id = ? AND tenant_id = ?`, [
+          Number(item.id),
+          scopedTenantId,
+        ]);
+        if (Number(removeResult?.changes ?? 0) > 0) {
+          summary.updated += 1;
+        }
       }
     }
   } catch (deleteSyncError) {
@@ -857,6 +904,54 @@ async function syncUsersFromCloud(summary, tenantId) {
     const incomingPin = incomingPinRaw == null ? null : await ensureHashedPin(incomingPinRaw);
 
     if (!existing) {
+      const incomingRole = String(row.role ?? 'cashier').trim().toLowerCase();
+      if (incomingRole === 'admin') {
+        const orphanAdmin = await get(
+          `SELECT rowid AS rid, id, pin
+           FROM users
+           WHERE tenant_id = ?
+             AND active = 1
+             AND LOWER(COALESCE(role, '')) = 'admin'
+             AND (cloud_id IS NULL OR TRIM(cloud_id) = '')
+           ORDER BY
+             CASE
+               WHEN id = 'admin-local' THEN 0
+               WHEN id = 'admin-1' THEN 1
+               ELSE 2
+             END,
+             COALESCE(access_level, 0) DESC
+           LIMIT 1`,
+          [scopedTenantId],
+        );
+        if (orphanAdmin?.rid != null) {
+          const shouldUpdatePin =
+            (!orphanAdmin.pin || String(orphanAdmin.pin).trim() === '') && incomingPin;
+          await run(
+            `UPDATE users
+             SET cloud_id = ?,
+                 name = COALESCE(NULLIF(TRIM(name), ''), ?),
+                 role = 'admin',
+                 pin = ?,
+                 updated_at = ?
+             WHERE rowid = ?
+               AND tenant_id = ?`,
+            [
+              cloudUserId,
+              row.name ?? 'Administrador',
+              shouldUpdatePin ? String(incomingPin) : orphanAdmin.pin,
+              remoteTs,
+              orphanAdmin.rid,
+              scopedTenantId,
+            ],
+          );
+          summary.updated += 1;
+          console.log(
+            `[sync][users] linked cloud admin ${cloudUserId} → local ${orphanAdmin.id}`,
+          );
+          continue;
+        }
+      }
+
       if (!incomingPin) {
         summary.conflicts += 1;
         await logSyncOperation(
@@ -868,12 +963,15 @@ async function syncUsersFromCloud(summary, tenantId) {
       }
 
       await run(
-        `INSERT INTO users (id, name, role, pin, tenant_id, cloud_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, name, role, pin, access_level, active, tenant_id, cloud_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cloudUserId,
           row.name ?? 'User',
           row.role ?? 'cashier',
           String(incomingPin),
+          incomingRole === 'admin' ? 9 : Number(row.access_level ?? 0),
+          1,
           scopedTenantId,
           cloudUserId,
           remoteTs,
@@ -1002,6 +1100,15 @@ async function syncUsersFromCloud(summary, tenantId) {
       'users synced from cloud'
     );
   }
+
+  try {
+    await consolidateActiveAdmins(scopedTenantId);
+  } catch (consolidateError) {
+    console.warn(
+      '[sync][users] consolidate admins failed:',
+      consolidateError?.message ?? consolidateError,
+    );
+  }
 }
 
 async function syncTenantProfileFromCloud(summary, tenantId) {
@@ -1118,10 +1225,23 @@ async function syncUsersToCloud(summary, tenantId) {
 
   const now = new Date().toISOString();
 
+  // Dedupe local users to prevent generating/pushing multiple cloud users
+  // with identical credentials (commonly happens when local ids are invalid).
+  // Admins com o mesmo nome são reduzidos a um (evita vários «Administrador»).
+  try {
+    await consolidateActiveAdmins(scopedTenantId);
+  } catch (consolidateError) {
+    console.warn(
+      '[sync][users][push] consolidate admins failed:',
+      consolidateError?.message ?? consolidateError,
+    );
+  }
+
   const localUsers = await all(
-    `SELECT rowid AS rid, id, name, role, pin, cloud_id, tenant_id, updated_at
+    `SELECT rowid AS rid, id, name, role, pin, cloud_id, tenant_id, updated_at, active, is_system, access_level
      FROM users
-     WHERE tenant_id = ?`,
+     WHERE tenant_id = ?
+       AND active = 1`,
     [scopedTenantId]
   );
   const users = Array.isArray(localUsers) ? localUsers : [];
@@ -1135,7 +1255,9 @@ async function syncUsersToCloud(summary, tenantId) {
     const nameKey = String(u?.name ?? '').trim().toLowerCase();
     const roleKey = String(u?.role ?? '').trim().toLowerCase();
     const pinKey = String(u?.pin ?? '').trim();
-    const key = `${nameKey}::${roleKey}::${pinKey}`;
+    // Admins: dedupe só por nome+role (PINs diferentes não devem gerar vários na cloud).
+    const key =
+      roleKey === 'admin' ? `${nameKey}::${roleKey}` : `${nameKey}::${roleKey}::${pinKey}`;
     const rid = Number(u?.rid);
     if (!Number.isFinite(rid)) continue;
     if (!dedupeMap.has(key)) {
@@ -1497,7 +1619,7 @@ async function fullSyncFromCloud(tenantId) {
     await logSyncOperation('full-reset-start', { tenant_id: scopedTenantId, started_at: startedAt }, 'manual full reset started');
 
     const [categoriesRaw, products, customers, users, tenantProfiles, stockMovements, orders, orderItems] = await Promise.all([
-      fetchAllRows('categories', 'id,tenant_id,name,parent_id,updated_at,created_at', 'created_at', scopedTenantId),
+      fetchAllRows('categories', 'id,tenant_id,name,parent_id,color,updated_at,created_at', 'created_at', scopedTenantId),
       fetchAllRows(
         'products',
         'id,tenant_id,code,name,category_id,barcode,cost,price,tax,final_price,active,unit,description,age_restriction,is_service,default_quantity,stock_quantity,min_stock,color,image,image_url,deleted,created_at,updated_at',
@@ -1566,9 +1688,15 @@ async function fullSyncFromCloud(tenantId) {
       const categoryMap = new Map();
       for (const row of categories) {
         const result = await run(
-          `INSERT OR REPLACE INTO categories (name, parent_id, cloud_id, updated_at, tenant_id)
-           VALUES (?, NULL, ?, ?, ?)`,
-          [row.name, String(row.id), normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString(), scopedTenantId]
+          `INSERT OR REPLACE INTO categories (name, parent_id, cloud_id, updated_at, tenant_id, color)
+           VALUES (?, NULL, ?, ?, ?, ?)`,
+          [
+            row.name,
+            String(row.id),
+            normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString(),
+            scopedTenantId,
+            row.color ? String(row.color) : null,
+          ]
         );
         let localId = result?.lastID;
         if (!localId) {
@@ -2391,13 +2519,28 @@ async function syncCategory(payload) {
     tenant_id: tenantId,
     name: String(payload?.name ?? '').trim(),
     parent_id: parentCloudId,
+    color: payload?.color ? String(payload.color).trim() : null,
     updated_at: normalizeTimestamp(payload?.updated_at) || new Date().toISOString(),
   };
   if (!mapped.name) {
     throw new Error('Category name is required');
   }
 
-  const { error } = await supabase.from('categories').upsert(mapped, { onConflict: 'id' });
+  const upsertCategory = async (body) => {
+    const { error } = await supabase.from('categories').upsert(body, { onConflict: 'id' });
+    return error;
+  };
+
+  let error = await upsertCategory(mapped);
+  // Cloud sem coluna color ainda: repetir sem color para não bloquear criação local.
+  if (
+    error &&
+    mapped.color != null &&
+    /color|PGRST204|schema cache/i.test(String(error.message ?? '') + String(error.code ?? '') + String(error.details ?? ''))
+  ) {
+    const { color: _omit, ...withoutColor } = mapped;
+    error = await upsertCategory(withoutColor);
+  }
   if (!error) return;
 
   // Compat: schema antigo com UNIQUE(name) global, ou conflito no mesmo tenant.
@@ -2414,15 +2557,29 @@ async function syncCategory(payload) {
     .maybeSingle();
   if (findErr) throw findErr;
   if (existing?.id) {
-    const { error: updateErr } = await supabase
+    const updateBody = {
+      name: mapped.name,
+      parent_id: mapped.parent_id,
+      color: mapped.color,
+      updated_at: mapped.updated_at,
+    };
+    let { error: updateErr } = await supabase
       .from('categories')
-      .update({
-        name: mapped.name,
-        parent_id: mapped.parent_id,
-        updated_at: mapped.updated_at,
-      })
+      .update(updateBody)
       .eq('tenant_id', tenantId)
       .eq('id', existing.id);
+    if (
+      updateErr &&
+      mapped.color != null &&
+      /color|PGRST204|schema cache/i.test(String(updateErr.message ?? '') + String(updateErr.code ?? ''))
+    ) {
+      const { color: _omit, ...withoutColor } = updateBody;
+      ({ error: updateErr } = await supabase
+        .from('categories')
+        .update(withoutColor)
+        .eq('tenant_id', tenantId)
+        .eq('id', existing.id));
+    }
     if (updateErr) throw updateErr;
     return;
   }

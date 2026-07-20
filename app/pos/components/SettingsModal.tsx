@@ -12,12 +12,26 @@ import {
 } from '@/lib/posSettings';
 import { listCustomerDisplayPorts, writeCustomerDisplay, type SerialPortOption } from '@/lib/customerDisplayClient';
 import { PrintOptionsPanel } from './PrintOptionsPanel';
+import { LocationsSettingsPanel } from './LocationsSettingsPanel';
+import { StationsSettingsPanel } from './StationsSettingsPanel';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
+import { useCommerceProfile } from '@/lib/useCommerceProfile';
+import { commerceTypeLabel, type CommerceFeatures } from '@/lib/commerceProfile';
+import { formatDateTime24h } from '@/lib/formatDateTime';
 
-const SECTIONS: Array<{ id: PosSettingsSection; label: string }> = [
+const ALL_SECTIONS: Array<{
+  id: PosSettingsSection;
+  label: string;
+  /** Se definido, só mostra quando a feature da licença está activa */
+  requireFeature?: keyof CommerceFeatures;
+}> = [
   { id: 'basicas', label: 'Configurações básicas' },
+  { id: 'postos', label: 'Postos' },
+  { id: 'locais', label: 'Locais', requireFeature: 'locations' },
   { id: 'pedidos', label: 'Pedidos & Pagamentos' },
   { id: 'produtos', label: 'Configurações de produtos' },
+  // Farmácia: secção oculta até módulos (lotes/validade/receita) estarem prontos
   { id: 'documentos', label: 'Documents' },
   { id: 'balanca', label: 'Balança' },
   { id: 'display', label: 'Display do cliente' },
@@ -27,32 +41,6 @@ const SECTIONS: Array<{ id: PosSettingsSection; label: string }> = [
   { id: 'licenca', label: 'Licença' },
   { id: 'sobre', label: 'Sobre' },
 ];
-
-function Toggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-        checked ? 'bg-[#00a3e0]' : 'bg-zinc-600'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0'
-        }`}
-      />
-    </button>
-  );
-}
 
 function FieldRow({
   label,
@@ -105,7 +93,7 @@ function TextField({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#00a3e0]"
+      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb]"
     />
   );
 }
@@ -166,17 +154,33 @@ export function SettingsModal({
   const [testMessage, setTestMessage] = useState('');
   const [availablePorts, setAvailablePorts] = useState<SerialPortOption[]>([]);
   const [portsError, setPortsError] = useState('');
+  const { features, label: commerceLabel, license, loading: licenseLoading, refresh: refreshCommerceProfile } =
+    useCommerceProfile();
+
+  const SECTIONS = useMemo(
+    () =>
+      ALL_SECTIONS.filter((section) => {
+        if (!section.requireFeature) return true;
+        return Boolean(features[section.requireFeature]);
+      }),
+    [features],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
     setDraft(loadPosSettings());
-    setActiveSection(initialSection);
+    const allowed = ALL_SECTIONS.filter((section) => {
+      if (!section.requireFeature) return true;
+      return Boolean(features[section.requireFeature]);
+    }).map((s) => s.id);
+    setActiveSection(allowed.includes(initialSection) ? initialSection : allowed[0] || 'basicas');
     setShowPortSettings(false);
     setSaveMessage('');
     setTestMessage('');
     setPortsError('');
     void refreshPorts();
-  }, [isOpen, initialSection]);
+    void refreshCommerceProfile();
+  }, [isOpen, initialSection, features, refreshCommerceProfile]);
 
   const refreshPorts = async () => {
     setPortsError('');
@@ -285,8 +289,8 @@ export function SettingsModal({
                       onClick={() => setActiveSection(section.id)}
                       className={`w-full px-5 py-2.5 text-left text-sm transition-colors ${
                         active
-                          ? 'bg-[#00a3e0] text-white'
-                          : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-white'
+                          ? 'bg-[#0001fb] text-white'
+                          : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                       }`}
                     >
                       {section.label}
@@ -301,7 +305,7 @@ export function SettingsModal({
                 <div className="flex items-center gap-3">
                   <h3 className="text-base font-semibold text-white">{sectionTitle}</h3>
                   {activeSection === 'display' || activeSection === 'impressao' ? (
-                    <button type="button" className="text-xs font-medium text-[#00a3e0] hover:underline">
+                    <button type="button" className="text-xs font-medium text-[#0001fb] hover:underline">
                       Saiba mais
                     </button>
                   ) : null}
@@ -342,18 +346,24 @@ export function SettingsModal({
                       />
                     </FieldRow>
                     <FieldRow label="Arredondar dinheiro">
-                      <Toggle checked={draft.roundCash} onChange={(value) => update('roundCash', value)} />
+                      <PosSwitch checked={draft.roundCash} onChange={(value) => update('roundCash', value)} />
                     </FieldRow>
                   </div>
                 )}
 
+                {activeSection === 'postos' ? <StationsSettingsPanel /> : null}
+
+                {activeSection === 'locais' && features.locations ? <LocationsSettingsPanel /> : null}
+
                 {activeSection === 'pedidos' && (
                   <div className="max-w-2xl space-y-1">
-                    <FieldRow label="Pedir mesa">
-                      <Toggle checked={draft.askTable} onChange={(value) => update('askTable', value)} />
-                    </FieldRow>
+                    {features.tables ? (
+                      <FieldRow label="Pedir mesa">
+                        <PosSwitch checked={draft.askTable} onChange={(value) => update('askTable', value)} />
+                      </FieldRow>
+                    ) : null}
                     <FieldRow label="Imprimir recibo automaticamente">
-                      <Toggle
+                      <PosSwitch
                         checked={draft.printJobs.receipt.enabled}
                         onChange={(value) =>
                           setDraft((current) => ({
@@ -373,13 +383,13 @@ export function SettingsModal({
                 {activeSection === 'produtos' && (
                   <div className="max-w-2xl space-y-1">
                     <FieldRow label="Permitir stock negativo">
-                      <Toggle
+                      <PosSwitch
                         checked={draft.allowNegativeStock}
                         onChange={(value) => update('allowNegativeStock', value)}
                       />
                     </FieldRow>
                     <FieldRow label="Mostrar produtos sem stock">
-                      <Toggle
+                      <PosSwitch
                         checked={draft.showOutOfStock}
                         onChange={(value) => update('showOutOfStock', value)}
                       />
@@ -406,7 +416,7 @@ export function SettingsModal({
                 {activeSection === 'balanca' && (
                   <div className="max-w-2xl space-y-1">
                     <FieldRow label="Habilitado">
-                      <Toggle checked={draft.scaleEnabled} onChange={(value) => update('scaleEnabled', value)} />
+                      <PosSwitch checked={draft.scaleEnabled} onChange={(value) => update('scaleEnabled', value)} />
                     </FieldRow>
                     <FieldRow label="Porta COM">
                       <TextField
@@ -424,7 +434,7 @@ export function SettingsModal({
                       Visor de cliente de 2 linhas (ex.: 2×20). Quando activado, mostra boas-vindas, item e total no POS.
                     </p>
                     <FieldRow label="Habilitado">
-                      <Toggle
+                      <PosSwitch
                         checked={draft.customerDisplayEnabled}
                         onChange={(value) => {
                           update('customerDisplayEnabled', value);
@@ -452,14 +462,14 @@ export function SettingsModal({
                         <button
                           type="button"
                           onClick={() => void refreshPorts()}
-                          className="text-xs font-medium text-[#00a3e0] hover:underline"
+                          className="text-xs font-medium text-[#0001fb] hover:underline"
                         >
                           Actualizar lista
                         </button>
                         <button
                           type="button"
                           onClick={() => setShowPortSettings((current) => !current)}
-                          className="text-xs font-medium text-[#00a3e0] hover:underline"
+                          className="text-xs font-medium text-[#0001fb] hover:underline"
                         >
                           {showPortSettings ? 'Ocultar configurações de porta' : 'Mostrar configurações de porta'}
                         </button>
@@ -534,7 +544,7 @@ export function SettingsModal({
                                 ...CUSTOMER_DISPLAY_PORT_DEFAULTS,
                               }))
                             }
-                            className="text-xs font-medium text-[#00a3e0] hover:underline"
+                            className="text-xs font-medium text-[#0001fb] hover:underline"
                           >
                             Restaurar padrões
                           </button>
@@ -571,7 +581,7 @@ export function SettingsModal({
                           <button
                             type="button"
                             onClick={() => void handleTestDisplay()}
-                            className="rounded border border-zinc-600 bg-[#171717] px-4 py-2 text-sm text-zinc-200 hover:border-zinc-500 hover:text-white"
+                            className="rounded border border-zinc-600 bg-[#171717] px-4 py-2 text-sm text-zinc-200 hover:border-[#0001fb] hover:text-white"
                           >
                             Tela de teste
                           </button>
@@ -602,7 +612,11 @@ export function SettingsModal({
                 )}
 
                 {activeSection === 'impressao' && (
-                  <PrintOptionsPanel draft={draft} onChange={setDraft} />
+                  <PrintOptionsPanel
+                    draft={draft}
+                    onChange={setDraft}
+                    showPrintCenters={features.printCenters}
+                  />
                 )}
 
                 {activeSection === 'banco' && (
@@ -613,9 +627,38 @@ export function SettingsModal({
                 )}
 
                 {activeSection === 'licenca' && (
-                  <div className="max-w-2xl space-y-3 text-sm text-zinc-400">
-                    <p>A licença é gerida na activação da aplicação desktop.</p>
-                    <p>Para renovar ou reactivar, use o ecrã de activação ou contacte o suporte.</p>
+                  <div className="max-w-2xl space-y-1">
+                    <p className="mb-3 text-sm text-zinc-400">
+                      A licença é gerida na activação da aplicação desktop. Os dados abaixo são só de leitura.
+                    </p>
+                    {licenseLoading ? (
+                      <p className="text-sm text-zinc-500">A carregar dados da licença…</p>
+                    ) : (
+                      <div className="divide-y divide-zinc-800/80">
+                        <FieldRow label="Nome da licença">
+                          <p className="text-sm text-zinc-100">{license.name}</p>
+                        </FieldRow>
+                        <FieldRow label="NUIT">
+                          <p className="font-mono text-sm text-zinc-100">{license.nuit}</p>
+                        </FieldRow>
+                        <FieldRow label="Tipo de comércio">
+                          <p className="text-sm text-zinc-100">
+                            {commerceTypeLabel(license.commerceType) || commerceLabel}
+                          </p>
+                        </FieldRow>
+                        <FieldRow label="Tipo de licença">
+                          <p className="text-sm text-zinc-100">{license.licenseType}</p>
+                        </FieldRow>
+                        <FieldRow label="Data de validade">
+                          <p className="text-sm text-zinc-100">
+                            {formatDateTime24h(license.licenseExpiresAt)}
+                          </p>
+                        </FieldRow>
+                      </div>
+                    )}
+                    <p className="mt-4 text-sm text-zinc-500">
+                      Para renovar ou reactivar, use o ecrã de activação ou contacte o suporte.
+                    </p>
                   </div>
                 )}
 
@@ -629,11 +672,11 @@ export function SettingsModal({
               </div>
 
               <div className="flex items-center justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] px-6 py-4">
-                {saveMessage ? <span className="mr-auto text-sm text-emerald-400">{saveMessage}</span> : null}
+                {saveMessage ? <span className="mr-auto text-sm text-[#a5b4fc]">{saveMessage}</span> : null}
                 <button
                   type="button"
                   onClick={handleSave}
-                  className="inline-flex items-center gap-2 rounded bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
+                  className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1a1bff]"
                 >
                   <Check size={16} />
                   Salvar

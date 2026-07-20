@@ -1,9 +1,15 @@
 import db, { getOrCreateDefaultTenantId } from '../database.js';
 import crypto from 'crypto';
 import { sendError } from '../utils/response.js';
+import {
+  getClientIp,
+  isLoopbackIp,
+  resolveAuthHmacSecret,
+  resolveBearerTtlSeconds,
+} from '../utils/authSecret.js';
 
-const LOCALHOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const isProduction = String(process.env.NODE_ENV ?? 'development').toLowerCase() === 'production';
+const STATION_ROLES = new Set(['caixa', 'garcom', 'consulta']);
 
 function parseAuthorizationHeader(req) {
   const raw = String(req.headers?.authorization ?? '').trim();
@@ -11,32 +17,59 @@ function parseAuthorizationHeader(req) {
   return raw.slice(7).trim();
 }
 
+/**
+ * Token: userId.exp.signature  (HMAC de `${userId}.${exp}`)
+ * Tokens antigos userId.signature sem exp são rejeitados (força re-login).
+ */
 function resolveBearerUserId(tokenRaw) {
   const token = String(tokenRaw ?? '').trim();
   if (!token) return '';
 
-  const secret = String(process.env.AUTH_BEARER_SHARED_SECRET ?? '').trim();
-  const allowPlainBearer = String(process.env.AUTH_ALLOW_PLAIN_BEARER ?? (isProduction ? 'false' : 'true')).toLowerCase() === 'true';
+  const secret = resolveAuthHmacSecret();
+  const allowPlainBearer =
+    String(process.env.AUTH_ALLOW_PLAIN_BEARER ?? (isProduction ? 'false' : 'true')).toLowerCase() ===
+    'true';
 
-  if (secret) {
-    const [userIdPart, signaturePart] = token.split('.');
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    const [userIdPart, expPart, signaturePart] = parts;
     const userId = String(userIdPart ?? '').trim();
+    const exp = Number(expPart);
     const signature = String(signaturePart ?? '').trim();
-    if (!userId || !signature) return '';
-    const expected = crypto.createHmac('sha256', secret).update(userId).digest('hex');
+    if (!userId || !signature || !Number.isFinite(exp)) return '';
+    if (Math.floor(Date.now() / 1000) > exp) return '';
+    const expected = crypto.createHmac('sha256', secret).update(`${userId}.${exp}`).digest('hex');
     const provided = Buffer.from(signature);
     const expectedBuf = Buffer.from(expected);
-    if (provided.length !== expectedBuf.length) return '';
-    if (!crypto.timingSafeEqual(provided, expectedBuf)) return '';
-    return userId;
+    if (provided.length === expectedBuf.length && crypto.timingSafeEqual(provided, expectedBuf)) {
+      return userId;
+    }
+    return '';
   }
 
+  // Legacy / plain — só em desenvolvimento
   if (!allowPlainBearer) return '';
-  return token;
+  if (parts.length === 2) {
+    // Formato antigo userId.sig sem exp — rejeitar (já não é válido)
+    return '';
+  }
+  return token.includes('.') ? '' : token;
+}
+
+/** Emite token HMAC userId.exp.signature com TTL. */
+export function issueBearerTokenForUserId(userId) {
+  const id = String(userId ?? '').trim();
+  if (!id) return null;
+  const secret = resolveAuthHmacSecret();
+  const exp = Math.floor(Date.now() / 1000) + resolveBearerTtlSeconds();
+  const signature = crypto.createHmac('sha256', secret).update(`${id}.${exp}`).digest('hex');
+  return `${id}.${exp}.${signature}`;
 }
 
 function parseMockHeader(req) {
-  const allowMockHeaders = String(process.env.AUTH_ALLOW_MOCK_HEADERS ?? (isProduction ? 'false' : 'true')).toLowerCase() === 'true';
+  const allowMockHeaders =
+    String(process.env.AUTH_ALLOW_MOCK_HEADERS ?? (isProduction ? 'false' : 'true')).toLowerCase() ===
+    'true';
   if (!allowMockHeaders) return null;
   const raw = req.headers?.['x-auth-user'];
   if (!raw) return null;
@@ -59,19 +92,14 @@ function parseMockHeader(req) {
   }
 }
 
-function isLocalRequest(req) {
-  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-  const remote = String(req.socket?.remoteAddress ?? '').trim();
-  const candidate = forwarded || remote;
-  if (!candidate) return false;
-  if (candidate.startsWith('::ffff:')) {
-    return LOCALHOSTS.has(candidate.replace('::ffff:', ''));
-  }
-  return LOCALHOSTS.has(candidate);
+export function isLocalRequest(req) {
+  return isLoopbackIp(getClientIp(req));
 }
 
 async function getFallbackLegacyUser(req) {
-  const allowLegacy = String(process.env.AUTH_ALLOW_LEGACY_LOCAL ?? (isProduction ? 'false' : 'true')).toLowerCase() !== 'false';
+  const allowLegacy =
+    String(process.env.AUTH_ALLOW_LEGACY_LOCAL ?? (isProduction ? 'false' : 'true')).toLowerCase() !==
+    'false';
   if (!allowLegacy) return null;
   if (!isLocalRequest(req)) return null;
   const defaultTenantId = await getOrCreateDefaultTenantId();
@@ -99,9 +127,28 @@ function mapUserRow(row, source = 'database') {
   };
 }
 
+async function resolveStationRoleFromDb(tenantId, stationCode) {
+  const code = String(stationCode ?? '').trim();
+  const tid = String(tenantId ?? '').trim();
+  if (!code || !tid) return '';
+  const row = await new Promise((resolve, reject) => {
+    db.get(
+      `SELECT role FROM stations WHERE tenant_id = ? AND code = ? AND active = 1 LIMIT 1`,
+      [tid, code],
+      (err, result) => (err ? reject(err) : resolve(result ?? null)),
+    );
+  });
+  const role = String(row?.role ?? '')
+    .trim()
+    .toLowerCase();
+  return STATION_ROLES.has(role) ? role : '';
+}
+
 export async function resolveUserFromRequest(req) {
   const mockHeaderUser = parseMockHeader(req);
-  const allowHeaderUserId = String(process.env.AUTH_ALLOW_HEADER_USER_ID ?? (isProduction ? 'false' : 'true')).toLowerCase() === 'true';
+  const allowHeaderUserId =
+    String(process.env.AUTH_ALLOW_HEADER_USER_ID ?? (isProduction ? 'false' : 'true')).toLowerCase() ===
+    'true';
   const headerUserId = allowHeaderUserId ? String(req.headers?.['x-user-id'] ?? '').trim() : '';
   const bearerUserId = resolveBearerUserId(parseAuthorizationHeader(req));
   const resolvedUserId = mockHeaderUser?.id || headerUserId || bearerUserId || '';
@@ -118,12 +165,11 @@ export async function resolveUserFromRequest(req) {
       (err, row) => {
         if (err) return reject(err);
         resolve(row ?? null);
-      }
+      },
     );
   });
 
   if (!dbUser) {
-    // Nunca permite "usuario fantasma" em producao.
     if (!isProduction && mockHeaderUser?.role) {
       const fallbackTenantId = mockHeaderUser.tenant_id || (await getOrCreateDefaultTenantId());
       return {
@@ -143,7 +189,8 @@ export async function resolveUserFromRequest(req) {
   if (!mapped.tenant_id) return null;
   if (mockHeaderUser?.role) {
     mapped.role = String(mockHeaderUser.role).trim() || mapped.role;
-    mapped.access_level = mapped.role === 'admin' ? Math.max(mapped.access_level, 9) : mapped.access_level;
+    mapped.access_level =
+      mapped.role === 'admin' ? Math.max(mapped.access_level, 9) : mapped.access_level;
     if (mockHeaderUser.tenant_id) {
       mapped.tenant_id = String(mockHeaderUser.tenant_id).trim() || mapped.tenant_id;
     }
@@ -160,10 +207,17 @@ export async function authenticateUser(req, res, next) {
       return sendError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
     }
     user.tenant_id = tenantId;
+    const stationCode = String(req.headers?.['x-station-code'] ?? '').trim();
+    if (stationCode) {
+      user.station_code = stationCode;
+      // Papel do posto vem sempre da BD — nunca do header do cliente.
+      const dbRole = await resolveStationRoleFromDb(tenantId, stationCode);
+      if (dbRole) user.station_role = dbRole;
+    }
     req.user = user;
     req.tenantId = tenantId;
     return next();
-  } catch (error) {
+  } catch {
     return sendError(res, 500, 'falha ao autenticar utilizador', 'AUTH_FAILED');
   }
 }
@@ -199,7 +253,7 @@ export function requirePermission(permissionKey, fallbackRequired = 0) {
           db.get(
             `SELECT required_level FROM permission_rules WHERE key = ? LIMIT 1`,
             [key],
-            (err, result) => (err ? reject(err) : resolve(result ?? null))
+            (err, result) => (err ? reject(err) : resolve(result ?? null)),
           );
         });
         if (row) required = Number(row.required_level ?? fallbackRequired);
@@ -211,7 +265,7 @@ export function requirePermission(permissionKey, fallbackRequired = 0) {
           res,
           403,
           `Sem permissão (${key || 'operacao'}). Nível necessário: ${required}.`,
-          'FORBIDDEN'
+          'FORBIDDEN',
         );
       }
       return next();

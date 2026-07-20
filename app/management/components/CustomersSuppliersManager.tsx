@@ -10,7 +10,6 @@ import {
   Upload,
   HelpCircle,
   Search,
-  ArrowRight,
   Check,
   X,
   Loader2,
@@ -19,6 +18,8 @@ import {
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 type CustomerRow = {
   id: string;
@@ -59,7 +60,7 @@ const initialForm: CustomerForm = {
   district: '',
   city: '',
   stateProvince: '',
-  country: 'Afghanistan',
+  country: 'Moçambique',
   phone: '',
   email: '',
   active: true,
@@ -214,13 +215,13 @@ export default function CustomersSuppliersManager() {
   return (
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
-        <ToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
-        <ToolbarButton icon={<Plus size={20} />} label="Adicionar" onClick={openNewModal} />
-        <ToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
-        <ToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={() => void handleDelete()} />
-        <ToolbarButton icon={<Download size={20} />} label="Importar" />
-        <ToolbarButton icon={<Upload size={20} />} label="Exportar" />
-        <ToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
+        <ManagementToolbarButton icon={<Plus size={20} />} label="Adicionar" onClick={openNewModal} />
+        <ManagementToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={() => void handleDelete()} />
+        <ManagementToolbarButton icon={<Download size={20} />} label="Importar" />
+        <ManagementToolbarButton icon={<Upload size={20} />} label="Exportar" />
+        <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
       <div className="h-10 bg-[#111] border-b border-zinc-800/50 flex items-center justify-between px-4">
@@ -241,20 +242,20 @@ export default function CustomersSuppliersManager() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0a0a0a]">
-        <table className="min-w-full text-left border-collapse table-fixed">
-          <thead className="sticky top-0 bg-[#141414] z-10">
-            <tr className="border-b border-zinc-800">
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Código</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Nome</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">NUIT</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Endereço</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">País</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Telefone</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize">Email</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Ativo</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Cliente</th>
-              <th className="px-3 py-2 text-[10px] font-bold text-zinc-500 capitalize text-center">Tax exc.</th>
+      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]">
+        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+          <thead className="sticky top-0 z-10 bg-[#141414]">
+            <tr className="border-b border-[#0001fb]/70">
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Código</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">NUIT</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Endereço</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">País</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Telefone</th>
+              <th className="px-3 py-2 text-xs font-bold text-zinc-300">Email</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Ativo</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Cliente</th>
+              <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300">Tax exc.</th>
             </tr>
           </thead>
           <tbody>
@@ -278,20 +279,20 @@ export default function CustomersSuppliersManager() {
                 <tr
                   key={row.id}
                   onClick={() => setSelectedId(row.id)}
-                  className={`border-b border-zinc-800/50 transition-colors cursor-pointer ${
-                    selectedId === row.id ? 'bg-zinc-800/50' : i % 2 === 0 ? 'bg-[#1a1a1a]' : 'bg-[#141414]'
-                  } hover:bg-zinc-800/30`}
+                  className={`transition-colors cursor-pointer ${
+                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                  } hover:bg-[var(--pos-brand-hover-bg)]`}
                 >
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">---</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-200 truncate">{row.name}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">(none)</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">{row.address || '(none)'}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">Mozambique</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">{row.phone || '(none)'}</td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-500 truncate">{row.email || '(none)'}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{metaById[row.id]?.active ?? true ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{metaById[row.id]?.isCustomer ?? true ? '✓' : ''}</td>
-                  <td className="px-3 py-1.5 text-xs text-center text-zinc-300">{metaById[row.id]?.taxExempt ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">---</td>
+                  <td className="px-3 py-2 text-xs text-zinc-200 truncate">{row.name}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">(none)</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">{row.address || '(none)'}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">Moçambique</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">{row.phone || '(none)'}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-400 truncate">{row.email || '(none)'}</td>
+                  <td className="px-3 py-2 text-center text-xs text-zinc-300">{metaById[row.id]?.active ?? true ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-center text-xs text-zinc-300">{metaById[row.id]?.isCustomer ?? true ? '✓' : ''}</td>
+                  <td className="px-3 py-2 text-center text-xs text-zinc-300">{metaById[row.id]?.taxExempt ? '✓' : ''}</td>
                 </tr>
               ))
             )}
@@ -305,31 +306,31 @@ export default function CustomersSuppliersManager() {
           onClick={() => setIsModalOpen(false)}
         >
           <div
-            className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-5xl overflow-hidden flex flex-col max-h-[94vh]"
+            className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 flex items-center justify-between bg-[#1a1a1a]">
-              <h3 className="text-xl text-zinc-200">Novo cliente / fornecedor</h3>
-              <ArrowRight size={24} className="text-zinc-200" />
+            <div className="p-4 flex items-center bg-[#1a1a1a]">
+              <h3 className="text-xl text-zinc-200">
+                {editing ? 'Editar cliente / fornecedor' : 'Novo cliente / fornecedor'}
+              </h3>
             </div>
 
-            <div className="flex border-b border-[#00a3e0]">
+            <div className="flex border-b border-[#0001fb]">
               <TabButton label="Geral" active={activeTab === 'geral'} onClick={() => setActiveTab('geral')} />
               <TabButton label="Descontos" active={activeTab === 'descontos'} onClick={() => setActiveTab('descontos')} />
               <TabButton
-                label="Cartões de fidelidade"
+                label="Fidelidade"
                 active={activeTab === 'fidelidade'}
                 onClick={() => setActiveTab('fidelidade')}
               />
-              <TabButton label="Termos de pagamento" active={activeTab === 'termos'} onClick={() => setActiveTab('termos')} />
+              <TabButton label="Pagamento" active={activeTab === 'termos'} onClick={() => setActiveTab('termos')} />
             </div>
 
-            <form id="customer-form" onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-[#1a1a1a]">
+            <form id="customer-form" onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-[#1a1a1a]">
               {activeTab !== 'geral' ? (
-                <div className="py-16 text-center text-zinc-500 text-sm">Sem configuração nesta aba.</div>
+                <div className="py-10 text-center text-zinc-500 text-sm">Sem configuração nesta aba.</div>
               ) : (
-                <div className="max-w-3xl space-y-3">
-                  <h4 className="text-4xl font-light text-zinc-100 mb-3">Informações gerais</h4>
+                <div className="space-y-5">
                   <Field label="Nome" required value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
                   <Field label="Código" value={form.code} onChange={(v) => setForm({ ...form, code: v })} short />
                   <Field label="NUIT" value={form.taxId} onChange={(v) => setForm({ ...form, taxId: v })} />
@@ -358,29 +359,31 @@ export default function CustomersSuppliersManager() {
                     onChange={(v) => setForm({ ...form, stateProvince: v })}
                   />
 
-                  <div className="space-y-1">
-                    <label className="text-[30px] font-light text-zinc-100">País</label>
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-400">País</label>
                     <PosSelect
                       value={form.country}
                       onChange={(v) => setForm({ ...form, country: v })}
                       size="md"
-                      options={[
-                        { value: 'Afghanistan', label: 'Afghanistan' },
-                        { value: 'Mozambique', label: 'Mozambique' },
-                        { value: 'Portugal', label: 'Portugal' },
-                      ]}
+                      options={[{ value: 'Moçambique', label: 'Moçambique' }]}
                     />
                   </div>
 
                   <Field label="Telefone" required value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
                   <Field label="Email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
 
-                  <ToggleLine label="Ativo" checked={form.active} onToggle={() => setForm({ ...form, active: !form.active })} />
-                  <ToggleLine
-                    label="Cliente"
-                    checked={form.isCustomer}
-                    onToggle={() => setForm({ ...form, isCustomer: !form.isCustomer })}
-                  />
+                  <div className="flex flex-wrap items-center gap-x-8 gap-y-2 pt-2">
+                    <PosSwitch
+                      label="Ativo"
+                      checked={form.active}
+                      onChange={(active) => setForm({ ...form, active })}
+                    />
+                    <PosSwitch
+                      label="Cliente"
+                      checked={form.isCustomer}
+                      onChange={(isCustomer) => setForm({ ...form, isCustomer })}
+                    />
+                  </div>
                 </div>
               )}
             </form>
@@ -389,7 +392,7 @@ export default function CustomersSuppliersManager() {
               <button
                 type="submit"
                 form="customer-form"
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
               >
                 <Check size={16} />
                 Salvar
@@ -397,7 +400,7 @@ export default function CustomersSuppliersManager() {
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
               >
                 <X size={16} />
                 Cancelar
@@ -410,25 +413,19 @@ export default function CustomersSuppliersManager() {
   );
 }
 
-function ToolbarButton({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick?: () => void }) {
-  return (
-    <button onClick={onClick} className="flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 text-zinc-400 group">
-      <div className="mb-1 group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">{label}</span>
-    </button>
-  );
-}
-
 function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`px-5 py-2 text-[11px] font-medium transition-colors ${
-        active ? 'bg-[#00a3e0] text-white' : 'text-zinc-200 hover:text-white'
+      className={`relative flex-1 py-2 text-[11px] font-medium text-center transition-colors ${
+        active ? 'bg-[#0001fb] text-white' : 'text-zinc-400 hover:text-[#0001fb]'
       }`}
     >
       {label}
+      {active && (
+        <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
+      )}
     </button>
   );
 }
@@ -447,28 +444,17 @@ function Field({
   short?: boolean;
 }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-2">
       <label className="text-xs text-zinc-400">{label}</label>
       <input
         type="text"
         required={required}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`${short ? 'w-1/5 min-w-[180px]' : 'w-full'} bg-[#1a1a1a] border ${
-          required && !value.trim() ? 'border-red-900/50' : 'border-zinc-700'
-        } rounded px-3 py-1.5 text-sm text-white focus:border-zinc-500 outline-none transition-colors`}
+        className={`${short ? 'w-24' : 'w-full'} bg-[#1a1a1a] border ${
+          required && !value.trim() ? 'border-red-900/50' : 'border-zinc-800'
+        } rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors`}
       />
     </div>
-  );
-}
-
-function ToggleLine({ label, checked, onToggle }: { label: string; checked: boolean; onToggle: () => void }) {
-  return (
-    <button type="button" onClick={onToggle} className="flex items-center gap-3 pt-2">
-      <div className={`w-10 h-5 rounded-sm relative transition-colors ${checked ? 'bg-emerald-500' : 'bg-zinc-600'}`}>
-        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-sm transition-all ${checked ? 'right-0.5' : 'left-0.5'}`} />
-      </div>
-      <span className="text-xs text-zinc-200">{label}</span>
-    </button>
   );
 }
