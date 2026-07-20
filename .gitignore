@@ -40,6 +40,7 @@ license-test.json
 dev-output*.txt
 dev-error*.txt
 *.err.log
+*.log
 check_schema.ts
 
 # --- Repos externos (mantidos noutros repositórios) ---
