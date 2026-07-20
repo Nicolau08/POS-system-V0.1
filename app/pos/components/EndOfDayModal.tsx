@@ -12,6 +12,7 @@ import {
   User,
   X,
 } from 'lucide-react';
+import { PosSwitch } from '@/components/PosSwitch';
 import {
   closeCashSession,
   ensureCashSession,
@@ -73,11 +74,11 @@ function ActionTile({
       onClick={onClick}
       className={`w-[108px] h-[108px] rounded-md border flex flex-col items-center justify-center gap-2 px-2 text-center transition-all ${
         selected
-          ? 'bg-[#00a3e0] border-[#00a3e0] text-white shadow-[0_0_0_1px_rgba(0,163,224,0.35)]'
-          : 'bg-[#2a2a2a] border-zinc-700 text-zinc-200 hover:border-zinc-500 hover:bg-[#333]'
+          ? 'bg-[#0001fb] border-[#0001fb] text-white shadow-[0_0_0_1px_rgba(0,1,251,0.35)]'
+          : 'bg-[#2a2a2a] border-zinc-700 text-zinc-200 hover:border-[#0001fb] hover:bg-[#333]'
       } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
     >
-      <span className={selected ? 'text-white' : 'text-[#00a3e0]'}>{icon}</span>
+      <span className={selected ? 'text-white' : 'text-[#0001fb]'}>{icon}</span>
       <span className="text-[11px] font-semibold leading-tight">{label}</span>
     </button>
   );
@@ -293,7 +294,7 @@ export function EndOfDayModal({
                   onClick={() => setMainTab(tab.id)}
                   className={`pb-2.5 text-sm font-medium transition-colors border-b-2 ${
                     mainTab === tab.id
-                      ? 'text-white border-[#00a3e0]'
+                      ? 'text-white border-[#0001fb]'
                       : 'text-zinc-500 border-transparent hover:text-zinc-300'
                   }`}
                 >
@@ -368,7 +369,7 @@ export function EndOfDayModal({
                             onClick={() => setDetailTab('open')}
                             className={`flex-1 px-3 py-2.5 text-xs font-semibold ${
                               detailTab === 'open'
-                                ? 'text-white border-b-2 border-[#00a3e0] bg-[#2b2b2b]'
+                                ? 'text-white border-b-2 border-[#0001fb] bg-[#2b2b2b]'
                                 : 'text-zinc-500'
                             }`}
                           >
@@ -379,7 +380,7 @@ export function EndOfDayModal({
                             onClick={() => setDetailTab('dayTotal')}
                             className={`flex-1 px-3 py-2.5 text-xs font-semibold ${
                               detailTab === 'dayTotal'
-                                ? 'text-white border-b-2 border-[#00a3e0] bg-[#2b2b2b]'
+                                ? 'text-white border-b-2 border-[#0001fb] bg-[#2b2b2b]'
                                 : 'text-zinc-500'
                             }`}
                           >
@@ -406,7 +407,7 @@ export function EndOfDayModal({
                           )}
                           <div className="flex justify-between pt-3 mt-2 border-t border-zinc-700">
                             <span className="font-bold text-white">TOTAL</span>
-                            <span className="font-bold text-[#00a3e0] text-lg">
+                            <span className="font-bold text-[#0001fb] text-lg">
                               {money(totals?.salesTotal || 0)}
                             </span>
                           </div>
@@ -445,7 +446,7 @@ export function EndOfDayModal({
                               ))}
                               <div className="flex justify-between pt-2 mt-1 border-t border-zinc-700/80">
                                 <span className="font-bold text-white text-sm">TOTAL</span>
-                                <span className="font-bold text-[#00a3e0]">
+                                <span className="font-bold text-[#0001fb]">
                                   {money(u.total)}
                                 </span>
                               </div>
@@ -461,8 +462,8 @@ export function EndOfDayModal({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-start gap-3 rounded-md border border-[#00a3e0]/35 bg-[#00a3e0]/10 px-4 py-3">
-                    <Info className="text-[#00a3e0] shrink-0 mt-0.5" size={18} />
+                  <div className="flex items-start gap-3 rounded-md border border-[#0001fb]/35 bg-[#0001fb]/10 px-4 py-3">
+                    <Info className="text-[#0001fb] shrink-0 mt-0.5" size={18} />
                     <p className="text-sm text-zinc-200">
                       Use a lista abaixo para selecionar e imprimir uma cópia de qualquer relatório Z
                       gerado anteriormente.
@@ -520,7 +521,7 @@ export function EndOfDayModal({
                               onClick={() => setSelectedZId(row.id)}
                               className={`border-t border-zinc-800 cursor-pointer ${
                                 selectedZId === row.id
-                                  ? 'bg-[#00a3e0]/10 outline outline-1 outline-[#00a3e0]/50'
+                                  ? 'bg-[#0001fb]/10 outline outline-1 outline-[#0001fb]/50'
                                   : 'hover:bg-zinc-900/80'
                               }`}
                             >
@@ -547,7 +548,7 @@ export function EndOfDayModal({
                   onClick={() => void handleContinue()}
                   className={`h-11 min-w-[140px] px-5 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 transition-all ${
                     canContinue
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                      ? 'bg-[#0001fb] hover:bg-[#1a1bff] text-white'
                       : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                   }`}
                 >
@@ -592,16 +593,14 @@ export function EndOfDayModal({
                   </p>
 
                   <div className="space-y-4 mb-6">
-                    <ToggleRow
-                      label="Imprimir relatório de itens"
-                      checked={printItems}
-                      onChange={setPrintItems}
-                    />
-                    <ToggleRow
-                      label="Imprimir relatório Z"
-                      checked={printZ}
-                      onChange={setPrintZ}
-                    />
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-sm text-zinc-200">Imprimir relatório de itens</span>
+                      <PosSwitch checked={printItems} onChange={setPrintItems} />
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-sm text-zinc-200">Imprimir relatório Z</span>
+                      <PosSwitch checked={printZ} onChange={setPrintZ} />
+                    </div>
                   </div>
 
                   <div className="flex justify-end gap-3">
@@ -609,7 +608,7 @@ export function EndOfDayModal({
                       type="button"
                       disabled={busy || (!printItems && !printZ)}
                       onClick={() => void handleConfirmClose()}
-                      className="h-11 px-5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold text-sm inline-flex items-center gap-2"
+                      className="h-11 px-5 rounded bg-[#0001fb] hover:bg-[#1a1bff] disabled:opacity-40 text-white font-semibold text-sm inline-flex items-center gap-2"
                     >
                       {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
                       Continuar
@@ -631,36 +630,5 @@ export function EndOfDayModal({
         </motion.div>
       )}
     </AnimatePresence>
-  );
-}
-
-function ToggleRow({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-4 cursor-pointer">
-      <span className="text-sm text-zinc-200">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative w-12 h-7 rounded-full transition-colors ${
-          checked ? 'bg-emerald-500' : 'bg-zinc-600'
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-5' : 'translate-x-0'
-          }`}
-        />
-      </button>
-    </label>
   );
 }

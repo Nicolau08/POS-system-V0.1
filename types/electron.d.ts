@@ -119,6 +119,11 @@ declare global {
         html: string,
         options?: { printer?: string; copies?: number; widthMm?: number; heightMm?: number },
       ) => Promise<ElectronPrintResult>;
+      printNetwork: (options: {
+        host: string;
+        port?: number;
+        bytesBase64: string;
+      }) => Promise<ElectronPrintResult & { host?: string; port?: number }>;
       prepareReceiptPrint: (
         html: string,
         options?: { printer?: string; copies?: number; widthMm?: number; heightMm?: number },
@@ -130,6 +135,32 @@ declare global {
         heightMm?: number;
         patch?: { docLine?: string };
       }) => Promise<ElectronPrintResult & { needFullPrint?: boolean }>;
+      saveStationRuntimeConfig: (config: {
+        mode?: string;
+        serverApiBaseUrl?: string;
+        stationCode?: string;
+        lanAccessEnabled?: boolean;
+        discoveryEnabled?: boolean;
+      }) => Promise<{ success: boolean; error?: string }>;
+      getStationRuntimeConfig: () => Promise<{
+        success: boolean;
+        mode?: string;
+        serverApiBaseUrl?: string;
+        stationCode?: string;
+        lanAccessEnabled?: boolean;
+        discoveryEnabled?: boolean;
+        error?: string;
+      }>;
+      scanLanStations: () => Promise<{
+        success: boolean;
+        servers?: Array<{
+          url: string;
+          store_name?: string;
+          tenant_id?: string;
+          port?: number;
+        }>;
+        error?: string;
+      }>;
     };
   }
 }

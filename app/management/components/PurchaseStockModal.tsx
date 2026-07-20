@@ -389,7 +389,7 @@ export default function PurchaseStockModal({
       >
         <div className="flex items-start justify-between border-b border-zinc-800 bg-[#141414] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#00a3e0]/15 text-[#00a3e0]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#0001fb]/15 text-[#0001fb]">
               <PackagePlus size={20} />
             </div>
             <div className="min-w-0">
@@ -399,7 +399,7 @@ export default function PurchaseStockModal({
                 documento de compra no sistema.
               </p>
               <p className="mt-2 text-[11px] font-semibold text-zinc-300">
-                Documento: <span className="text-[#00a3e0]">{docNumber}</span>
+                Documento: <span className="text-[#0001fb]">{docNumber}</span>
               </p>
             </div>
           </div>
@@ -472,7 +472,7 @@ export default function PurchaseStockModal({
           >
             <span
               className={`flex h-4 w-4 items-center justify-center rounded border ${
-                paid ? 'border-[#00a3e0] bg-[#00a3e0] text-white' : 'border-zinc-600'
+                paid ? 'border-[#0001fb] bg-[#0001fb] text-white' : 'border-zinc-600'
               }`}
             >
               {paid ? <Check size={11} strokeWidth={3} /> : null}
@@ -595,7 +595,7 @@ export default function PurchaseStockModal({
           </div>
 
           {error ? <p className="mt-3 text-xs text-rose-400">{error}</p> : null}
-          {successHint ? <p className="mt-3 text-xs text-emerald-400">{successHint}</p> : null}
+          {successHint ? <p className="mt-3 text-xs text-[#a5b4fc]">{successHint}</p> : null}
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-zinc-800 bg-[#141414] px-5 py-3">
@@ -608,7 +608,7 @@ export default function PurchaseStockModal({
               type="button"
               disabled={saving}
               onClick={onClose}
-              className="rounded border border-zinc-600 px-4 py-2 text-sm text-zinc-300 transition-colors hover:border-zinc-400 hover:text-white disabled:opacity-40"
+              className="rounded border border-zinc-600 px-4 py-2 text-sm text-zinc-300 transition-colors hover:border-[#0001fb] hover:text-white disabled:opacity-40"
             >
               Cancelar
             </button>
@@ -616,7 +616,7 @@ export default function PurchaseStockModal({
               type="button"
               disabled={saving || loadingMeta}
               onClick={() => void handleSave()}
-              className="inline-flex items-center gap-2 rounded bg-[#00a3e0] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#0090c7] disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:opacity-50"
             >
               {saving ? <Loader2 size={16} className="animate-spin" /> : <PackagePlus size={16} />}
               Guardar compra

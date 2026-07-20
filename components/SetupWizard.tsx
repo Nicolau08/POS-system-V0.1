@@ -1,6 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { LicenseInUseModal } from '@/components/LicenseInUseModal';
+import { isLicenseInUseConflict } from '@/lib/licensing/licenseConflict.js';
 import {
   initializeFromSerial,
   lookupSerialStores,
@@ -22,12 +24,23 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
   const [stores, setStores] = useState<SerialStoreOption[]>([]);
   const [selectedStore, setSelectedStore] = useState<SerialStoreOption | null>(null);
   const [resolvedSerial, setResolvedSerial] = useState('');
   const [serial, setSerial] = useState('');
 
   const progressPercent = useMemo(() => Math.round((step / TOTAL_STEPS) * 100), [step]);
+
+  const showLicenseConflict = (message: string) => {
+    if (isLicenseInUseConflict(message)) {
+      setConflictOpen(true);
+      setErrorMessage(null);
+      return true;
+    }
+    setErrorMessage(message);
+    return false;
+  };
 
   const handleLookupSerial = async () => {
     const value = serial.trim();
@@ -47,12 +60,22 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
         setSelectedStore(null);
         return;
       }
+      if (result.redeemed) {
+        showLicenseConflict(
+          'Esta licença já está a ser usada noutra máquina ou base de dados.',
+        );
+        setStores([]);
+        setSelectedStore(null);
+        return;
+      }
       setResolvedSerial(result.serial);
       setStores(result.stores);
       setSelectedStore(result.stores[0]);
       setStep(2);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Falha ao consultar o número de série.');
+      const message =
+        error instanceof Error ? error.message : 'Falha ao consultar o número de série.';
+      showLicenseConflict(message);
       setStores([]);
       setSelectedStore(null);
     } finally {
@@ -88,7 +111,9 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
       setSuccessMessage('Licenciamento concluído. A abrir o ecrã de login...');
       await onCompleted();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Falha ao concluir o licenciamento.');
+      const message =
+        error instanceof Error ? error.message : 'Falha ao concluir o licenciamento.';
+      showLicenseConflict(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -152,7 +177,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                         className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
                           selected
                             ? 'border-[#0001fb] bg-[#0001fb]/15 text-blue-100'
-                            : 'border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-zinc-500'
+                            : 'border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-[#0001fb]'
                         }`}
                       >
                         <p className="font-semibold">{store.name}</p>
@@ -189,7 +214,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
               type="button"
               onClick={handleBack}
               disabled={step === 1 || isSubmitting || isLookingUp}
-              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 transition-colors hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 transition-colors hover:border-[#0001fb] disabled:cursor-not-allowed disabled:opacity-40"
             >
               Voltar
             </button>
@@ -198,7 +223,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                 type="button"
                 onClick={() => void handleLookupSerial()}
                 disabled={isLookingUp}
-                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1cff] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isLookingUp ? 'A consultar...' : 'Seguinte'}
               </button>
@@ -207,7 +232,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                 type="button"
                 onClick={() => void handleConfirmStore()}
                 disabled={!selectedStore || isSubmitting}
-                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1cff] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? 'A concluir...' : 'Confirmar loja'}
               </button>
@@ -215,6 +240,8 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
           </div>
         </div>
       </div>
+
+      <LicenseInUseModal open={conflictOpen} onClose={() => setConflictOpen(false)} />
     </div>
   );
 }

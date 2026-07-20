@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Plus, Pencil, RotateCcw, Search, Trash2, User } from 'lucide-react';
+import { Plus, Pencil, Search, Trash2, User, X } from 'lucide-react';
 import type { Customer } from '@/app/pos/types';
 import { formatMoneyMt } from '@/lib/currency';
 
@@ -53,7 +53,7 @@ export function CustomerModal({
     <>
       <AnimatePresence>
         {isOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" onClick={onClose}>
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -64,7 +64,7 @@ export function CustomerModal({
             >
               <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50 backdrop-blur-md sticky top-0 z-10">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded bg-emerald-500/20 flex items-center justify-center text-emerald-500">
+                  <div className="w-10 h-10 rounded bg-[#0001fb]/20 flex items-center justify-center text-[#0001fb]">
                     <User size={24} />
                   </div>
                   <div>
@@ -77,7 +77,7 @@ export function CustomerModal({
                   </div>
                 </div>
                 <button onClick={onClose} className="w-10 h-10 rounded bg-zinc-800 flex items-center justify-center text-zinc-400 hover:text-white transition-colors">
-                  <RotateCcw size={20} />
+                  <X size={20} />
                 </button>
               </div>
 
@@ -91,7 +91,7 @@ export function CustomerModal({
                           type="text"
                           value={newCustomer.name ?? ''}
                           onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })}
-                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-[#0001fb] transition-colors"
                           placeholder="Ex: João Silva"
                         />
                       </div>
@@ -101,7 +101,7 @@ export function CustomerModal({
                           type="text"
                           value={newCustomer.phone ?? ''}
                           onChange={(e) => setNewCustomer({ ...newCustomer, phone: e.target.value })}
-                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-[#0001fb] transition-colors"
                           placeholder="Ex: 841234567"
                         />
                       </div>
@@ -111,7 +111,7 @@ export function CustomerModal({
                           type="email"
                           value={newCustomer.email ?? ''}
                           onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })}
-                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-[#0001fb] transition-colors"
                           placeholder="joao@email.com"
                         />
                       </div>
@@ -121,7 +121,7 @@ export function CustomerModal({
                           type="text"
                           value={newCustomer.address ?? ''}
                           onChange={(e) => setNewCustomer({ ...newCustomer, address: e.target.value })}
-                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded px-4 text-white focus:outline-none focus:border-[#0001fb] transition-colors"
                           placeholder="Rua, Bairro, Cidade"
                         />
                       </div>
@@ -134,7 +134,7 @@ export function CustomerModal({
                         onClick={onSaveCustomer}
                         disabled={!newCustomer.name || !newCustomer.phone}
                         className={`flex-1 h-12 rounded font-bold transition-all ${
-                          newCustomer.name && newCustomer.phone ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
+                          newCustomer.name && newCustomer.phone ? 'bg-[#0001fb] hover:bg-[#1a1bff] text-white' : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
                         }`}
                       >
                         {editingCustomer ? 'Atualizar Cliente' : 'Salvar Cliente'}
@@ -150,13 +150,13 @@ export function CustomerModal({
                           type="text"
                           value={customerSearch ?? ''}
                           onChange={(e) => setCustomerSearch(e.target.value)}
-                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded pl-12 pr-4 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                          className="w-full h-12 bg-zinc-800 border border-zinc-700 rounded pl-12 pr-4 text-white focus:outline-none focus:border-[#0001fb] transition-colors"
                           placeholder="Pesquisar por nome ou telefone..."
                         />
                       </div>
                       <button
                         onClick={onStartAddNew}
-                        className="h-12 px-6 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold transition-all flex items-center gap-2"
+                        className="h-12 px-6 bg-[#0001fb] hover:bg-[#1a1bff] text-white rounded font-bold transition-all flex items-center gap-2"
                       >
                         <Plus size={20} />
                         Novo
@@ -174,14 +174,14 @@ export function CustomerModal({
                             }}
                             className={`w-full p-4 rounded border transition-all flex items-center justify-between group cursor-pointer ${
                               selectedCustomer?.id === customer.id
-                                ? 'bg-emerald-500/10 border-emerald-500/50 text-white'
-                                : 'bg-zinc-800/50 border-zinc-800 hover:border-zinc-700 text-zinc-400'
+                                ? 'bg-[#0001fb]/10 border-[#0001fb]/50 text-white'
+                                : 'bg-zinc-800/50 border-zinc-800 hover:border-[#0001fb] text-zinc-400'
                             }`}
                           >
                             <div className="flex items-center gap-4">
                               <div
                                 className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                                  selectedCustomer?.id === customer.id ? 'bg-emerald-500 text-white' : 'bg-zinc-800 text-zinc-500 group-hover:bg-zinc-700'
+                                  selectedCustomer?.id === customer.id ? 'bg-[#0001fb] text-white' : 'bg-zinc-800 text-zinc-500 group-hover:bg-zinc-700'
                                 }`}
                               >
                                 <User size={24} />
@@ -250,7 +250,7 @@ export function CustomerModal({
       {/* --- Delete confirmation modal --- */}
       <AnimatePresence>
         {customerToDelete && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}

@@ -12,6 +12,7 @@ import { fetchCompanyProfile } from '@/lib/services/posService';
 import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
 import type { CompanyProfile } from '@/app/pos/types';
 import PosSelect from '@/components/PosSelect';
+import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
 type OrderRow = {
   id: number | string;
@@ -823,14 +824,14 @@ export default function DocumentsManager() {
     >
       <div className="relative z-40 h-16 bg-[#1a1a1a] border-b border-zinc-800 px-2 overflow-visible">
         <div className="h-full flex items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
-          <ToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
-          <ToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
-          <ToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
+          <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
+          <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
+          <ManagementToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
 
           <ToolbarDivider />
 
           <div data-party-trigger>
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<Users size={20} />}
               label="Clientes"
               active={partyView === 'clientes'}
@@ -843,7 +844,7 @@ export default function DocumentsManager() {
             />
           </div>
           <div data-party-trigger>
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<Truck size={20} />}
               label="Fornecedores"
               active={partyView === 'fornecedores'}
@@ -856,7 +857,7 @@ export default function DocumentsManager() {
             />
           </div>
           <div data-party-trigger>
-            <ToolbarButton
+            <ManagementToolbarButton
               icon={<Package size={20} />}
               label="Inventário"
               active={partyView === 'inventario'}
@@ -936,12 +937,12 @@ export default function DocumentsManager() {
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="min-h-0 flex-1 border-b border-zinc-800">
           <div
-            className="h-full overflow-auto custom-scrollbar"
+            className="h-full overflow-auto bg-[#0f0f0f] custom-scrollbar"
             onClick={() => setSelectedOrderId(null)}
           >
-            <table className="w-full min-w-[980px] text-xs border-collapse">
-              <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
-                <tr className="text-zinc-400">
+            <table className="w-full min-w-[980px] border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+              <thead className="sticky top-0 z-10 bg-[#141414]">
+                <tr className="border-b border-[#0001fb]/70">
                   <Th>Número</Th>
                   <Th>Referência</Th>
                   <Th>Cliente</Th>
@@ -967,7 +968,7 @@ export default function DocumentsManager() {
                     </td>
                   </tr>
                 ) : (
-                  filteredOrders.map((row) => {
+                  filteredOrders.map((row, index) => {
                     const rowId = String(row.id);
                     const selected = rowId === selectedOrderId;
                     const rowStatus = String(row.status || '').toLowerCase();
@@ -1020,17 +1021,21 @@ export default function DocumentsManager() {
                           event.stopPropagation();
                           handleEditOrderById(rowId);
                         }}
-                        className={`border-b border-zinc-800/70 cursor-pointer transition-colors ${
-                          selected ? 'bg-zinc-800/70' : 'hover:bg-zinc-800/40'
-                        }`}
+                        className={`cursor-pointer transition-colors ${
+                          selected
+                            ? 'bg-[var(--pos-brand-selected-bg)]'
+                            : index % 2
+                              ? 'bg-[#171717]'
+                              : 'bg-[#1d1d1d]'
+                        } hover:bg-[var(--pos-brand-hover-bg)]`}
                       >
                         <Td>{row.document_number || `DOC-${rowId}`}</Td>
-                        <Td className="text-[11px] text-zinc-400">{referenceLabel || '—'}</Td>
+                        <Td className="text-zinc-400">{referenceLabel || '—'}</Td>
                         <Td>{getCustomerName(row)}</Td>
                         <Td>{formatInvoiceShortDate(row.created_at)}</Td>
                         <Td className={dueClass}>{due.label}</Td>
                         <Td className="text-right">{formatMoney(Number(row.subtotal ?? (Number(row.total ?? 0) - Number(row.tax ?? 0))))}</Td>
-                        <Td className="text-right font-semibold text-zinc-100">{formatMoney(row.total)}</Td>
+                        <Td className="text-right text-zinc-200">{formatMoney(row.total)}</Td>
                         <Td className={`text-right ${settled ? 'text-zinc-400' : 'text-rose-300'}`}>
                           {formatMoney(settled ? 0 : Number(row.total ?? 0))}
                         </Td>
@@ -1047,13 +1052,13 @@ export default function DocumentsManager() {
         </div>
 
         <div className="h-[38%] min-h-[190px]">
-          <div className="h-full overflow-auto custom-scrollbar">
+          <div className="h-full overflow-auto bg-[#0f0f0f] custom-scrollbar">
             <div className="px-3 py-2 border-b border-zinc-800 bg-[#171717] text-xs text-zinc-400">
               Itens do documento ({selectedItems.length})
             </div>
-            <table className="w-full min-w-[900px] text-xs border-collapse">
-              <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
-                <tr className="text-zinc-400">
+            <table className="w-full min-w-[900px] border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+              <thead className="sticky top-0 z-10 bg-[#141414]">
+                <tr className="border-b border-[#0001fb]/70">
                   <Th>Código</Th>
                   <Th>Nome</Th>
                   <Th>Unidade de medida</Th>
@@ -1082,7 +1087,12 @@ export default function DocumentsManager() {
                     const unitTaxAmount = unitPriceWithTax - unitPriceBeforeTax;
                     const rowTotal = Number(item.total ?? unitPriceWithTax * qty);
                     return (
-                      <tr key={String(item.id)} className="border-b border-zinc-800/70 hover:bg-zinc-800/30">
+                      <tr
+                        key={String(item.id)}
+                        className={`${
+                          index % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                        } hover:bg-[var(--pos-brand-hover-bg)]`}
+                      >
                         <Td>{index + 1}</Td>
                         <Td>{item.product_name || '-'}</Td>
                         <Td>{item.unit || 'UN'}</Td>
@@ -1105,7 +1115,7 @@ export default function DocumentsManager() {
         <div className="px-3 py-2 text-xs border-t border-rose-500/30 bg-rose-950/30 text-rose-200">{errorMessage}</div>
       )}
       {actionMessage ? (
-        <div className="px-3 py-2 text-xs border-t border-emerald-500/30 bg-emerald-950/20 text-emerald-200">{actionMessage}</div>
+        <div className="px-3 py-2 text-xs border-t border-[#0001fb]/30 bg-[#0001fb]/10 text-[#a5b4fc]">{actionMessage}</div>
       ) : null}
 
       {isPeriodModalOpen && (
@@ -1226,34 +1236,10 @@ function DocumentStatusBadge({
   return (
     <span className="relative inline-flex group/status">
       <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${className}`}>{label}</span>
-      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#00a3e0]/30 bg-[#00364b] px-3 py-1.5 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl transition-all duration-150 group-hover/status:translate-y-0 group-hover/status:opacity-100">
+      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#0001fb]/30 bg-[rgba(0,1,251,0.35)] px-3 py-1.5 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl transition-all duration-150 group-hover/status:translate-y-0 group-hover/status:opacity-100">
         {hint}
       </span>
     </span>
-  );
-}
-
-function ToolbarButton({
-  icon,
-  label,
-  onClick,
-  active,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  active?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex flex-col items-center justify-center min-w-[80px] py-2 px-2 rounded transition-all hover:bg-zinc-800 group ${
-        active ? 'bg-zinc-800 text-white' : 'text-zinc-400'
-      }`}
-    >
-      <div className="mb-1 group-hover:scale-110 transition-transform">{icon}</div>
-      <span className="text-[11px] font-bold text-center leading-none capitalize tracking-tighter">{label}</span>
-    </button>
   );
 }
 
@@ -1315,14 +1301,14 @@ function FilterSelect({
 
 function Th({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <th className={`border-b border-r border-zinc-700/80 px-4 py-2.5 text-left font-medium whitespace-nowrap last:border-r-0 ${className}`}>
+    <th className={`px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap ${className}`}>
       {children}
     </th>
   );
 }
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <td className={`border-r border-zinc-800/80 px-4 py-2.5 whitespace-nowrap last:border-r-0 ${className}`}>{children}</td>;
+  return <td className={`px-3 py-2 text-xs text-zinc-200 whitespace-nowrap ${className}`}>{children}</td>;
 }
 
 function ModalActionButton({
@@ -1340,7 +1326,7 @@ function ModalActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex min-h-11 items-center justify-center gap-2 rounded-[0.4rem] border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex min-h-11 items-center justify-center gap-2 rounded-[0.4rem] border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:border-[#0001fb] hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {icon}
       <span className="text-sm">{label}</span>
@@ -1358,7 +1344,7 @@ function PresetButton({
   return (
     <button
       onClick={onClick}
-      className="min-h-11 rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
+      className="min-h-11 rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-[#0001fb] hover:bg-zinc-800"
     >
       {label}
     </button>
@@ -1397,9 +1383,9 @@ function CalendarGrid({
               onClick={() => onSelect(day.value)}
               className={`w-full aspect-square rounded-xl text-sm transition-colors flex items-center justify-center ${
                 isSelected
-                  ? 'bg-emerald-500 text-white scale-110'
+                  ? 'bg-[#0001fb] text-white scale-110'
                   : isToday
-                    ? 'border border-emerald-500/70 text-white'
+                    ? 'border border-[#0001fb]/70 text-white'
                     : day.inMonth
                       ? 'text-white hover:bg-zinc-700'
                       : 'text-zinc-500 hover:bg-zinc-800'

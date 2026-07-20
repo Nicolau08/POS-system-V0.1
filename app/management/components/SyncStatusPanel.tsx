@@ -26,7 +26,7 @@ export default function SyncStatusPanel() {
   const state = useMemo(() => {
     if (!online) return { label: 'Offline', dot: 'bg-red-500' };
     if (pending > 0) return { label: 'Syncing', dot: 'bg-amber-400' };
-    return { label: 'Online', dot: 'bg-emerald-500' };
+    return { label: 'Online', dot: 'bg-[#0001fb]' };
   }, [online, pending]);
 
   const handleRetryFailed = useCallback(async () => {
@@ -49,7 +49,7 @@ export default function SyncStatusPanel() {
   }, []);
 
   return (
-    <div className="bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-zinc-700 transition-colors">
+    <div className="bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-[#0001fb] transition-colors">
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h4 className="text-xs font-bold text-zinc-300 capitalize tracking-wider">Status de sincronização</h4>
@@ -84,7 +84,7 @@ export default function SyncStatusPanel() {
           type="button"
           onClick={handleRetryFailed}
           disabled={!online || failed <= 0 || isRetrying}
-          className="w-full h-9 rounded border border-zinc-800 bg-[#121212] text-zinc-200 text-xs font-medium transition-all hover:border-zinc-700 hover:bg-zinc-800/70 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full h-9 rounded border border-zinc-800 bg-[#121212] text-zinc-200 text-xs font-medium transition-all hover:border-[#0001fb] hover:bg-zinc-800/70 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isRetrying ? 'Retrying...' : 'Retry failed'}
         </button>

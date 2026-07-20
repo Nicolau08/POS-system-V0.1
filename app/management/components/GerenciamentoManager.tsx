@@ -5,6 +5,7 @@ import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Edit3, FileText, Pack
 import { getPosApiBase } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
 
 const DOCUMENT_CARDS = [
   'Entrada de stock',
@@ -648,7 +649,7 @@ export default function GerenciamentoManager() {
                   key={card}
                   type="button"
                   onClick={() => beginNewDocument(card)}
-                  className="min-h-[68px] rounded-md border border-zinc-700/80 bg-[#17191c] px-4 py-3 text-center text-sm font-medium leading-tight text-zinc-200 transition-colors hover:border-zinc-500"
+                  className="min-h-[68px] rounded-md border border-zinc-700/80 bg-[#17191c] px-4 py-3 text-center text-sm font-medium leading-tight text-zinc-200 transition-colors hover:border-[#0001fb]"
                 >
                   {card}
                 </button>
@@ -711,16 +712,7 @@ export default function GerenciamentoManager() {
                         onChange={(e) => setDocumentDate(e.target.value)}
                         className="h-8 w-full rounded border border-zinc-700 bg-[#121212] px-2 text-zinc-100 focus:outline-none"
                       />
-                      <label className="inline-flex cursor-pointer items-center gap-2 text-zinc-200">
-                        <span>Pago</span>
-                        <input
-                          type="checkbox"
-                          checked={isPaid}
-                          onChange={(e) => setIsPaid(e.target.checked)}
-                          className="peer sr-only"
-                        />
-                        <span className="relative h-5 w-9 rounded-full bg-zinc-700 transition-colors duration-200 peer-checked:bg-blue-600 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform after:duration-200 after:ease-in-out peer-checked:after:translate-x-[16px]" />
-                      </label>
+                      <PosSwitch checked={isPaid} onChange={setIsPaid} label="Pago" />
                     </div>
                     <div className="grid grid-cols-[130px_1fr] items-center gap-2">
                       <label className="text-zinc-400">Data de vencimento</label>

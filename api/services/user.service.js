@@ -154,10 +154,83 @@ export async function authenticateLogin({ userId, enteredPin }) {
     description: 'User login successful',
   });
 
+  let token = null;
+  try {
+    const { issueBearerTokenForUserId } = await import('../middlewares/auth.js');
+    token = issueBearerTokenForUserId(authenticatedUser.id);
+  } catch {
+    token = null;
+  }
+
   return {
     ok: true,
     user: authenticatedUser,
+    token,
   };
+}
+
+export async function consolidateActiveAdmins(tenantId = null) {
+  const tenantFilter = normalizeNonEmptyText(tenantId);
+  const tenants = tenantFilter
+    ? [{ id: tenantFilter }]
+    : await allDb(
+        `SELECT DISTINCT tenant_id AS id
+         FROM users
+         WHERE active = 1
+           AND LOWER(COALESCE(role, '')) = 'admin'
+           AND tenant_id IS NOT NULL
+           AND TRIM(tenant_id) <> ''`,
+      );
+
+  let deactivated = 0;
+  for (const tenant of tenants) {
+    const tid = normalizeNonEmptyText(tenant?.id);
+    if (!tid) continue;
+
+    const admins = await allDb(
+      `SELECT id, name, access_level, is_system, pin, cloud_id, updated_at
+       FROM users
+       WHERE tenant_id = ?
+         AND active = 1
+         AND LOWER(COALESCE(role, '')) = 'admin'`,
+      [tid],
+    );
+    if (admins.length <= 1) continue;
+
+    const score = (row) => {
+      let points = 0;
+      const id = String(row?.id ?? '');
+      if (id === 'admin-local') points += 1000;
+      if (id === 'admin-1') points += 900;
+      if (Number(row?.is_system ?? 0) === 1) points += 100;
+      points += Number(row?.access_level ?? 0) * 10;
+      if (String(row?.pin ?? '').trim()) points += 5;
+      if (String(row?.cloud_id ?? '').trim()) points += 1;
+      return points;
+    };
+
+    const ranked = [...admins].sort((a, b) => score(b) - score(a));
+    const keepId = String(ranked[0].id);
+    const now = new Date().toISOString();
+    for (const extra of ranked.slice(1)) {
+      await runDb(
+        `UPDATE users
+         SET active = 0,
+             updated_at = ?
+         WHERE id = ?
+           AND tenant_id = ?`,
+        [now, String(extra.id), tid],
+      );
+      deactivated += 1;
+    }
+    logInfo('users_admin_duplicates_consolidated', {
+      tenant_id: tid,
+      kept: keepId,
+      deactivated: ranked.length - 1,
+    });
+  }
+
+  return { deactivated };
 }
 
 export async function listLoginUsers() {
@@ -165,20 +238,32 @@ export async function listLoginUsers() {
     process.env.DEFAULT_TENANT_ID || process.env.POS_DEV_TENANT || ''
   ).trim();
 
+  try {
+    await consolidateActiveAdmins(installationTenantId || null);
+  } catch (error) {
+    logError('users_admin_consolidate_error', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const rows = installationTenantId
     ? await allDb(
         `SELECT id, name, surname, email, role, access_level, active
          FROM users
          WHERE active = 1
            AND tenant_id = ?
-         ORDER BY name ASC`,
+         ORDER BY
+           CASE WHEN LOWER(COALESCE(role, '')) = 'admin' THEN 0 ELSE 1 END,
+           name ASC`,
         [installationTenantId]
       )
     : await allDb(
         `SELECT id, name, surname, email, role, access_level, active
          FROM users
          WHERE active = 1
-         ORDER BY name ASC`
+         ORDER BY
+           CASE WHEN LOWER(COALESCE(role, '')) = 'admin' THEN 0 ELSE 1 END,
+           name ASC`
       );
 
   return rows.map((row) => ({

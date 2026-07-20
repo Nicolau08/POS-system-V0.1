@@ -23,10 +23,13 @@ type PosSelectProps = {
 };
 
 type MenuCoords = {
-  top: number;
   left: number;
   width: number;
   maxHeight: number;
+  /** Distância ao topo do ecrã (abre para baixo). */
+  top?: number;
+  /** Distância ao fundo do ecrã (abre para cima) — alinha à base do trigger. */
+  bottom?: number;
 };
 
 /**
@@ -67,17 +70,32 @@ export default function PosSelect({
     const viewportPad = 8;
     const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPad;
     const spaceAbove = rect.top - gap - viewportPad;
-    const preferBelow = spaceBelow >= 160 || spaceBelow >= spaceAbove;
-    const maxHeight = Math.max(120, Math.min(280, preferBelow ? spaceBelow : spaceAbove));
-    const top = preferBelow
-      ? rect.bottom + gap
-      : Math.max(viewportPad, rect.top - gap - maxHeight);
+    // Preferir baixo; só abrir para cima quando não há espaço útil abaixo.
+    const preferBelow = spaceBelow >= 96 || spaceBelow >= spaceAbove;
+    const maxHeight = Math.max(96, Math.min(280, preferBelow ? spaceBelow : spaceAbove));
     const width = Math.max(rect.width, 160);
     let left = rect.left;
     if (left + width > window.innerWidth - viewportPad) {
       left = Math.max(viewportPad, window.innerWidth - width - viewportPad);
     }
-    setCoords({ top, left, width, maxHeight });
+
+    if (preferBelow) {
+      setCoords({
+        top: rect.bottom + gap,
+        left,
+        width,
+        maxHeight,
+      });
+      return;
+    }
+
+    // `bottom` ancora o menu ao trigger; a altura real do conteúdo cresce para cima.
+    setCoords({
+      bottom: window.innerHeight - rect.top + gap,
+      left,
+      width,
+      maxHeight,
+    });
   };
 
   useLayoutEffect(() => {
@@ -127,6 +145,7 @@ export default function PosSelect({
             className="pos-dropdown fixed z-[10000] overflow-y-auto custom-scrollbar"
             style={{
               top: coords.top,
+              bottom: coords.bottom,
               left: coords.left,
               width: coords.width,
               maxHeight: coords.maxHeight,

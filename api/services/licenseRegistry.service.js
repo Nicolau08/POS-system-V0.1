@@ -237,10 +237,11 @@ export async function syncLicenseRegistry() {
     const displayName = normalizeText(store?.name);
     const nuit = normalizeText(store?.nuit);
     const plan = normalizeText(store?.plan);
+    const commerceType = normalizeText(store?.commerce_type) || null;
     const remoteExpires = normalizeText(store?.expires_at) || expiresAt;
     const now = new Date().toISOString();
 
-    if (displayName || nuit || plan) {
+    if (displayName || nuit || plan || commerceType) {
       await runDb(
         `INSERT INTO tenants (id, name, created_at)
          VALUES (?, ?, ?)
@@ -248,23 +249,26 @@ export async function syncLicenseRegistry() {
         [tenantId, displayName || tenantId, now, displayName || null],
       );
       await runDb(
-        `INSERT INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = COALESCE(?, name),
            nuit = COALESCE(?, nuit),
            license_type = COALESCE(?, license_type),
+           commerce_type = COALESCE(?, commerce_type),
            updated_at = excluded.updated_at`,
         [
           tenantId,
           displayName || tenantId,
           nuit || null,
           plan || 'LITE',
+          commerceType || 'retalho',
           now,
           now,
           displayName || null,
           nuit || null,
           plan || null,
+          commerceType,
         ],
       );
       if (plan) {
@@ -358,7 +362,8 @@ export async function syncLicenseRegistry() {
   const plan = normalizeText(status.data?.plan);
   const nuit = normalizeText(status.data?.nuit);
   const displayName = normalizeText(status.data?.display_name);
-  if (plan || nuit || displayName) {
+  const commerceType = normalizeText(status.data?.commerce_type) || null;
+  if (plan || nuit || displayName || commerceType) {
     const tenantId = verified.license.tenant_id;
     const now = new Date().toISOString();
 
@@ -371,23 +376,26 @@ export async function syncLicenseRegistry() {
     );
 
     await runDb(
-      `INSERT INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = COALESCE(?, name),
          nuit = COALESCE(?, nuit),
          license_type = COALESCE(?, license_type),
+         commerce_type = COALESCE(?, commerce_type),
          updated_at = excluded.updated_at`,
       [
         tenantId,
         displayName || tenantId,
         nuit || null,
         plan || 'LITE',
+        commerceType || 'retalho',
         now,
         now,
         displayName || null,
         nuit || null,
         plan || null,
+        commerceType,
       ],
     );
 

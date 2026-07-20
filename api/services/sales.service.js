@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import db from '../database.js';
 import { enqueueSync } from '../syncQueue.js';
 import { logAudit, logEvent } from '../utils/logger.js';
+import { HttpError } from '../utils/response.js';
 import { assertTenantWrite, requireTenantId } from '../utils/tenant.js';
 import {
   parseDateFilter,
@@ -9,6 +10,7 @@ import {
   parseSearchTerm,
   withPaginationPayload,
 } from './queryOptions.service.js';
+import { buildStockAdjustmentsFromCart } from './product.service.js';
 
 const POS_TAX_RATE = Math.max(0, Number(process.env.POS_TAX_RATE ?? 0.16) || 0.16);
 const TAX_DIVISOR = 1 + POS_TAX_RATE;
@@ -304,6 +306,16 @@ export async function updateSalePaymentStatus(saleIdRaw, paidRaw, actorUser = nu
 export async function createSale(payload = {}, actorUser = null, options = {}) {
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
+
+  const stationRole = String(actorUser?.station_role ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (stationRole === 'consulta') {
+    throw new HttpError(403, 'Posto de consulta não pode registar vendas.');
+  }
+
   const totalNumber = Number(payload.total);
   const idempotencyKey = sanitizeIdempotencyKey(options?.idempotencyKey ?? payload?.idempotencyKey);
   const storedDate = payload.saleTimestamp || payload.saleDate || payload.data || new Date().toISOString();
@@ -318,6 +330,10 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
 
   let normalizedDocType = String(payload.docType ?? 'VD').trim().toUpperCase() || 'VD';
   const isProforma = normalizedDocType === 'FP';
+
+  if (stationRole === 'garcom' && !isProforma) {
+    throw new HttpError(403, 'Posto garçom não fecha pagamento — use um posto caixa.');
+  }
 
   // FP = cotação/proforma: sem pagamento/caixa e sem movimento de stock.
   const rawPaymentMethod = isProforma
@@ -464,16 +480,9 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
     };
   }
 
-  const stockAdjustments =
-    shouldDecreaseStock && Array.isArray(payload.cart)
-      ? payload.cart
-          .map((item) => ({
-            productId: Number(item?.id),
-            quantity: Number(item?.quantity ?? 0),
-            isService: Boolean(item?.is_service),
-          }))
-          .filter((item) => Number.isFinite(item.productId) && Number.isFinite(item.quantity) && item.quantity > 0 && !item.isService)
-      : [];
+  const stockAdjustments = shouldDecreaseStock
+    ? await buildStockAdjustmentsFromCart(payload.cart, tenantId)
+    : [];
   const stockOverrideAuthorized = allowNegativeStockOverride
     ? await canOverrideZeroStock(actorUser, tenantId)
     : false;
@@ -513,8 +522,8 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
 
     const insertResult = await runDb(
       `INSERT INTO vendas (
-        total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method, user_id, user_name, approved_document_type, approved_document_number, tenant_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method, user_id, user_name, approved_document_type, approved_document_number, tenant_id, register_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         totalNumber,
         storedDate,
@@ -529,6 +538,8 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
         null,
         null,
         tenantId,
+        String(actorUser?.station_code ?? payload.register_code ?? payload.registerCode ?? 'caixa-1').trim() ||
+          'caixa-1',
       ]
     );
 
@@ -576,7 +587,9 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
 
       if (Number(updateResult?.changes ?? 0) === 0) {
         if (!stockOverrideAuthorized) {
-          throw new Error(`Estoque insuficiente para o produto ${adjustment.productId}`);
+          throw new Error(
+            `Estoque insuficiente para “${adjustment.name || adjustment.productId}”`
+          );
         }
         const forceResult = await runDb(
           `UPDATE products

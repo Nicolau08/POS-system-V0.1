@@ -9,6 +9,10 @@ import {
   parseSearchTerm,
   withPaginationPayload,
 } from './queryOptions.service.js';
+import { normalizeHex, pickCategoryColor } from '../utils/categoryColors.js';
+import { ensureCategoriesColorColumn } from '../repositories/categorias.repository.js';
+import { ensureDefaultTaxRates, resolveProductTaxRate } from './tax-rates.service.js';
+import { computeTaxFromBasePrice } from '../utils/taxMath.js';
 
 const allDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -34,6 +38,23 @@ const getDb = (sql, params = []) =>
     });
   });
 
+async function resolveColorFromCategory(categoryId, tenantId) {
+  if (!categoryId) return null;
+  await ensureCategoriesColorColumn();
+  const cat = await getDb(
+    `SELECT name, color FROM categories WHERE id = ? AND tenant_id = ?`,
+    [Number(categoryId), tenantId]
+  );
+  if (!cat) return null;
+  return normalizeHex(cat.color) ?? pickCategoryColor(String(cat.name || 'grupo'));
+}
+
+async function resolveProductColor(payloadColor, categoryId, tenantId) {
+  const fromPayload = normalizeHex(payloadColor);
+  if (fromPayload) return fromPayload;
+  return resolveColorFromCategory(categoryId, tenantId);
+}
+
 async function resolveTenantId(tenantCandidate) {
   return requireTenantId(tenantCandidate, {
     status: 401,
@@ -41,16 +62,66 @@ async function resolveTenantId(tenantCandidate) {
   });
 }
 
-const mapProductRow = (row) => ({
-    ...row,
+const PRODUCT_KINDS = new Set(['simple', 'composed', 'ingredient', 'service']);
+
+function normalizeProductKind(raw) {
+  const value = String(raw ?? 'simple').trim().toLowerCase();
+  return PRODUCT_KINDS.has(value) ? value : 'simple';
+}
+
+function resolveServiceFlag(productKind, payloadIsService) {
+  if (productKind === 'composed' || productKind === 'service') return 1;
+  if (productKind === 'ingredient') return 0;
+  return payloadIsService ? 1 : 0;
+}
+
+function resolveProductPrice(payload = {}, productKind) {
+  const raw = payload.price;
+  if (raw === '' || raw == null) {
+    return productKind === 'ingredient' ? 0 : NaN;
+  }
+  const price = Number(raw);
+  if (!Number.isFinite(price)) {
+    return productKind === 'ingredient' ? 0 : NaN;
+  }
+  return Math.max(0, price);
+}
+
+const mapProductRow = (row) => {
+  const categoryColor = row.category_color != null ? String(row.category_color) : null;
+  const productColor = row.color != null && String(row.color).trim() ? String(row.color).trim() : null;
+  const { category_color: _omit, ...rest } = row;
+  let productKind = normalizeProductKind(row.product_kind);
+  // Produtos antigos com is_service=1 e kind simple → tratar como Serviço.
+  if (productKind === 'simple' && Boolean(row.is_service)) {
+    productKind = 'service';
+  }
+  return {
+    ...rest,
     id: String(row.id),
     category_id: row.category_id != null ? String(row.category_id) : null,
     tenant_id: row.tenant_id ? String(row.tenant_id) : null,
     active: Boolean(row.active),
-    is_service: Boolean(row.is_service),
+    is_service: Boolean(row.is_service) || productKind === 'composed' || productKind === 'service',
+    product_kind: productKind,
     default_quantity: Boolean(row.default_quantity),
+    tax_rate_id: row.tax_rate_id != null ? String(row.tax_rate_id) : null,
+    tax_rate_name: row.tax_rate_name != null ? String(row.tax_rate_name) : null,
+    tax_rate_code: row.tax_rate_code != null ? String(row.tax_rate_code) : null,
+    tax_rate_percent: Number(row.tax_rate_percent ?? 0),
+    tax_rate_is_fixed: Boolean(row.tax_rate_is_fixed),
+    tax_rate_price_includes_tax:
+      Number(row.tax_rate_percent ?? 0) === 0
+        ? false
+        : row.tax_rate_price_includes_tax == null
+          ? true
+          : Boolean(row.tax_rate_price_includes_tax),
+    // Cor efectiva: própria do produto, senão a do grupo
+    color: productColor || categoryColor || null,
+    category_color: categoryColor,
     categories: row.category ? { name: row.category } : undefined,
-  });
+  };
+};
 
 export async function listProducts(filters = {}, actorUser = null) {
   const pagination = parsePagination(filters);
@@ -59,6 +130,7 @@ export async function listProducts(filters = {}, actorUser = null) {
   const includeDeleted = parseBooleanFilter(filters.include_deleted) === true;
   const deleted = parseBooleanFilter(filters.deleted);
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  await ensureDefaultTaxRates(tenantId);
 
   const where = [];
   const params = [];
@@ -83,14 +155,24 @@ export async function listProducts(filters = {}, actorUser = null) {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const baseSelect = `
     SELECT
-      p.id, p.cloud_id, p.code, p.name, p.category_id, p.barcode, p.cost, p.price, p.tax, p.final_price,
-      p.active, p.unit, p.description, p.age_restriction, p.is_service, p.default_quantity,
+      p.id, p.cloud_id, p.code, p.name, p.category_id, p.barcode, p.cost, p.price,
+      p.tax_rate_id, p.tax, p.final_price,
+      p.active, p.unit, p.description, p.age_restriction, p.is_service, p.product_kind, p.default_quantity,
       p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.tenant_id, p.created_at, p.updated_at,
-      c.name AS category
+      c.name AS category,
+      c.color AS category_color,
+      tr.name AS tax_rate_name,
+      tr.code AS tax_rate_code,
+      tr.rate AS tax_rate_percent,
+      tr.is_fixed AS tax_rate_is_fixed,
+      tr.price_includes_tax AS tax_rate_price_includes_tax
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
+    LEFT JOIN tax_rates tr ON tr.id = p.tax_rate_id AND tr.tenant_id = p.tenant_id
     ${whereSql}
     ORDER BY p.name ASC`;
+
+  await ensureCategoriesColorColumn();
 
   if (!pagination.hasPagination) {
     const rows = await allDb(baseSelect, params);
@@ -117,37 +199,62 @@ export async function createProduct(payload = {}, actorUser = null) {
   const now = new Date().toISOString();
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
-  const finalPrice = payload.final_price ?? payload.price;
-  if (!payload.name || !Number.isFinite(Number(payload.price))) {
-    return { error: 'name e price sao obrigatorios', status: 400 };
+  const productKind = normalizeProductKind(payload.product_kind ?? payload.productKind);
+  const price = resolveProductPrice(payload, productKind);
+  if (!payload.name || !Number.isFinite(price)) {
+    return {
+      error:
+        productKind === 'ingredient'
+          ? 'name e obrigatorio'
+          : 'name e price sao obrigatorios',
+      status: 400,
+    };
   }
 
   const cloudId =
     payload.cloud_id && isUuidString(String(payload.cloud_id)) ? String(payload.cloud_id).trim() : uuidv4();
 
+  const categoryId = payload.category_id ? Number(payload.category_id) : null;
+  const inheritedColor = await resolveProductColor(payload.color, categoryId, tenantId);
+  const taxRate = await resolveProductTaxRate(payload.tax_rate_id ?? payload.taxRateId, tenantId);
+  const { tax: taxAmount, finalPrice } = computeTaxFromBasePrice({
+    basePrice: price,
+    rate: Number(taxRate.rate ?? 0),
+    isFixed: Boolean(taxRate.is_fixed),
+    priceIncludesTax:
+      Number(taxRate.rate ?? 0) === 0
+        ? false
+        : taxRate.price_includes_tax == null
+          ? true
+          : Boolean(taxRate.price_includes_tax),
+  });
+  const isService = resolveServiceFlag(productKind, Boolean(payload.is_service));
+
   const result = await runDb(
     `INSERT INTO products
-      (cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active, unit, description, age_restriction, is_service, product_kind, default_quantity, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       cloudId,
       payload.code ?? null,
       payload.name,
-      payload.category_id ? Number(payload.category_id) : null,
+      categoryId,
       payload.barcode ?? null,
       Number(payload.cost ?? 0),
-      Number(payload.price),
-      Number(payload.tax ?? 0),
-      Number(finalPrice ?? payload.price),
+      price,
+      Number(taxRate.id),
+      taxAmount,
+      finalPrice,
       payload.active === false ? 0 : 1,
       payload.unit ?? 'un',
       payload.description ?? null,
       payload.age_restriction ? Number(payload.age_restriction) : null,
-      payload.is_service ? 1 : 0,
+      isService,
+      productKind,
       payload.default_quantity === false ? 0 : 1,
       Number(payload.stock_quantity ?? 0),
       Number(payload.min_stock ?? 0),
-      payload.color ?? null,
+      inheritedColor,
       payload.image ?? null,
       0,
       tenantId,
@@ -157,6 +264,11 @@ export async function createProduct(payload = {}, actorUser = null) {
   );
 
   const insertedId = result.lastID;
+  if (Array.isArray(payload.bom_lines ?? payload.bomLines)) {
+    const bomResult = await replaceProductBom(insertedId, payload.bom_lines ?? payload.bomLines, actorUser);
+    if (bomResult?.error) return bomResult;
+  }
+
   await logAudit('PRODUCT_CREATE', actorUser, {
     entity: 'product',
     entity_id: String(insertedId),
@@ -165,7 +277,19 @@ export async function createProduct(payload = {}, actorUser = null) {
   });
 
   try {
-    await enqueueSync('product', { ...payload, id: insertedId, cloud_id: cloudId, deleted: 0, tenant_id: tenantId, updated_at: now });
+    await enqueueSync('product', {
+      ...payload,
+      id: insertedId,
+      cloud_id: cloudId,
+      product_kind: productKind,
+      is_service: Boolean(isService),
+      tax_rate_id: Number(taxRate.id),
+      tax: taxAmount,
+      final_price: finalPrice,
+      deleted: 0,
+      tenant_id: tenantId,
+      updated_at: now,
+    });
     return { success: true, id: insertedId, cloud_id: cloudId };
   } catch (queueErr) {
     return {
@@ -181,8 +305,16 @@ export async function createProduct(payload = {}, actorUser = null) {
 export async function updateProduct(localIdRaw, payload = {}, actorUser = null) {
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
-  if (!payload.name || !Number.isFinite(Number(payload.price))) {
-    return { error: 'name e price sao obrigatorios', status: 400 };
+  const productKind = normalizeProductKind(payload.product_kind ?? payload.productKind);
+  const price = resolveProductPrice(payload, productKind);
+  if (!payload.name || !Number.isFinite(price)) {
+    return {
+      error:
+        productKind === 'ingredient'
+          ? 'name e obrigatorio'
+          : 'name e price sao obrigatorios',
+      status: 400,
+    };
   }
 
   const localId = Number(localIdRaw);
@@ -198,31 +330,49 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
   if (!nextCloudId) nextCloudId = uuidv4();
   const now = new Date().toISOString();
 
+  const categoryId = payload.category_id ? Number(payload.category_id) : null;
+  const inheritedColor = await resolveProductColor(payload.color, categoryId, tenantId);
+  const taxRate = await resolveProductTaxRate(payload.tax_rate_id ?? payload.taxRateId, tenantId);
+  const { tax: taxAmount, finalPrice } = computeTaxFromBasePrice({
+    basePrice: price,
+    rate: Number(taxRate.rate ?? 0),
+    isFixed: Boolean(taxRate.is_fixed),
+    priceIncludesTax:
+      Number(taxRate.rate ?? 0) === 0
+        ? false
+        : taxRate.price_includes_tax == null
+          ? true
+          : Boolean(taxRate.price_includes_tax),
+  });
+  const isService = resolveServiceFlag(productKind, Boolean(payload.is_service));
+
   const result = await runDb(
     `UPDATE products SET
-      cloud_id = ?, code = ?, name = ?, category_id = ?, barcode = ?, cost = ?, price = ?, tax = ?,
-      final_price = ?, active = ?, unit = ?, description = ?, age_restriction = ?, is_service = ?,
-      default_quantity = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, updated_at = ?
+      cloud_id = ?, code = ?, name = ?, category_id = ?, barcode = ?, cost = ?, price = ?, tax_rate_id = ?,
+      tax = ?, final_price = ?, active = ?, unit = ?, description = ?, age_restriction = ?, is_service = ?,
+      product_kind = ?, default_quantity = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
     [
       nextCloudId,
       payload.code ?? null,
       payload.name,
-      payload.category_id ? Number(payload.category_id) : null,
+      categoryId,
       payload.barcode ?? null,
       Number(payload.cost ?? 0),
-      Number(payload.price),
-      Number(payload.tax ?? 0),
-      Number(payload.final_price ?? payload.price),
+      price,
+      Number(taxRate.id),
+      taxAmount,
+      finalPrice,
       payload.active === false ? 0 : 1,
       payload.unit ?? 'un',
       payload.description ?? null,
       payload.age_restriction ? Number(payload.age_restriction) : null,
-      payload.is_service ? 1 : 0,
+      isService,
+      productKind,
       payload.default_quantity === false ? 0 : 1,
       Number(payload.stock_quantity ?? 0),
       Number(payload.min_stock ?? 0),
-      payload.color ?? null,
+      inheritedColor,
       payload.image ?? null,
       now,
       localId,
@@ -231,6 +381,16 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
   );
 
   if (result.changes <= 0) return { success: true, updated: false };
+
+  if (Array.isArray(payload.bom_lines ?? payload.bomLines)) {
+    const bomResult = await replaceProductBom(localId, payload.bom_lines ?? payload.bomLines, actorUser);
+    if (bomResult?.error) return bomResult;
+  } else if (productKind !== 'composed') {
+    await runDb(
+      `DELETE FROM product_bom_lines WHERE tenant_id = ? AND parent_product_id = ?`,
+      [tenantId, localId]
+    );
+  }
 
   await logAudit('PRODUCT_UPDATE', actorUser, {
     entity: 'product',
@@ -244,6 +404,11 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
       ...payload,
       id: localId,
       cloud_id: nextCloudId,
+      product_kind: productKind,
+      is_service: Boolean(isService),
+      tax_rate_id: Number(taxRate.id),
+      tax: taxAmount,
+      final_price: finalPrice,
       deleted: 0,
       tenant_id: tenantId,
       updated_at: now,
@@ -266,7 +431,7 @@ export async function deleteProduct(localIdRaw, actorUser = null) {
   const now = new Date().toISOString();
   const row = await getDb(
     `SELECT
-       cloud_id, code, name, category_id, barcode, cost, price, tax, final_price, active,
+       cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active,
        unit, description, age_restriction, is_service, default_quantity, stock_quantity,
        min_stock, color, image, tenant_id
      FROM products
@@ -349,7 +514,7 @@ export async function adjustStock(payload = {}, actorUser = null) {
   const product = await getDb(
     `SELECT
        id, cloud_id, code, name, category_id, barcode, cost, price, tax, final_price,
-       active, unit, description, age_restriction, is_service, default_quantity,
+       active, unit, description, age_restriction, is_service, product_kind, default_quantity,
        stock_quantity, min_stock, color, image, deleted, tenant_id
      FROM products
      WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0
@@ -360,9 +525,10 @@ export async function adjustStock(payload = {}, actorUser = null) {
     return { error: 'Produto não encontrado', status: 404 };
   }
 
-  if (Number(product.is_service ?? 0) !== 0) {
+  const kind = normalizeProductKind(product.product_kind);
+  if (Number(product.is_service ?? 0) !== 0 || kind === 'composed') {
     return {
-      error: 'Produto sem controlo de estoque (serviço). A quantidade não é alterada.',
+      error: 'Produto sem controlo de estoque (serviço/composto). A quantidade não é alterada.',
       status: 400,
       code: 'STOCK_NOT_TRACKED',
     };
@@ -743,4 +909,198 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
   });
 
   return combined;
+}
+
+export async function listProductBom(parentIdRaw, actorUser = null) {
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  const parentId = Number(parentIdRaw);
+  if (!Number.isFinite(parentId)) return { error: 'id invalido', status: 400 };
+
+  const rows = await allDb(
+    `SELECT
+       b.id,
+       b.parent_product_id,
+       b.component_product_id,
+       b.quantity,
+       c.name AS component_name,
+       c.unit AS component_unit,
+       c.product_kind AS component_kind,
+       c.stock_quantity AS component_stock
+     FROM product_bom_lines b
+     INNER JOIN products c
+       ON c.id = b.component_product_id
+      AND c.tenant_id = b.tenant_id
+      AND COALESCE(c.deleted, 0) = 0
+     WHERE b.tenant_id = ?
+       AND b.parent_product_id = ?
+     ORDER BY c.name ASC`,
+    [tenantId, parentId]
+  );
+
+  return (rows ?? []).map((row) => ({
+    id: String(row.id),
+    parent_product_id: String(row.parent_product_id),
+    component_product_id: String(row.component_product_id),
+    quantity: Number(row.quantity ?? 0),
+    component_name: String(row.component_name ?? ''),
+    component_unit: String(row.component_unit ?? 'un'),
+    component_kind: normalizeProductKind(row.component_kind),
+    component_stock: Number(row.component_stock ?? 0),
+  }));
+}
+
+export async function replaceProductBom(parentIdRaw, linesRaw = [], actorUser = null) {
+  const tenantId = await resolveTenantId(actorUser?.tenant_id);
+  const parentId = Number(parentIdRaw);
+  if (!Number.isFinite(parentId)) return { error: 'id invalido', status: 400 };
+
+  const parent = await getDb(
+    `SELECT id, product_kind, name
+     FROM products
+     WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
+    [parentId, tenantId]
+  );
+  if (!parent) return { error: 'Produto nao encontrado', status: 404 };
+
+  const parentKind = normalizeProductKind(parent.product_kind);
+  if (parentKind !== 'composed') {
+    await runDb(`DELETE FROM product_bom_lines WHERE tenant_id = ? AND parent_product_id = ?`, [
+      tenantId,
+      parentId,
+    ]);
+    return { success: true, count: 0 };
+  }
+
+  const rawLines = Array.isArray(linesRaw) ? linesRaw : [];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const line of rawLines) {
+    const componentId = Number(line?.component_product_id ?? line?.componentProductId ?? line?.id);
+    const quantity = Number(line?.quantity ?? 0);
+    if (!Number.isFinite(componentId) || componentId <= 0) {
+      return { error: 'Ingrediente invalido na ficha tecnica', status: 400 };
+    }
+    if (componentId === parentId) {
+      return { error: 'Um produto nao pode ser ingrediente de si proprio', status: 400 };
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return { error: 'Quantidade da ficha tecnica deve ser maior que zero', status: 400 };
+    }
+    if (seen.has(componentId)) {
+      return { error: 'Ingrediente duplicado na ficha tecnica', status: 400 };
+    }
+    seen.add(componentId);
+
+    const component = await getDb(
+      `SELECT id, name, product_kind
+       FROM products
+       WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
+      [componentId, tenantId]
+    );
+    if (!component) {
+      return { error: `Ingrediente ${componentId} nao encontrado`, status: 400 };
+    }
+    if (normalizeProductKind(component.product_kind) !== 'ingredient') {
+      return {
+        error: `“${component.name}” deve ser do tipo Ingrediente para entrar na ficha tecnica`,
+        status: 400,
+      };
+    }
+
+    normalized.push({ componentId, quantity });
+  }
+
+  const now = new Date().toISOString();
+  try {
+    await runDb('BEGIN IMMEDIATE TRANSACTION');
+    await runDb(`DELETE FROM product_bom_lines WHERE tenant_id = ? AND parent_product_id = ?`, [
+      tenantId,
+      parentId,
+    ]);
+    for (const line of normalized) {
+      await runDb(
+        `INSERT INTO product_bom_lines
+          (tenant_id, parent_product_id, component_product_id, quantity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [tenantId, parentId, line.componentId, line.quantity, now, now]
+      );
+    }
+    await runDb('COMMIT');
+  } catch (error) {
+    try {
+      await runDb('ROLLBACK');
+    } catch {}
+    throw error;
+  }
+
+  return { success: true, count: normalized.length };
+}
+
+/** Expande itens de venda em ajustes de stock (compostos → ingredientes). */
+export async function buildStockAdjustmentsFromCart(cart, tenantId) {
+  const adjustments = new Map();
+
+  const addQty = (productId, quantity, name) => {
+    const key = Number(productId);
+    if (!Number.isFinite(key) || !Number.isFinite(quantity) || quantity <= 0) return;
+    const prev = adjustments.get(key);
+    if (prev) {
+      prev.quantity += quantity;
+    } else {
+      adjustments.set(key, { productId: key, quantity, name: name || `Produto ${key}` });
+    }
+  };
+
+  for (const item of Array.isArray(cart) ? cart : []) {
+    const productId = Number(item?.id);
+    const quantity = Number(item?.quantity ?? 0);
+    if (!Number.isFinite(productId) || !Number.isFinite(quantity) || quantity <= 0) continue;
+
+    const product = await getDb(
+      `SELECT id, name, is_service, product_kind
+       FROM products
+       WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
+      [productId, tenantId]
+    );
+    if (!product) continue;
+
+    const kind = normalizeProductKind(product.product_kind);
+    const isService =
+      Boolean(product.is_service) || kind === 'composed' || kind === 'service';
+
+    if (kind === 'composed') {
+      const bom = await allDb(
+        `SELECT b.component_product_id, b.quantity, c.name
+         FROM product_bom_lines b
+         INNER JOIN products c
+           ON c.id = b.component_product_id
+          AND c.tenant_id = b.tenant_id
+          AND COALESCE(c.deleted, 0) = 0
+         WHERE b.tenant_id = ? AND b.parent_product_id = ?`,
+        [tenantId, productId]
+      );
+      if (!bom.length) {
+        // Composto sem ficha: nao baixa stock do proprio produto.
+        continue;
+      }
+      for (const line of bom) {
+        addQty(
+          line.component_product_id,
+          quantity * Number(line.quantity ?? 0),
+          String(line.name ?? 'Ingrediente')
+        );
+      }
+      continue;
+    }
+
+    if (isService || kind === 'ingredient') {
+      // Serviços não controlam stock; ingredientes não se vendem no POS.
+      continue;
+    }
+
+    addQty(productId, quantity, String(product.name ?? item?.name ?? 'Produto'));
+  }
+
+  return Array.from(adjustments.values());
 }

@@ -2,13 +2,12 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Banknote, Plus, Printer, RotateCcw, Trash2, User } from 'lucide-react';
+import { Banknote, Plus, RotateCcw, Trash2, User } from 'lucide-react';
 import type { CartItem, Customer, Discount } from '@/app/pos/types';
 
 // Right sidebar cart section extracted from the POS page.
 export function Cart({
   selectedCartItemId,
-  onDeleteSelected,
   docType,
   onCycleDocType,
   selectedCustomer,
@@ -29,11 +28,10 @@ export function Cart({
   tax,
   total,
   onCancelOrder,
+  canCancelOrder = true,
   onOpenPayment,
-  onOpenBillPreview,
 }: {
-  selectedCartItemId: string | null;
-  onDeleteSelected: () => void;
+  selectedCartItemId?: string | null;
   docType: 'VD' | 'TK' | 'FP' | 'FT';
   onCycleDocType: () => void;
   selectedCustomer: Customer | null;
@@ -54,32 +52,30 @@ export function Cart({
   tax: number;
   total: number;
   onCancelOrder: () => void;
+  canCancelOrder?: boolean;
   onOpenPayment: () => void;
-  onOpenBillPreview: () => void;
 }) {
   const docTypeButtonClass =
     docType === 'FP'
       ? 'bg-amber-600 hover:bg-amber-500'
       : docType === 'TK'
         ? 'bg-sky-600 hover:bg-sky-500'
-        : 'bg-emerald-600 hover:bg-emerald-500';
+        : 'bg-[#0001fb] hover:bg-[#1a1bff]';
 
   return (
     <div className="w-[350px] flex flex-col border-l border-zinc-800 bg-[#151515]">
       <div className="h-14 p-2 border-b border-zinc-800 flex items-center gap-2 bg-[#1a1a1a]">
-        <button
-          onClick={onDeleteSelected}
-          disabled={!selectedCartItemId}
-          className={`w-12 h-10 flex flex-col items-center justify-center rounded transition-colors ${
-            selectedCartItemId
-              ? 'bg-zinc-800 hover:bg-zinc-700 text-red-400'
-              : 'bg-zinc-800 text-zinc-700 cursor-not-allowed opacity-50'
-          }`}
-          title="Deletar item selecionado"
-        >
-          <Trash2 size={14} />
-          <span className="text-[8px] capitalize font-bold mt-0.5">Del</span>
-        </button>
+        {canCancelOrder ? (
+          <button
+            type="button"
+            onClick={onCancelOrder}
+            className="w-12 h-10 flex flex-col items-center justify-center rounded bg-red-600 hover:bg-red-500 text-white transition-colors"
+            title="Cancelar pedido"
+          >
+            <Trash2 size={14} />
+            <span className="text-[7px] capitalize font-bold mt-0.5 leading-none">Cancelar</span>
+          </button>
+        ) : null}
 
         <div className="flex-[2] flex items-center bg-zinc-800 rounded h-10 relative overflow-hidden">
           <button
@@ -93,10 +89,10 @@ export function Cart({
           <div className="flex-1 flex items-center px-3 h-full">
             {selectedCustomer ? (
               <div className="flex items-center gap-2 w-full overflow-hidden">
-                <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white flex-shrink-0">
+                <div className="w-5 h-5 rounded-full bg-[#0001fb] flex items-center justify-center text-white flex-shrink-0">
                   <User size={12} />
                 </div>
-                <span className="text-xs text-emerald-400 font-bold truncate">{selectedCustomer.name}</span>
+                <span className="text-xs text-[#a5b4fc] font-bold truncate">{selectedCustomer.name}</span>
                 <button onClick={() => onSelectCustomer(null)} className="ml-auto text-zinc-500 hover:text-rose-500 transition-colors">
                   <RotateCcw size={12} />
                 </button>
@@ -121,7 +117,7 @@ export function Cart({
                           onClick={() => onSelectCustomer(c)}
                           className="pos-dropdown-item flex items-center gap-2"
                         >
-                          <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-white">
+                          <div className="w-4 h-4 rounded-full bg-[#0001fb] flex items-center justify-center text-white">
                             <User size={10} />
                           </div>
                           <div className="flex flex-col">
@@ -134,7 +130,7 @@ export function Cart({
                     {!customers.some((c) => c.name.toLowerCase() === customerName.toLowerCase()) && (
                       <button
                         onClick={onCreateCustomerFromName}
-                        className="pos-dropdown-item mt-0.5 flex items-center gap-2 text-emerald-400 hover:!bg-emerald-500/10"
+                        className="pos-dropdown-item mt-0.5 flex items-center gap-2 text-[#a5b4fc] hover:!bg-[var(--pos-brand-hover-bg)]"
                       >
                         <Plus size={12} />
                         <span className="text-[10px] font-bold capitalize tracking-tight">Cadastrar &quot;{customerName}&quot;</span>
@@ -170,7 +166,7 @@ export function Cart({
                 }}
                 className={`flex justify-between items-center p-3 border rounded transition-colors group cursor-pointer ${
                   selectedCartItemId === item.id
-                    ? 'bg-emerald-500/20 border-emerald-500/50'
+                    ? 'bg-[var(--pos-brand-selected-bg)] border-[rgba(0,1,251,0.5)]'
                     : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/50'
                 }`}
               >
@@ -179,12 +175,12 @@ export function Cart({
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-zinc-500">{item.quantity} x {formatPrice(item.price)}</span>
                     {item.discount && (
-                      <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1 rounded-md font-bold">
+                      <span className="text-[10px] bg-[#0001fb]/20 text-[#a5b4fc] px-1 rounded-md font-bold">
                         -{item.discount.type === 'percentage' ? `${item.discount.amount}%` : formatPrice(item.discount.amount)}
                       </span>
                     )}
                     {globalDiscount && (
-                      <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1 rounded-md font-bold">
+                      <span className="text-[10px] bg-[#0001fb]/20 text-[#a5b4fc] px-1 rounded-md font-bold">
                         Global: -{globalDiscount.type === 'percentage' ? `${globalDiscount.amount}%` : formatPrice(globalDiscount.amount / cart.length)}
                       </span>
                     )}
@@ -214,7 +210,7 @@ export function Cart({
           <span>{formatPrice(originalSubtotal)}</span>
         </div>
         {totalDiscount > 0 && (
-          <div className="flex justify-between text-xs text-emerald-500">
+          <div className="flex justify-between text-xs text-[#a5b4fc]">
             <span>Desconto</span>
             <span>-{formatPrice(totalDiscount)}</span>
           </div>
@@ -229,34 +225,19 @@ export function Cart({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-1 p-1 bg-zinc-900">
-        <button onClick={onCancelOrder} className="flex flex-col items-center justify-center py-3 bg-red-600 hover:bg-red-500 text-white rounded transition-colors">
-          <Trash2 size={18} />
-          <span className="text-[10px] mt-1 capitalize font-bold">Cancelar pedido</span>
-        </button>
+      <div className="p-1 bg-zinc-900">
         <button
+          type="button"
           onClick={onOpenPayment}
           disabled={cart.length === 0}
-          className={`flex flex-col items-center justify-center py-3 rounded transition-colors ${
+          className={`flex w-full flex-col items-center justify-center py-3 rounded transition-colors ${
             cart.length > 0
-              ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+              ? 'bg-[#00993e] hover:bg-[#00ad46] text-white'
               : 'bg-zinc-800 text-zinc-700 cursor-not-allowed opacity-50'
           }`}
         >
           <Banknote size={18} />
           <span className="text-[10px] mt-1 capitalize font-bold">Pagamento</span>
-        </button>
-        <button
-          onClick={onOpenBillPreview}
-          disabled={cart.length === 0}
-          className={`flex flex-col items-center justify-center py-3 rounded transition-colors ${
-            cart.length > 0
-              ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-              : 'bg-zinc-800 text-zinc-700 cursor-not-allowed opacity-50'
-          }`}
-        >
-          <Printer size={18} />
-          <span className="text-[10px] mt-1 capitalize font-bold">CONTA</span>
         </button>
       </div>
     </div>

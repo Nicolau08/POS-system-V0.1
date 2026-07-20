@@ -1,7 +1,10 @@
 export type PosSettingsSection =
   | 'basicas'
+  | 'postos'
+  | 'locais'
   | 'pedidos'
   | 'produtos'
+  | 'farmacia'
   | 'documentos'
   | 'balanca'
   | 'display'
@@ -194,9 +197,26 @@ export function savePosSettings(settings: PosSettings) {
   };
   localStorage.setItem(POS_SETTINGS_STORAGE_KEY, JSON.stringify(next));
   window.dispatchEvent(new CustomEvent('pos-settings-changed', { detail: next }));
+  void syncReceiptPrinterToServer(next);
 }
 
 export function getReceiptPrinterName(settings?: PosSettings | null): string {
   const cfg = settings ?? (typeof window !== 'undefined' ? loadPosSettings() : DEFAULT_POS_SETTINGS);
   return String(cfg.printJobs?.receipt?.printer ?? '').trim();
+}
+
+/** Publica a impressora de recibos no servidor (postos Android usam para Conta). */
+export async function syncReceiptPrinterToServer(settings?: PosSettings | null): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const { getPosApiDirectBase, getPosUserAuthHeaders } = await import('@/lib/apiBase');
+    const name = getReceiptPrinterName(settings);
+    await fetch(`${getPosApiDirectBase().replace(/\/$/, '')}/stations/server-settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
+      body: JSON.stringify({ receiptPrinterName: name }),
+    });
+  } catch {
+    // rede / API offline — o próximo save tenta outra vez
+  }
 }

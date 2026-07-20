@@ -5,12 +5,15 @@ import { AlertCircle, RefreshCw, Settings2 } from 'lucide-react';
 import type { PosSettings, PrintJobKey } from '@/lib/posSettings';
 import { listSystemPrinters, type SystemPrinter } from '@/lib/printersClient';
 import { ReceiptPrinterSettingsModal } from './ReceiptPrinterSettingsModal';
+import { PrintCentersPanel } from './PrintCentersPanel';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
 
-type PrintTab = 'selecao' | 'personalizar' | 'localizar' | 'modelos';
+type PrintTab = 'selecao' | 'centros' | 'personalizar' | 'localizar' | 'modelos';
 
-const PRINT_TABS: Array<{ id: PrintTab; label: string }> = [
+const PRINT_TABS_BASE: Array<{ id: PrintTab; label: string }> = [
   { id: 'selecao', label: 'Seleção de impressora' },
+  { id: 'centros', label: 'Centros de produto' },
   { id: 'personalizar', label: 'Personalizar recibo' },
   { id: 'localizar', label: 'Localize o texto do recibo' },
   { id: 'modelos', label: 'Modelos de impressão' },
@@ -20,40 +23,8 @@ const PRINT_JOBS: Array<{ key: PrintJobKey; label: string; settingsLink?: boolea
   { key: 'receipt', label: 'Imprimir recibo', settingsLink: true },
   { key: 'creditPayments', label: 'Imprimir pagamentos a crédito' },
   { key: 'blockedSale', label: 'Imprimir venda bloqueada' },
-  { key: 'kitchen', label: 'Imprimir pedidos da cozinha' },
   { key: 'serviceMessages', label: 'Imprimir mensagens de serviço' },
 ];
-
-function PrintToggle({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative h-[22px] w-[42px] shrink-0 rounded-[3px] border transition-colors disabled:opacity-50 ${
-        checked
-          ? 'border-emerald-500 bg-emerald-500'
-          : 'border-zinc-500 bg-zinc-600'
-      }`}
-    >
-      <span
-        className={`absolute top-[2px] h-[16px] w-[16px] rounded-[2px] bg-white shadow-sm transition-all ${
-          checked ? 'left-[22px]' : 'left-[2px]'
-        }`}
-      />
-    </button>
-  );
-}
 
 function DarkSelect({
   value,
@@ -97,7 +68,7 @@ function DarkInput({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#00a3e0]"
+      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb]"
     />
   );
 }
@@ -105,11 +76,20 @@ function DarkInput({
 export function PrintOptionsPanel({
   draft,
   onChange,
+  showPrintCenters = true,
 }: {
   draft: PosSettings;
   onChange: (next: PosSettings) => void;
+  showPrintCenters?: boolean;
 }) {
   const [tab, setTab] = useState<PrintTab>('selecao');
+  const PRINT_TABS = showPrintCenters
+    ? PRINT_TABS_BASE
+    : PRINT_TABS_BASE.filter((t) => t.id !== 'centros');
+
+  useEffect(() => {
+    if (!showPrintCenters && tab === 'centros') setTab('selecao');
+  }, [showPrintCenters, tab]);
   const [printers, setPrinters] = useState<SystemPrinter[]>([]);
   const [printersError, setPrintersError] = useState('');
   const [loadingPrinters, setLoadingPrinters] = useState(false);
@@ -183,7 +163,7 @@ export function PrintOptionsPanel({
             >
               {item.label}
               {active ? (
-                <span className="absolute inset-x-0 bottom-0 h-[3px] rounded-t bg-[#00a3e0]" />
+                <span className="absolute inset-x-0 bottom-0 h-[3px] rounded-t bg-[#0001fb]" />
               ) : null}
             </button>
           );
@@ -201,7 +181,7 @@ export function PrintOptionsPanel({
               <button
                 type="button"
                 onClick={() => void refreshPrinters()}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-[#00a3e0] hover:underline"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-[#0001fb] hover:underline"
               >
                 <RefreshCw size={12} className={loadingPrinters ? 'animate-spin' : ''} />
                 Actualizar lista
@@ -221,7 +201,7 @@ export function PrintOptionsPanel({
                   key={job.key}
                   className="grid grid-cols-[auto_minmax(180px,1.1fr)_minmax(200px,1fr)_minmax(160px,auto)] items-center gap-3 border-b border-zinc-800/80 py-3"
                 >
-                  <PrintToggle
+                  <PosSwitch
                     checked={cfg.enabled}
                     onChange={(enabled) => updateJob(job.key, { enabled })}
                   />
@@ -269,6 +249,8 @@ export function PrintOptionsPanel({
           </div>
         )}
 
+        {tab === 'centros' && showPrintCenters ? <PrintCentersPanel /> : null}
+
         {tab === 'personalizar' && (
           <div className="max-w-2xl space-y-4">
             <div className="flex items-center justify-between gap-4 border-b border-zinc-800 py-3">
@@ -276,7 +258,7 @@ export function PrintOptionsPanel({
                 <p className="text-sm text-zinc-200">Mostrar logótipo no recibo</p>
                 <p className="text-xs text-zinc-500">Usa o logótipo da loja no cabeçalho.</p>
               </div>
-              <PrintToggle
+              <PosSwitch
                 checked={draft.receiptShowLogo}
                 onChange={(value) => updateField('receiptShowLogo', value)}
               />
@@ -355,14 +337,14 @@ export function PrintOptionsPanel({
                   }}
                   className={`rounded border p-4 text-left transition-colors ${
                     active
-                      ? 'border-[#00a3e0] bg-[#00a3e0]/10'
-                      : 'border-zinc-700 bg-[#171717] hover:border-zinc-500'
+                      ? 'border-[#0001fb] bg-[#0001fb]/10'
+                      : 'border-zinc-700 bg-[#171717] hover:border-[#0001fb]'
                   }`}
                 >
                   <p className="text-sm font-semibold text-white">{model.title}</p>
                   <p className="mt-1 text-xs text-zinc-400">{model.desc}</p>
                   {active ? (
-                    <p className="mt-3 text-xs font-medium text-[#00a3e0]">Seleccionado</p>
+                    <p className="mt-3 text-xs font-medium text-[#0001fb]">Seleccionado</p>
                   ) : null}
                 </button>
               );

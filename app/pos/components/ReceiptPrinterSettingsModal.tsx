@@ -6,6 +6,7 @@ import { ArrowRight, AlignCenter, AlignLeft, FileText, Minus, Plus, Printer } fr
 import type { PosSettings } from '@/lib/posSettings';
 import { buildThermalPrintPageCss, resolveThermalWidthMm } from '@/lib/thermalPrintPage';
 import PosSelect from '@/components/PosSelect';
+import { PosSwitch } from '@/components/PosSwitch';
 
 type SettingsTab = 'general' | 'drawer' | 'advanced';
 
@@ -17,34 +18,8 @@ const TABS: Array<{ id: SettingsTab; label: string }> = [
 
 function HelpLink({ children = 'O que é isto?' }: { children?: string }) {
   return (
-    <button type="button" className="text-xs font-medium text-[#00a3e0] hover:underline">
+    <button type="button" className="text-xs font-medium text-[#0001fb] hover:underline">
       {children}
-    </button>
-  );
-}
-
-function PillToggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${
-        checked ? 'bg-emerald-500' : 'bg-zinc-600'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-5 left-0.5' : 'translate-x-0 left-0.5'
-        }`}
-      />
     </button>
   );
 }
@@ -155,7 +130,7 @@ function MarginField({
         max={20}
         value={Number.isFinite(value) ? value : 0}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="h-9 w-14 rounded border border-zinc-600 bg-[#1f1f1f] text-center text-sm text-white outline-none focus:border-[#00a3e0]"
+        className="h-9 w-14 rounded border border-zinc-600 bg-[#1f1f1f] text-center text-sm text-white outline-none focus:border-[#0001fb]"
       />
     </div>
   );
@@ -174,7 +149,7 @@ function AlignButtons({
         type="button"
         onClick={() => onChange('left')}
         className={`flex h-8 w-8 items-center justify-center rounded border ${
-          value === 'left' ? 'border-[#00a3e0] bg-[#00a3e0]/20 text-[#00a3e0]' : 'border-zinc-600 text-zinc-400'
+          value === 'left' ? 'border-[#0001fb] bg-[#0001fb]/20 text-[#0001fb]' : 'border-zinc-600 text-zinc-400'
         }`}
         aria-label="Alinhar à esquerda"
       >
@@ -184,7 +159,7 @@ function AlignButtons({
         type="button"
         onClick={() => onChange('center')}
         className={`flex h-8 w-8 items-center justify-center rounded border ${
-          value === 'center' ? 'border-[#00a3e0] bg-[#00a3e0]/20 text-[#00a3e0]' : 'border-zinc-600 text-zinc-400'
+          value === 'center' ? 'border-[#0001fb] bg-[#0001fb]/20 text-[#0001fb]' : 'border-zinc-600 text-zinc-400'
         }`}
         aria-label="Centrar"
       >
@@ -370,7 +345,7 @@ export function ReceiptPrinterSettingsModal({
                 type="button"
                 disabled={busy}
                 onClick={() => void handleTestPrint()}
-                className="flex h-[120px] w-full shrink-0 flex-col items-center justify-center gap-3 rounded border border-zinc-500 bg-transparent text-center text-sm text-zinc-100 transition-colors hover:border-zinc-300 hover:bg-zinc-800/40 disabled:opacity-60 sm:h-[148px] sm:w-[168px]"
+                className="flex h-[120px] w-full shrink-0 flex-col items-center justify-center gap-3 rounded border border-zinc-500 bg-transparent text-center text-sm text-zinc-100 transition-colors hover:border-[#0001fb] hover:bg-zinc-800/40 disabled:opacity-60 sm:h-[148px] sm:w-[168px]"
               >
                 <Printer size={28} className="text-zinc-200" />
                 <span className="leading-snug px-2">Imprimir página de teste</span>
@@ -378,7 +353,7 @@ export function ReceiptPrinterSettingsModal({
             </div>
 
             <div className="relative mt-5">
-              <div className="flex items-end gap-1 border-b-2 border-[#00a3e0]">
+              <div className="flex items-end gap-1 border-b-2 border-[#0001fb]">
                 {TABS.map((item) => {
                   const active = tab === item.id;
                   return (
@@ -388,13 +363,13 @@ export function ReceiptPrinterSettingsModal({
                       onClick={() => setTab(item.id)}
                       className={`relative px-4 py-2.5 text-sm transition-colors ${
                         active
-                          ? 'bg-[#00a3e0] text-white'
+                          ? 'bg-[#0001fb] text-white'
                           : 'bg-transparent text-zinc-400 hover:text-zinc-200'
                       }`}
                     >
                       {item.label}
                       {active ? (
-                        <span className="absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[6px] border-t-[7px] border-x-transparent border-t-[#00a3e0]" />
+                        <span className="absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[6px] border-t-[7px] border-x-transparent border-t-[#0001fb]" />
                       ) : null}
                     </button>
                   );
@@ -448,7 +423,7 @@ export function ReceiptPrinterSettingsModal({
                         onChange={(event) => update('printExtraHeader', event.target.value)}
                         rows={3}
                         placeholder="Texto extra no topo do recibo (opcional)"
-                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#00a3e0]"
+                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
                       />
                       <AlignButtons
                         value={draft.printHeaderAlign || 'center'}
@@ -465,7 +440,7 @@ export function ReceiptPrinterSettingsModal({
                         onChange={(event) => update('printExtraFooter', event.target.value)}
                         rows={3}
                         placeholder="Texto extra no fim do recibo (opcional)"
-                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#00a3e0]"
+                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
                       />
                       <AlignButtons
                         value={draft.printFooterAlign || 'center'}
@@ -479,7 +454,7 @@ export function ReceiptPrinterSettingsModal({
                       <p className="text-sm text-white">Cortar papel após imprimir</p>
                       <p className="text-xs text-zinc-500">Se a impressora tiver cortador automático.</p>
                     </div>
-                    <PillToggle
+                    <PosSwitch
                       checked={draft.printCutPaper}
                       onChange={(value) => update('printCutPaper', value)}
                     />
@@ -490,11 +465,11 @@ export function ReceiptPrinterSettingsModal({
               {tab === 'drawer' ? (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3">
-                    <PillToggle
+                    <PosSwitch
                       checked={draft.printOpenDrawer}
                       onChange={(value) => update('printOpenDrawer', value)}
+                      label="Abrir a gaveta do dinheiro"
                     />
-                    <span className="text-sm text-zinc-100">Abrir a gaveta do dinheiro</span>
                   </div>
 
                   <div>
@@ -508,7 +483,7 @@ export function ReceiptPrinterSettingsModal({
                       onChange={(event) => update('printDrawerCommand', event.target.value)}
                       placeholder="1B700019FA"
                       disabled={!draft.printOpenDrawer}
-                      className="h-10 w-full max-w-md rounded border border-zinc-600 bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#00a3e0] disabled:opacity-50"
+                      className="h-10 w-full max-w-md rounded border border-zinc-600 bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#0001fb] disabled:opacity-50"
                     />
                   </div>
 
@@ -516,7 +491,7 @@ export function ReceiptPrinterSettingsModal({
                     type="button"
                     disabled={busy || !draft.printOpenDrawer}
                     onClick={() => void handleTestDrawer()}
-                    className="rounded border border-zinc-500 px-5 py-2.5 text-sm text-zinc-100 transition-colors hover:border-zinc-300 hover:bg-zinc-800/50 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded border border-zinc-500 px-5 py-2.5 text-sm text-zinc-100 transition-colors hover:border-[#0001fb] hover:bg-zinc-800/50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Testar gaveta
                   </button>
@@ -530,7 +505,7 @@ export function ReceiptPrinterSettingsModal({
                       <p className="text-sm text-white">Sinal sonoro ao imprimir</p>
                       <p className="text-xs text-zinc-500">Beep da impressora (se suportado).</p>
                     </div>
-                    <PillToggle
+                    <PosSwitch
                       checked={draft.printBeepOnPrint}
                       onChange={(value) => update('printBeepOnPrint', value)}
                     />

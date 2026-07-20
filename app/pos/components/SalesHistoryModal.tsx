@@ -168,6 +168,7 @@ export function SalesHistoryModal({
   const [calendarStartMonth, setCalendarStartMonth] = useState(`${dateFrom.slice(0, 7)}-01`);
   const [calendarEndMonth, setCalendarEndMonth] = useState(`${dateTo.slice(0, 7)}-01`);
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -372,6 +373,7 @@ export function SalesHistoryModal({
     setTempDateTo(endInput);
     setCalendarStartMonth(`${startInput.slice(0, 7)}-01`);
     setCalendarEndMonth(`${endInput.slice(0, 7)}-01`);
+    setActivePreset(preset);
   };
 
   if (!isOpen) return null;
@@ -396,7 +398,7 @@ export function SalesHistoryModal({
             <button
               type="button"
               onClick={openPeriodModal}
-              className="flex h-8 w-full items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-2 text-left hover:border-zinc-600 hover:bg-zinc-800"
+              className="flex h-8 w-full items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-2 text-left hover:border-[#0001fb] hover:bg-zinc-800"
             >
               <CalendarDays size={14} className="shrink-0 text-zinc-400" />
               <span className="flex-1 text-center text-xs text-zinc-200 whitespace-nowrap">
@@ -495,7 +497,7 @@ export function SalesHistoryModal({
                         key={rowId}
                         onClick={() => setSelectedSaleId(rowId)}
                         className={`cursor-pointer border-b border-zinc-800/70 transition-colors ${
-                          selected ? 'bg-[#00364b] text-white' : 'text-zinc-200 hover:bg-zinc-800/40'
+                          selected ? 'bg-[var(--pos-brand-selected-bg)]' : 'text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)]'
                         }`}
                       >
                         <Td>{index + 1}</Td>
@@ -558,7 +560,7 @@ export function SalesHistoryModal({
                     const unitTaxAmount = unitPriceWithTax - unitPriceBeforeTax;
                     const rowTotal = unitPriceWithTax * qty - discount;
                     return (
-                      <tr key={String(item.id)} className="border-b border-zinc-800/70 text-zinc-200 hover:bg-zinc-800/30">
+                      <tr key={String(item.id)} className="border-b border-zinc-800/70 text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)]">
                         <Td>{index + 1}</Td>
                         <Td>{index + 1}</Td>
                         <Td>{item.product_name || '-'}</Td>
@@ -620,7 +622,10 @@ export function SalesHistoryModal({
                 title="Início"
                 monthValue={calendarStartMonth}
                 selectedValue={tempDateFrom}
-                onSelect={setTempDateFrom}
+                onSelect={(value) => {
+                  setActivePreset(null);
+                  setTempDateFrom(value);
+                }}
                 onPrev={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, -1))}
                 onNext={() => setCalendarStartMonth(shiftMonth(calendarStartMonth, 1))}
               />
@@ -628,28 +633,31 @@ export function SalesHistoryModal({
                 title="Fim"
                 monthValue={calendarEndMonth}
                 selectedValue={tempDateTo}
-                onSelect={setTempDateTo}
+                onSelect={(value) => {
+                  setActivePreset(null);
+                  setTempDateTo(value);
+                }}
                 onPrev={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, -1))}
                 onNext={() => setCalendarEndMonth(shiftMonth(calendarEndMonth, 1))}
               />
               <div>
                 <p className="mb-3 text-center text-sm text-zinc-100">Período pré-definido</p>
                 <div className="grid grid-cols-2 gap-2">
-                  <PresetButton label="Hoje" onClick={() => applyPresetPeriod('today')} />
-                  <PresetButton label="Ontem" onClick={() => applyPresetPeriod('yesterday')} />
-                  <PresetButton label="Esta semana" onClick={() => applyPresetPeriod('thisWeek')} />
-                  <PresetButton label="Semana passada" onClick={() => applyPresetPeriod('lastWeek')} />
-                  <PresetButton label="Este mês" onClick={() => applyPresetPeriod('thisMonth')} />
-                  <PresetButton label="Mês passado" onClick={() => applyPresetPeriod('lastMonth')} />
-                  <PresetButton label="Este ano" onClick={() => applyPresetPeriod('thisYear')} />
-                  <PresetButton label="Ano passado" onClick={() => applyPresetPeriod('lastYear')} />
+                  <PresetButton label="Hoje" active={activePreset === 'today'} onClick={() => applyPresetPeriod('today')} />
+                  <PresetButton label="Ontem" active={activePreset === 'yesterday'} onClick={() => applyPresetPeriod('yesterday')} />
+                  <PresetButton label="Esta semana" active={activePreset === 'thisWeek'} onClick={() => applyPresetPeriod('thisWeek')} />
+                  <PresetButton label="Semana passada" active={activePreset === 'lastWeek'} onClick={() => applyPresetPeriod('lastWeek')} />
+                  <PresetButton label="Este mês" active={activePreset === 'thisMonth'} onClick={() => applyPresetPeriod('thisMonth')} />
+                  <PresetButton label="Mês passado" active={activePreset === 'lastMonth'} onClick={() => applyPresetPeriod('lastMonth')} />
+                  <PresetButton label="Este ano" active={activePreset === 'thisYear'} onClick={() => applyPresetPeriod('thisYear')} />
+                  <PresetButton label="Ano passado" active={activePreset === 'lastYear'} onClick={() => applyPresetPeriod('lastYear')} />
                 </div>
                 <div className="mt-5 grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={applyPeriod}
                     disabled={tempDateFrom > tempDateTo}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-[#0001fb] bg-[#0001fb] px-3 py-3 text-sm text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Check size={16} />
                     <span className="text-sm">OK</span>
@@ -657,7 +665,7 @@ export function SalesHistoryModal({
                   <button
                     type="button"
                     onClick={() => setIsPeriodModalOpen(false)}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-white transition-colors hover:bg-zinc-800"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
                   >
                     <X size={16} />
                     <span className="text-sm">Cancelar</span>
@@ -708,8 +716,8 @@ function ToolbarBtn({
         disabled
           ? 'cursor-not-allowed text-zinc-600 opacity-50'
           : active
-            ? 'bg-[#00a3e0]/20 text-[#7dd3f0]'
-            : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+            ? 'bg-[#0001fb]/20 text-[#a5b4fc]'
+            : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb]'
       }`}
     >
       {icon}
@@ -718,12 +726,24 @@ function ToolbarBtn({
   );
 }
 
-function PresetButton({ label, onClick }: { label: string; onClick: () => void }) {
+function PresetButton({
+  label,
+  onClick,
+  active = false,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="min-h-11 rounded border border-zinc-700 bg-[#1a1a1a] px-3 py-3 text-sm text-white transition-colors hover:border-zinc-600 hover:bg-zinc-800"
+      className={`min-h-11 rounded border px-3 py-3 text-sm transition-colors ${
+        active
+          ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
+          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+      }`}
     >
       {label}
     </button>
@@ -750,11 +770,11 @@ function PeriodCalendar({
       <p className="mb-3 text-center text-sm text-zinc-100">{title}</p>
       <div className="mx-auto max-w-[260px] rounded border border-zinc-700 bg-[#1a1a1a] p-4">
         <div className="flex items-center justify-between px-1 pb-4">
-          <button type="button" onClick={onPrev} className="rounded p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white">
+          <button type="button" onClick={onPrev} className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none">
             <ChevronLeft size={16} />
           </button>
           <div className="font-bold text-white">{monthLabel(monthValue)}</div>
-          <button type="button" onClick={onNext} className="rounded p-1 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white">
+          <button type="button" onClick={onNext} className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none">
             <ChevronRight size={16} />
           </button>
         </div>
@@ -797,12 +817,12 @@ function CalendarGrid({
               onClick={() => onSelect(day.value)}
               className={`flex aspect-square w-full items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
-                  ? 'scale-110 bg-emerald-500 text-white'
+                  ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday
-                    ? 'border border-emerald-500/70 text-white'
+                    ? 'border border-[#0001fb]/70 text-white'
                     : day.inMonth
-                      ? 'text-white hover:bg-zinc-700'
-                      : 'text-zinc-500 hover:bg-zinc-800'
+                      ? 'text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+                      : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
               }`}
             >
               {day.day}

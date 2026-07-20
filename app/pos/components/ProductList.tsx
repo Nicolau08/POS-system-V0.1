@@ -4,14 +4,23 @@ import React from 'react';
 import { Search } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Product } from '@/app/pos/types';
-import { getPosApiBase } from '@/lib/apiBase';
-import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { hexToRgba, resolveCategoryColor } from '@/lib/categoryColors';
 
 // Product search, families and grid section extracted from the POS page.
-function getDaysLeft(expiresAt?: string | null) {
-  if (!expiresAt) return null;
-  const diff = new Date(expiresAt).getTime() - Date.now();
-  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+function familyChipStyle(family: string, selected: boolean, familyColors?: Record<string, string>) {
+  const color = resolveCategoryColor(familyColors?.[family], family);
+  if (selected) {
+    return {
+      borderColor: color,
+      backgroundColor: hexToRgba(color, 0.45),
+      color: '#ffffff',
+    };
+  }
+  return {
+    borderColor: hexToRgba(color, 0.55),
+    backgroundColor: hexToRgba(color, 0.18),
+    color: '#e8efff',
+  };
 }
 
 export function ProductList({
@@ -19,6 +28,7 @@ export function ProductList({
   onSearchChange,
   onSearchSubmit,
   productFamilies,
+  familyColors,
   selectedCategory,
   onSelectCategory,
   visibleProducts,
@@ -34,6 +44,7 @@ export function ProductList({
   onSearchChange: (value: string) => void;
   onSearchSubmit: () => void;
   productFamilies: string[];
+  familyColors?: Record<string, string>;
   selectedCategory: string | null;
   onSelectCategory: (value: string | null) => void;
   visibleProducts: Product[];
@@ -45,69 +56,6 @@ export function ProductList({
   onFamiliesPointerRelease: (event: React.PointerEvent<HTMLDivElement>) => void;
   onFamiliesClickCapture: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
-  const [tenantInfo, setTenantInfo] = React.useState<{
-    name: string;
-    nuit: string;
-    license_type: string;
-    license_expires_at: string | null;
-  } | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const loadTenantInfo = async () => {
-      try {
-        const apiBase = getPosApiBase().replace(/\/$/, '');
-        // Puxa nome/NUIT/plano/expiração da consola antes de ler o rodapé.
-        try {
-          await fetch(`${apiBase}/setup/license/sync-registry`, { method: 'POST' });
-        } catch {
-          // offline
-        }
-        const response = await fetch(`${apiBase}/tenant/info`);
-        if (!response.ok) return;
-        const raw = await response.json();
-        const data = unwrapApiSuccessPayload<any>(raw);
-        if (cancelled || !data || typeof data !== 'object') return;
-        setTenantInfo({
-          name: String(data.name ?? '').trim() || 'Loja',
-          nuit: String(data.nuit ?? '').trim() || '--',
-          license_type: String(data.license_type ?? '').trim() || 'BASIC',
-          license_expires_at:
-            data.license_expires_at != null && String(data.license_expires_at).trim()
-              ? String(data.license_expires_at)
-              : null,
-        });
-      } catch {}
-    };
-    void loadTenantInfo();
-    const onRefresh = () => {
-      void loadTenantInfo();
-    };
-    window.addEventListener('pos-license-refreshed', onRefresh);
-    window.addEventListener('focus', onRefresh);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('pos-license-refreshed', onRefresh);
-      window.removeEventListener('focus', onRefresh);
-    };
-  }, []);
-
-  const licenseVisual = React.useMemo(() => {
-    if (!tenantInfo?.license_expires_at) {
-      return { text: '--/--/----', className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
-    }
-    const date = new Date(tenantInfo.license_expires_at);
-    if (Number.isNaN(date.getTime())) {
-      return { text: '--/--/----', className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
-    }
-    const formatted = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
-    const daysLeft = getDaysLeft(tenantInfo.license_expires_at);
-    if (daysLeft == null) return { text: formatted, className: 'text-zinc-400', daysLeft: null, daysClassName: 'text-zinc-400' };
-    if (daysLeft <= 0) return { text: formatted, className: 'text-red-400', daysLeft, daysClassName: 'text-red-400' };
-    if (daysLeft <= 3) return { text: formatted, className: 'text-amber-400', daysLeft, daysClassName: 'text-amber-400' };
-    return { text: formatted, className: 'text-emerald-400', daysLeft, daysClassName: 'text-emerald-400' };
-  }, [tenantInfo]);
-
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-[#121212]">
       <div className="h-14 p-2 flex items-center gap-2 bg-[#1a1a1a] border-b border-zinc-800">
@@ -149,38 +97,59 @@ export function ProductList({
               className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded border text-sm font-semibold tracking-tight transition-all ${
                 !selectedCategory
                   ? 'border-zinc-700 bg-zinc-800/70 text-white'
-                  : 'border-zinc-800 bg-zinc-900/50 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800/70 hover:text-white'
+                  : 'border-zinc-800 bg-zinc-900/50 text-zinc-300 hover:border-[#0001fb] hover:bg-zinc-800/70 hover:text-white'
               }`}
             >
               Todas
             </button>
-            {productFamilies.map((family) => (
+            {productFamilies.map((family) => {
+              const selected = selectedCategory === family;
+              return (
               <button
                 key={family}
                 onClick={() => onSelectCategory(family)}
+                style={familyChipStyle(family, selected, familyColors)}
                 className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded border text-sm font-semibold tracking-tight transition-all ${
-                  selectedCategory === family
-                    ? 'border-zinc-700 bg-zinc-800/70 text-white'
-                    : 'border-zinc-800 bg-zinc-900/50 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800/70 hover:text-white'
+                  selected ? 'shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]' : 'hover:brightness-110'
                 }`}
               >
                 {family}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
           {visibleProducts.map((product) => {
             const hasImage = Boolean(product.image);
+            const familyName = product.category || '';
+            const cardColor = resolveCategoryColor(
+              product.color || familyColors?.[familyName],
+              familyName || product.name || 'produto'
+            );
             return (
               <motion.button
                 key={product.id}
                 onClick={() => onAddToCart(product)}
-                className="relative flex flex-col items-start justify-between h-28 p-4 rounded border border-zinc-800 transition-all bg-zinc-900/30 group text-left"
+                style={{
+                  borderColor: hexToRgba(cardColor, 0.55),
+                  backgroundColor: hexToRgba(cardColor, 0.2),
+                }}
+                className="relative flex flex-col items-start justify-between h-28 p-4 rounded border transition-all group text-left hover:brightness-110"
               >
                 {!product.is_service && product.stock_quantity !== undefined && (
-                  <span className={`absolute top-2 right-2 text-xs font-bold ${product.stock_quantity > 0 ? 'text-emerald-500/80' : 'text-red-500/80'}`}>
+                  <span
+                    className={`absolute top-2 right-2 text-xs font-bold ${
+                      product.stock_quantity <= 0
+                        ? 'text-red-500/80'
+                        : product.min_stock !== undefined &&
+                            product.min_stock > 0 &&
+                            product.stock_quantity <= product.min_stock
+                          ? 'text-amber-400'
+                          : 'text-emerald-500/80'
+                    }`}
+                  >
                     {product.stock_quantity}
                   </span>
                 )}
@@ -188,11 +157,11 @@ export function ProductList({
                   <span className="block text-sm font-medium text-zinc-100 group-hover:text-white transition-colors">
                     {product.name}
                   </span>
-                  <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+                  <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-400">
                     {product.category || 'Sem familia'}
                   </span>
                 </div>
-                <span className="text-sm font-mono font-medium text-zinc-500 group-hover:text-emerald-400 transition-colors">
+                <span className="text-sm font-mono font-medium text-zinc-200 group-hover:text-white transition-colors">
                   {formatPrice(product.price)}
                 </span>
 
@@ -213,16 +182,6 @@ export function ProductList({
           </div>
         )}
       </div>
-
-      <footer className="p-2 bg-[#1a1a1a] border-t border-zinc-800 flex items-center justify-between text-xs">
-        <div className="truncate text-zinc-400">
-          Loja: <span className="text-zinc-200">{tenantInfo?.name ?? 'Loja'}</span>
-          {' | '}NUIT: <span className="text-zinc-200">{tenantInfo?.nuit ?? '--'}</span>
-          {' | '}Plano: <span className="text-zinc-200">{tenantInfo?.license_type ?? 'BASIC'}</span>
-          {' | '}Expira: <span className={licenseVisual.className}>{licenseVisual.text}</span>
-          {' | '}Dias restantes: <span className={licenseVisual.daysClassName}>{licenseVisual.daysLeft ?? '--'}</span>
-        </div>
-      </footer>
     </div>
   );
 }

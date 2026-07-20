@@ -13,6 +13,7 @@ import {
 } from '../services/user.service.js';
 import { processFullSyncCycle, processPullSyncCycle } from '../syncService.js';
 import { logAudit, logError } from '../utils/logger.js';
+import { getClientIp, isLoopbackIp } from '../utils/authSecret.js';
 
 function controllerError(res, error) {
   console.error('❌ controller error:', error);
@@ -20,6 +21,10 @@ function controllerError(res, error) {
     error: 'Erro interno',
     message: error instanceof Error ? error.message : String(error),
   });
+}
+
+function isLocalRequest(req) {
+  return isLoopbackIp(getClientIp(req));
 }
 
 export async function login(req, res) {
@@ -43,7 +48,7 @@ export async function login(req, res) {
       });
       return res.status(401).json({ error: 'credenciais invalidas' });
     }
-    return res.json({ success: true, user: result.user });
+    return res.json({ success: true, user: result.user, token: result.token || null });
   } catch (error) {
     logError('user_login_error', { error: error instanceof Error ? error.message : String(error) });
     return controllerError(res, error);
@@ -132,18 +137,6 @@ export async function deleteUser(req, res) {
     logError('delete_user_error', { error: error.message, user_id: req.params?.id });
     return controllerError(res, error);
   }
-}
-
-function isLocalRequest(req) {
-  const localhostCandidates = new Set(['127.0.0.1', '::1', 'localhost']);
-  const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-  const remote = String(req.socket?.remoteAddress ?? '').trim();
-  const candidate = forwarded || remote;
-  if (!candidate) return false;
-  if (candidate.startsWith('::ffff:')) {
-    return localhostCandidates.has(candidate.replace('::ffff:', ''));
-  }
-  return localhostCandidates.has(candidate);
 }
 
 export async function resetAdminPin(req, res) {

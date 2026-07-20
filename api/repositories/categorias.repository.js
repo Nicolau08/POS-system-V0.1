@@ -1,5 +1,36 @@
 import { all, get, run } from '../dbUtils.js';
 
+let colorColumnReady = false;
+let colorColumnPromise = null;
+
+/** Garante coluna color mesmo se o processo da API arrancou antes do ALTER em database.js. */
+export async function ensureCategoriesColorColumn() {
+  if (colorColumnReady) return;
+  if (colorColumnPromise) return colorColumnPromise;
+
+  colorColumnPromise = (async () => {
+    try {
+      await run(`ALTER TABLE categories ADD COLUMN color TEXT`);
+    } catch (err) {
+      const msg = String(err?.message || '');
+      if (!msg.toLowerCase().includes('duplicate column')) {
+        // Se a coluna já existir noutro caminho, PRAGMA confirma.
+        const cols = await all(`PRAGMA table_info(categories)`);
+        const hasColor = (cols || []).some((c) => String(c.name) === 'color');
+        if (!hasColor) throw err;
+      }
+    }
+    colorColumnReady = true;
+  })();
+
+  try {
+    await colorColumnPromise;
+  } catch (err) {
+    colorColumnPromise = null;
+    throw err;
+  }
+}
+
 export async function purgeCategoriesMatchingTombstones(tenantId) {
   try {
     await run(
@@ -28,13 +59,15 @@ export async function purgeCategoriesMatchingTombstones(tenantId) {
   }
 }
 
-export function listCategories(whereSql, params) {
-  return all(`SELECT id, name, parent_id FROM categories ${whereSql} ORDER BY name ASC`, params);
+export async function listCategories(whereSql, params) {
+  await ensureCategoriesColorColumn();
+  return all(`SELECT id, name, parent_id, color FROM categories ${whereSql} ORDER BY name ASC`, params);
 }
 
-export function listCategoriesPaginated(whereSql, params, limit, offset) {
+export async function listCategoriesPaginated(whereSql, params, limit, offset) {
+  await ensureCategoriesColorColumn();
   return all(
-    `SELECT id, name, parent_id
+    `SELECT id, name, parent_id, color
      FROM categories
      ${whereSql}
      ORDER BY name ASC
@@ -48,8 +81,9 @@ export async function countCategories(whereSql, params) {
   return Number(row?.total ?? 0);
 }
 
-export function findCategoryById(id, tenantId) {
-  return get(`SELECT id, name, cloud_id FROM categories WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
+export async function findCategoryById(id, tenantId) {
+  await ensureCategoriesColorColumn();
+  return get(`SELECT id, name, cloud_id, color FROM categories WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
 }
 
 export async function existsCategoryById(id, tenantId) {
@@ -57,17 +91,19 @@ export async function existsCategoryById(id, tenantId) {
   return Boolean(row?.id);
 }
 
-export function insertCategory({ name, parentId, cloudId, updatedAt, tenantId }) {
+export async function insertCategory({ name, parentId, cloudId, updatedAt, tenantId, color }) {
+  await ensureCategoriesColorColumn();
   return run(
-    `INSERT INTO categories (name, parent_id, cloud_id, updated_at, tenant_id) VALUES (?, ?, ?, ?, ?)`,
-    [name, parentId, cloudId, updatedAt, tenantId]
+    `INSERT INTO categories (name, parent_id, cloud_id, updated_at, tenant_id, color) VALUES (?, ?, ?, ?, ?, ?)`,
+    [name, parentId, cloudId, updatedAt, tenantId, color ?? null]
   );
 }
 
-export function updateCategory({ id, name, parentId, cloudId, updatedAt, tenantId }) {
+export async function updateCategory({ id, name, parentId, cloudId, updatedAt, tenantId, color }) {
+  await ensureCategoriesColorColumn();
   return run(
-    `UPDATE categories SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
-    [name, parentId, cloudId, updatedAt, id, tenantId]
+    `UPDATE categories SET name = ?, parent_id = ?, cloud_id = ?, updated_at = ?, color = ? WHERE id = ? AND tenant_id = ?`,
+    [name, parentId, cloudId, updatedAt, color ?? null, id, tenantId]
   );
 }
 

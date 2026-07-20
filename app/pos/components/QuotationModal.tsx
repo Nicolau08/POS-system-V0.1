@@ -48,7 +48,7 @@ export function QuotationModal({
       <div className="w-full max-w-4xl bg-[#1a1a1a] border border-zinc-800 rounded overflow-hidden" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded bg-emerald-500/10 text-emerald-500">
+            <div className="p-2 rounded bg-[#0001fb]/10 text-[#0001fb]">
               <FileText size={18} />
             </div>
             <div>
@@ -103,7 +103,7 @@ export function QuotationModal({
                   <tr
                     key={quotation.id}
                     onDoubleClick={() => onLoadQuotation(quotation)}
-                    className="border-b border-zinc-800/70 hover:bg-zinc-800/40 cursor-pointer"
+                    className="border-b border-zinc-800/70 hover:bg-[var(--pos-brand-hover-bg)] cursor-pointer"
                     title="Duplo clique para carregar esta cotação"
                   >
                     <td className="px-4 py-2.5 text-zinc-100 font-semibold">{quotation.document_number || `DOC-${quotation.id}`}</td>
