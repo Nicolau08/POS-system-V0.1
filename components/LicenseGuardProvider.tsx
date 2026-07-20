@@ -22,8 +22,6 @@ import {
 
 } from 'react';
 
-import { usePathname } from 'next/navigation';
-
 import {
 
   fetchSetupStatus,
@@ -115,10 +113,6 @@ function applySetupStatus(
 
 
 export function LicenseGuardProvider({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
-  const isLicenseConsoleRoute =
-    typeof pathname === 'string' && pathname.startsWith('/license-admin');
-
   const [licenseExpired, setLicenseExpired] = useState(false);
 
   const [tenantName, setTenantName] = useState<string | null>(null);
@@ -210,8 +204,6 @@ export function LicenseGuardProvider({ children }: { children: ReactNode }) {
 
 
   useEffect(() => {
-    if (isLicenseConsoleRoute) return;
-
     void refreshLicenseStatus({ syncRegistry: true });
 
 
@@ -268,13 +260,9 @@ export function LicenseGuardProvider({ children }: { children: ReactNode }) {
 
     };
 
-  }, [isLicenseConsoleRoute, refreshLicenseStatus]);
+  }, [refreshLicenseStatus]);
 
 
-
-  if (isLicenseConsoleRoute) {
-    return <>{children}</>;
-  }
 
   const value = useMemo<LicenseGuardContextValue>(
 

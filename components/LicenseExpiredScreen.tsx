@@ -106,13 +106,13 @@ export default function LicenseExpiredScreen({
               value={licenseKey}
               onChange={(event) => setLicenseKey(event.target.value)}
               placeholder="Token 12 dígitos ou Base64/JSON"
-              className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none ring-emerald-500/40 focus:ring"
+              className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none ring-[rgba(0,1,251,0.45)] focus:ring"
               disabled={isBusy}
               autoComplete="off"
             />
           </label>
           {error ? <p className="text-sm text-rose-400">{error}</p> : null}
-          {success ? <p className="text-sm text-emerald-400">{success}</p> : null}
+          {success ? <p className="text-sm text-[#a5b4fc]">{success}</p> : null}
           <p className="text-xs text-zinc-500">
             O token de 12 dígitos funciona <strong className="text-zinc-400">sem internet</strong> (validação
             local). Com rede, a consola também pode sincronizar a nova data automaticamente.
@@ -127,7 +127,7 @@ export default function LicenseExpiredScreen({
             <button
               type="submit"
               disabled={isBusy}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isActivating ? 'A ativar…' : 'Ativar licença'}
             </button>

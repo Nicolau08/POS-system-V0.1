@@ -1,6 +1,10 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { LicenseInUseModal } from '@/components/LicenseInUseModal';
+import { isLicenseInUseConflict } from '@/lib/licensing/licenseConflict.js';
+
+const POSLY_BLUE = '#0001fb';
 
 type ActivationScreenProps = {
   activationCode: string;
@@ -24,6 +28,13 @@ export default function ActivationScreen({
   const [licenseKey, setLicenseKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
+
+  useEffect(() => {
+    if (isLicenseInUseConflict(reason)) {
+      setConflictOpen(true);
+    }
+  }, [reason]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -42,9 +53,16 @@ export default function ActivationScreen({
     } catch (submitError) {
       const message =
         submitError instanceof Error ? submitError.message : 'Falha ao ativar licenca.';
-      setError(message);
+      if (isLicenseInUseConflict(message)) {
+        setConflictOpen(true);
+        setError(null);
+      } else {
+        setError(message);
+      }
     }
   };
+
+  const showInlineReason = Boolean(reason) && !isLicenseInUseConflict(reason);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#121212] px-4 text-zinc-200">
@@ -65,7 +83,7 @@ export default function ActivationScreen({
             <span className="text-zinc-400">Machine ID:</span>{' '}
             <span className="font-mono text-zinc-200">{machineId || 'N/A'}</span>
           </p>
-          {reason ? (
+          {showInlineReason ? (
             <p className="text-amber-300">
               <span className="text-zinc-400">Motivo:</span> {reason}
             </p>
@@ -79,19 +97,20 @@ export default function ActivationScreen({
               value={licenseKey}
               onChange={(event) => setLicenseKey(event.target.value)}
               placeholder="Base64/JSON de ativação ou token de 12 dígitos"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-emerald-500/40 focus:ring"
+              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-[#0001fb] focus:ring focus:ring-[#0001fb]/30"
               disabled={isSubmitting}
             />
           </label>
 
           {error ? <p className="text-sm text-rose-400">{error}</p> : null}
-          {success ? <p className="text-sm text-emerald-400">{success}</p> : null}
+          {success ? <p className="text-sm text-[#a5b4fc]">{success}</p> : null}
 
           <div className="flex flex-wrap gap-2">
             <button
               type="submit"
               disabled={isSubmitting}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              style={{ backgroundColor: POSLY_BLUE }}
             >
               {isSubmitting ? 'A ativar...' : 'Ativar licenca'}
             </button>
@@ -114,6 +133,8 @@ export default function ActivationScreen({
           </div>
         </form>
       </section>
+
+      <LicenseInUseModal open={conflictOpen} onClose={() => setConflictOpen(false)} />
     </main>
   );
 }

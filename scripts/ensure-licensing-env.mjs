@@ -58,7 +58,8 @@ function serializeEnv(map, templateLines) {
 const defaults = [
   ['POS_LICENSE_HMAC_SECRET', randomSecret()],
   ['LICENSE_ISSUER_ADMIN_TOKEN', randomSecret()],
-  ['POS_LICENSE_ISSUER_BASE_URL', 'http://localhost:3000'],
+  ['POS_LICENSE_ISSUER_BASE_URL', 'http://localhost:3002'],
+  ['NEXT_PUBLIC_LICENSE_CONSOLE_URL', 'http://localhost:3002'],
 ];
 
 let map = new Map();
@@ -148,8 +149,27 @@ if (supabaseKey && anonKey && supabaseKey === anonKey) {
 
 if (adminToken) {
   console.log('');
-  console.log('[licensing] Token da consola /license-admin (guarde em local seguro):');
+  console.log('[licensing] Token da consola de licenças (guarde em local seguro):');
   console.log(`  ${adminToken}`);
+}
+
+const consoleEnvPath = path.join(projectRoot, 'license-console', '.env.local');
+const consoleEnvKeys = [
+  'POS_LICENSE_HMAC_SECRET',
+  'LICENSE_ISSUER_ADMIN_TOKEN',
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+];
+const consoleLines = consoleEnvKeys
+  .map((key) => {
+    const value = String(map.get(key) ?? '').trim();
+    return value ? `${key}=${value}` : null;
+  })
+  .filter(Boolean);
+if (consoleLines.length > 0) {
+  fs.writeFileSync(consoleEnvPath, `${consoleLines.join('\n')}\n`, 'utf8');
+  console.log('');
+  console.log(`[licensing] Sincronizado ${consoleEnvPath} (${consoleLines.length} chaves).`);
 }
 
 if (!supabaseUrl || !supabaseKey) {
