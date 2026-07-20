@@ -19,6 +19,8 @@ electron/.build-secrets.json
 api/*.db
 api/*.db-shm
 api/*.db-wal
+api/auth-hmac.secret
+**/auth-hmac.secret
 backups/
 data/license-issuer-store.json
 
@@ -26,12 +28,11 @@ data/license-issuer-store.json
 .dev-tenants/
 .build-skip/
 
-# --- Testes (só na máquina local) ---
-tests/
+# --- Testes locais / artefactos ---
+# Mantém specs no repo; ignora resultados e configs locais opcionais
 api/tests/
 test-results/
 playwright-report/
-playwright.config.ts
 supabase/tests/
 
 # --- Artefactos de debug / teste manual ---
@@ -41,8 +42,21 @@ dev-error*.txt
 *.err.log
 check_schema.ts
 
-# --- Logs ---
-*.log
+# --- Repos externos (mantidos noutros repositórios) ---
+apps/
+license-console/
+
+# --- Capacitor / Android posto ---
+apps/android-posto/dist/
+apps/android-posto/android/app/build/
+apps/android-posto/android/.gradle/
+apps/android-posto/android/local.properties
+apps/android-posto/android/captures/
+apps/android-posto/.capacitor/
+*.apk
+*.aab
+*.keystore
+
 
 # --- Logos fonte (originais de design; a app usa public/ e assets/) ---
 /POSly icon.svg
