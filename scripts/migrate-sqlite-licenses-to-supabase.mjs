@@ -1,6 +1,6 @@
 /**
  * Importa tenants/licenças do SQLite local para Supabase (license_clients + pos_tenant_registry).
- * A consola /license-admin lê APENAS Supabase — este script alinha dados legados.
+ * A consola de licenças (license-console/) lê APENAS Supabase — este script alinha dados legados.
  */
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -22,7 +22,7 @@ if (!url || !key) {
   process.exit(1);
 }
 
-const dbPath = process.env.POS_DB_PATH || path.join(projectRoot, 'api', 'pos.db');
+const dbPath = process.env.POS_DB_PATH || path.join(projectRoot, 'api', 'database.db');
 const supabase = createClient(url, key, { auth: { persistSession: false } });
 
 const allSqlite = (db, sql, params = []) =>

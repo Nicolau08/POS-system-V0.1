@@ -184,7 +184,7 @@ export default function LicenseSerialManager() {
           <button
             type="button"
             onClick={() => void copyText('Número de série', serial)}
-            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-zinc-500"
+            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-[#0001fb]"
           >
             <Copy size={14} /> Copiar
           </button>
@@ -223,7 +223,7 @@ export default function LicenseSerialManager() {
               <input
                 value={newName}
                 onChange={(ev) => setNewName(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-600"
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="Ex.: Padaria Central"
                 autoComplete="organization"
               />
@@ -233,14 +233,14 @@ export default function LicenseSerialManager() {
               <input
                 value={newNuit}
                 onChange={(ev) => setNewNuit(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-600"
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="Ex.: 400123456"
               />
             </label>
             <button
               type="submit"
               disabled={newSubmitting}
-              className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
             >
               {newSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
               Emitir série
@@ -259,7 +259,7 @@ export default function LicenseSerialManager() {
               type="button"
               onClick={() => void loadTenants()}
               disabled={tenantsLoading}
-              className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-zinc-500"
+              className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-[#0001fb]"
             >
               <RefreshCw size={14} className={tenantsLoading ? 'animate-spin' : ''} />
               Atualizar lista
@@ -290,7 +290,7 @@ export default function LicenseSerialManager() {
               <input
                 value={plan}
                 onChange={(ev) => setPlan(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-600"
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="BASIC"
               />
             </label>
@@ -300,13 +300,13 @@ export default function LicenseSerialManager() {
                 type="date"
                 value={expiresDate}
                 onChange={(ev) => setExpiresDate(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-600"
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
               />
             </label>
             <button
               type="submit"
               disabled={existingSubmitting || !existingTenantId}
-              className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
             >
               {existingSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
               Emitir nova série

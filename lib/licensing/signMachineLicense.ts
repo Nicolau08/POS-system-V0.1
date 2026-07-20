@@ -26,7 +26,7 @@ export function signCanonicalLicensePayload(
 
 /**
  * Validade definida na consola prevalece sobre license.json na máquina.
- * Ordem: voucher (editado em /license-admin) → registo da máquina → ficheiro local.
+ * Ordem: voucher (consola de licenças) → registo da máquina → ficheiro local.
  * O registo pode ficar desactualizado (ex. 2027 na activação); o voucher é a fonte de verdade.
  */
 export function resolveAuthoritativeLicenseExpiration(input: {

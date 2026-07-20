@@ -1,5 +1,8 @@
 export type LicensePlan = 'PRO' | 'LITE';
 
+export type { CommerceType } from '@/lib/commerceProfile';
+export { normalizeCommerceType, commerceTypeLabel, COMMERCE_TYPE_OPTIONS } from '@/lib/commerceProfile';
+
 /** NUIT (Moçambique): 9 dígitos. */
 export const NUIT_DIGIT_LENGTH = 9;
 
