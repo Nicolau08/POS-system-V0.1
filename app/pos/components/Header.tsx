@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Archive, FileText, LogOut, Percent, Printer, User, Utensils } from 'lucide-react';
+import { ManagementToolbarDivider } from '@/components/ManagementToolbarButton';
 
 // Top bar actions extracted from the POS page to reduce page-level JSX size.
 export function Header({
@@ -77,7 +78,7 @@ export function Header({
       <HeaderButton icon={<Percent size={20} />} label="Desconto" onClick={onOpenDiscount} />
       <HeaderButton icon={<FileText size={20} />} label="Cotação" onClick={onOpenQuotation} />
 
-      <div className="w-px h-8 bg-zinc-800 mx-1" />
+      <ManagementToolbarDivider />
 
       <HeaderButton icon={<Archive size={20} />} label="Gaveta de dinheiro" onClick={onOpenCashDrawer} />
       {showTables !== false ? (
@@ -95,7 +96,7 @@ export function Header({
         />
       ) : null}
 
-      <div className="w-px h-8 bg-zinc-800 mx-1" />
+      <ManagementToolbarDivider />
 
       <HeaderButton
         icon={<Printer size={20} />}
@@ -165,7 +166,7 @@ function HeaderButton({
         disabled
           ? 'cursor-not-allowed text-zinc-700 opacity-50'
           : active
-            ? 'bg-[var(--pos-brand-selected-bg)] text-white shadow-[inset_0_-2px_0_0_#0001fb]'
+            ? 'bg-[var(--pos-brand-selected-bg)] text-white'
             : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200'
       } ${className || ''}`}
     >

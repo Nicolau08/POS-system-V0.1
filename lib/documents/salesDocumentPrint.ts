@@ -2,6 +2,10 @@ import type { CompanyProfile } from '@/app/pos/types';
 import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
+import {
+  formatCompanyBankDetailsForFooter,
+  parseCompanyBankAccounts,
+} from '@/lib/companyBankDetails';
 
 export type SalesDocumentSale = {
   id?: number | string;
@@ -195,16 +199,14 @@ function buildDocumentHeader(
 }
 
 function buildDocumentFooter(profile: CompanyProfile | null) {
-  const bankDetails = profile?.bankDetails?.trim();
-  const bankAccount = profile?.bankAccountNumber?.trim();
+  const accounts = parseCompanyBankAccounts(profile?.bankDetails, profile?.bankAccountNumber);
+  const structuredFooter = formatCompanyBankDetailsForFooter(accounts);
   const phone = profile?.phone?.trim();
-  const footerLeft = bankDetails
-    ? bankDetails
-    : bankAccount
-      ? `Conta: ${bankAccount}${phone ? ` | Contacto: ${phone}` : ''}`
-      : phone
-        ? `Contacto: ${phone}`
-        : '—';
+  const footerLeft = structuredFooter
+    ? structuredFooter
+    : phone
+      ? `Contacto: ${phone}`
+      : '—';
 
   return `
     <footer class="doc-footer">

@@ -6,7 +6,7 @@ import os from 'os';
 import db, { getOrCreateDefaultTenantId } from '../database.js';
 import { HttpError } from '../utils/response.js';
 
-const ROLES = new Set(['caixa', 'garcom', 'consulta']);
+const ROLES = new Set(['caixa', 'garcom', 'consulta', 'cozinha']);
 
 const runDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -37,6 +37,7 @@ function normalizeRole(value) {
     .replace(/[\u0300-\u036f]/g, '');
   if (raw === 'garcom' || raw === 'waiter') return 'garcom';
   if (raw === 'consulta' || raw === 'viewer') return 'consulta';
+  if (raw === 'cozinha' || raw === 'kitchen' || raw === 'kds') return 'cozinha';
   return 'caixa';
 }
 

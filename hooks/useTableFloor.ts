@@ -37,6 +37,7 @@ export function useTableFloor(opts: {
   } = opts;
 
   const [isTableFloorOpen, setIsTableFloorOpen] = useState(false);
+  const [activeLocationId, setActiveLocationId] = useState<string | null>(null);
 
   const openTableFloor = useCallback(() => {
     if (!tablesEnabled) return;
@@ -90,6 +91,7 @@ export function useTableFloor(opts: {
             setPosTablesSummary(balcao.tablesSummary || formatTablesRange(ids));
           }
           setAllowTableCustomNames(Boolean(balcao.allowCustomNames));
+          setActiveLocationId(String(balcao.id));
         }
       } catch {
         /* keep current */
@@ -111,5 +113,6 @@ export function useTableFloor(opts: {
     isTableFloorOpen,
     setIsTableFloorOpen,
     openTableFloor,
+    activeLocationId,
   };
 }

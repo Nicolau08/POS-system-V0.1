@@ -125,6 +125,12 @@ export function usePosDraftPersistence({
     blockPersistRef.current = true; // não gravar durante o restore
 
     void (async () => {
+      // Pintar já a partir do localStorage (docType FP, carrinho, etc.) — sem esperar a API.
+      const local = readPosDraft(uid);
+      if (!cancelled && isMeaningfulPosDraft(local)) {
+        applyDraftRef.current(local!);
+      }
+
       const server = await fetchPosDraftFromServer(uid);
       let draft: PosDraftSnapshot | null = null;
 
@@ -134,8 +140,7 @@ export function usePosDraftPersistence({
         if (draft) writePosDraft(uid, draft);
         else await clearPosDraftEverywhere(uid);
       } else {
-        // API indisponível: fallback local só para falha de rede.
-        const local = readPosDraft(uid);
+        // API indisponível: manter local já aplicado.
         draft = isMeaningfulPosDraft(local) ? local : null;
       }
 

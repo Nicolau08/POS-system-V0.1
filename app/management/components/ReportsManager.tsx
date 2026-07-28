@@ -98,7 +98,7 @@ function toInputDate(date: Date) {
 }
 
 function monthLabel(value: string) {
-  return new Date(`${value}T00:00:00`).toLocaleDateString('en-US', {
+  return new Date(`${value}T00:00:00`).toLocaleDateString('pt-PT', {
     month: 'long',
     year: 'numeric',
   });
@@ -341,7 +341,7 @@ export default function ReportsManager() {
   }, [searchQuery]);
 
   const groupedReports = useMemo(() => {
-    return ['Vendas', 'Cadastros', 'Estoque'].map((section) => ({
+    return ['Vendas', 'Cadastros', 'Stock'].map((section) => ({
       section: section as ReportDefinition['section'],
       items: filteredReports.filter((report) => report.section === section),
     }));
@@ -1065,20 +1065,23 @@ function CalendarGrid({
   selectedValue: string;
   onSelect: (value: string) => void;
 }) {
-  const weekDays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+  const weekDays = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
   const days = buildCalendarDays(monthValue);
   const todayValue = todayInputValue();
 
   return (
     <div>
-      <div className="grid grid-cols-7 gap-2 mb-3">
+      <div className="mb-2 grid grid-cols-7 gap-1">
         {weekDays.map((day) => (
-          <div key={day} className="text-center text-sm font-bold text-white py-1">
+          <div
+            key={day}
+            className="flex h-7 min-w-0 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-zinc-400"
+          >
             {day}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-1">
         {days.map((day) => {
           const isSelected = day.value === selectedValue;
           const isToday = day.value === todayValue;
@@ -1087,7 +1090,7 @@ function CalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`flex aspect-square w-full items-center justify-center rounded-xl text-sm transition-colors ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday

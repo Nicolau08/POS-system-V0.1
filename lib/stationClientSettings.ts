@@ -4,7 +4,7 @@
  */
 
 export type StationMode = 'server' | 'client' | 'unset';
-export type StationRole = 'caixa' | 'garcom' | 'consulta';
+export type StationRole = 'caixa' | 'garcom' | 'consulta' | 'cozinha';
 
 export type StationClientSettings = {
   /** undefined/unset = ainda não escolheu no 1.º arranque */
@@ -51,19 +51,26 @@ export function normalizeStationRole(value: unknown): StationRole {
     .replace(/[\u0300-\u036f]/g, '');
   if (raw === 'garcom' || raw === 'waiter') return 'garcom';
   if (raw === 'consulta' || raw === 'viewer') return 'consulta';
+  if (raw === 'cozinha' || raw === 'kitchen' || raw === 'kds') return 'cozinha';
   return 'caixa';
 }
 
+/**
+ * Aceita só o IP (ex. 192.168.1.20).
+ * Acrescenta http:// e, se faltar porta, :3731 (API do instalador).
+ * Em `npm run dev` use :3001 explicitamente.
+ */
 export function normalizeServerApiBaseUrl(value: unknown): string {
   let raw = String(value ?? '').trim();
   if (!raw) return '';
+  raw = raw.replace(/\/+$/, '');
   if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
   try {
     const u = new URL(raw);
-    // remove trailing slash
-    return `${u.protocol}//${u.host}`;
+    const port = u.port || '3731';
+    return `${u.protocol}//${u.hostname}:${port}`;
   } catch {
-    return raw.replace(/\/+$/, '');
+    return raw;
   }
 }
 
@@ -116,5 +123,6 @@ export function isStationClientMode(settings?: StationClientSettings | null): bo
 export function stationRoleLabel(role: StationRole): string {
   if (role === 'garcom') return 'Garçom';
   if (role === 'consulta') return 'Consulta';
+  if (role === 'cozinha') return 'Cozinha';
   return 'Caixa';
 }

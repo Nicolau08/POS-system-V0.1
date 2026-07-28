@@ -44,16 +44,25 @@ dev-error*.txt
 check_schema.ts
 
 # --- Repos externos (mantidos noutros repositórios) ---
-apps/
+apps/android-posto/
+apps/android-kds/
+apps/posly-android-standalone/
 license-console/
 
-# --- Capacitor / Android posto ---
+# --- Capacitor / Android posto + KDS (artefactos; pastas acima já ignoradas) ---
 apps/android-posto/dist/
 apps/android-posto/android/app/build/
 apps/android-posto/android/.gradle/
-apps/android-posto/android/local.properties
+apps/android-posto/android/local.properties/
 apps/android-posto/android/captures/
 apps/android-posto/.capacitor/
+apps/android-kds/dist/
+apps/android-kds/android/app/build/
+apps/android-kds/android/.gradle/
+apps/android-kds/android/local.properties/
+apps/android-kds/android/captures/
+apps/android-kds/.capacitor/
+
 *.apk
 *.aab
 *.keystore

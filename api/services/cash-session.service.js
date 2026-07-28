@@ -37,7 +37,7 @@ function normalizeStationRole(actorUser) {
 
 function assertStationCanOperateCash(actorUser) {
   const role = normalizeStationRole(actorUser);
-  if (role === 'garcom' || role === 'consulta') {
+  if (role === 'garcom' || role === 'consulta' || role === 'cozinha') {
     throw new HttpError(403, 'Só postos com papel Caixa podem operar a sessão de caixa.');
   }
 }

@@ -42,6 +42,16 @@ Quando activar acesso LAN no servidor:
 | Caixa | Vendas, pagamento, sessão de caixa |
 | Garçom | Abrir/trabalhar mesas; não fecha pagamento nem caixa |
 | Consulta | Só consulta (sem vendas) |
+| Cozinha | KDS — ver/confirmar tickets de preparação (`apps/android-kds`) |
+
+## KDS (cozinha)
+
+- App separado: `apps/android-kds` (package `com.posly.kds`), role `cozinha`.
+- Tickets criados em `POST /kitchen/tickets` ao «Fazer Pedido» (Posto) / checkout com print centers (desktop).
+- Notas por linha de item (`notes`) no carrinho partilhado e no ticket.
+- Realtime: `GET /kitchen/events` (SSE) + `GET /kitchen/tickets`.
+- Disponível quando a licença/runtime tem a capability `print_centers` (com fallback automático das licenças legadas de restauração).
+- Routing por **print centers** (categoria → centro); impressão física opcional (`printAlso`).
 
 ## Auth LAN
 
@@ -56,3 +66,5 @@ Login devolve token Bearer; o cliente envia `Authorization: Bearer …` e `X-Sta
 - [ ] Restauração: claim de mesa bloqueia 2.º posto
 - [ ] Garçom não fecha pagamento; caixa sim
 - [ ] Retalho: sem mesas; venda directa OK
+- [ ] KDS: nota no item → aparece no board → bump de estado
+- [ ] Retalho/farmácia: `POST /kitchen/tickets` → 403 `KDS_NOT_AVAILABLE`

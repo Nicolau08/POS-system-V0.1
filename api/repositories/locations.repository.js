@@ -4,6 +4,7 @@ export function listLocations(tenantId) {
   return all(
     `SELECT id, tenant_id, name, code, type, active, sort_order,
             COALESCE(allow_custom_names, 0) AS allow_custom_names,
+            warehouse_id,
             created_at, updated_at
      FROM locations
      WHERE tenant_id = ?
@@ -16,6 +17,7 @@ export function getLocationById(id, tenantId) {
   return get(
     `SELECT id, tenant_id, name, code, type, active, sort_order,
             COALESCE(allow_custom_names, 0) AS allow_custom_names,
+            warehouse_id,
             created_at, updated_at
      FROM locations
      WHERE id = ? AND tenant_id = ?`,
@@ -30,8 +32,8 @@ export function countLocations(tenantId) {
 export function insertLocation(row) {
   return run(
     `INSERT INTO locations
-      (id, tenant_id, name, code, type, active, sort_order, allow_custom_names, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, tenant_id, name, code, type, active, sort_order, allow_custom_names, warehouse_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     row
   );
 }
@@ -45,6 +47,7 @@ export function updateLocation(id, tenantId, payload) {
       active = ?,
       sort_order = ?,
       allow_custom_names = ?,
+      warehouse_id = ?,
       updated_at = ?
      WHERE id = ? AND tenant_id = ?`,
     [...payload, id, tenantId]

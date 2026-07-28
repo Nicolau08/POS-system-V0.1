@@ -14,6 +14,7 @@ import {
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
@@ -69,15 +70,18 @@ function buildCodeFromName(name: string) {
 }
 
 export default function PaymentMethodsManager() {
-  const [rows, setRows] = useState<PaymentMethod[]>([]);
+  const [rows, setRows] = useState<PaymentMethod[]>(
+    () => (getPosCatalogCache()?.paymentMethods as PaymentMethod[] | undefined) ?? []
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<PaymentMethodForm>(initialForm);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => !getPosCatalogCache()?.paymentMethods?.length);
 
   const fetchRows = async () => {
-    setIsLoading(true);
+    const hasCache = Boolean(getPosCatalogCache()?.paymentMethods?.length);
+    if (!hasCache) setIsLoading(true);
     try {
       const response = await fetch(`${getPosApiBase()}/payment-methods?_=${Date.now()}`, {
         cache: 'no-store',
@@ -88,10 +92,12 @@ export default function PaymentMethodsManager() {
         throw new Error(apiErrorMessage(json, `Falha ao carregar meios de pagamento (${response.status})`));
       }
       const data = unwrapApiSuccessPayload<PaymentMethod[]>(json);
-      setRows(Array.isArray(data) ? data : []);
+      const next = Array.isArray(data) ? data : [];
+      setRows(next);
+      patchPosCatalogCache({ paymentMethods: next as any });
     } catch (error) {
       console.error('Error fetching payment methods:', error);
-      setRows([]);
+      if (!getPosCatalogCache()?.paymentMethods?.length) setRows([]);
     } finally {
       setIsLoading(false);
     }

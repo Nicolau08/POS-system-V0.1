@@ -1,6 +1,10 @@
 import db from '../database.js';
 import { requireTenantId } from '../utils/tenant.js';
 import {
+  normalizeCapabilities,
+  normalizeVertical,
+} from '../utils/tenantCapabilities.js';
+import {
   readLocalLicenseFile,
   resolveLocalLicenseExpiry,
   syncLicenseRegistry,
@@ -56,7 +60,7 @@ async function resolveLicenseTenantId(actorTenantId) {
 
 async function ensureTenantProfileRow(tenantId, fallbackName = 'Loja') {
   let tenantRow = await getDb(
-    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type
+    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type, tp.vertical, tp.capabilities_json
      FROM tenant_profile tp
      WHERE tp.id = ?
      LIMIT 1`,
@@ -69,16 +73,16 @@ async function ensureTenantProfileRow(tenantId, fallbackName = 'Loja') {
   const name = normalizeText(baseTenantRow?.name) || fallbackName;
   const now = new Date().toISOString();
   await runDb(
-    `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, vertical, capabilities_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        updated_at = excluded.updated_at`,
-    [tenantId, name, null, 'BASIC', 'retalho', now, now],
+    [tenantId, name, null, 'BASIC', 'retalho', null, null, now, now],
   );
 
   return getDb(
-    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type
+    `SELECT tp.name, tp.nuit, tp.license_type, tp.commerce_type, tp.vertical, tp.capabilities_json
      FROM tenant_profile tp
      WHERE tp.id = ?
      LIMIT 1`,
@@ -125,12 +129,21 @@ export async function readTenantInfo(actorUser = null) {
     Number(licenseRow?.active ?? 0) === 1 && normalizeText(licenseRow?.plan)
       ? normalizeText(licenseRow.plan)
       : null;
+  const commerceType = normalizeText(tenantRow?.commerce_type) || 'retalho';
+  const vertical = normalizeVertical(tenantRow?.vertical, commerceType);
+  const capabilities = normalizeCapabilities(
+    tenantRow?.capabilities_json,
+    vertical,
+    commerceType,
+  );
 
   return {
     name: normalizeText(tenantRow?.name) || 'Loja',
     nuit: normalizeText(tenantRow?.nuit) || '--',
     license_type: activeLicensePlan || normalizeText(tenantRow?.license_type) || 'BASIC',
-    commerce_type: normalizeText(tenantRow?.commerce_type) || 'retalho',
+    commerce_type: commerceType,
+    vertical,
+    capabilities,
     license_expires_at: expiry.licenseExpiresAt,
     tenant_id: tenantId,
   };

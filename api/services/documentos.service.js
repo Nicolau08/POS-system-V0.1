@@ -46,6 +46,49 @@ import {
 } from '../repositories/documentos.repository.js';
 
 import { filterCashInflowDocuments } from '../utils/revenueDocuments.js';
+import {
+  applyWarehouseDelta,
+  resolveWarehouseId,
+} from './warehouseStock.service.js';
+import {
+  createPartyCreditId,
+  insertPartyCredit,
+} from '../repositories/partyCredits.repository.js';
+
+const STOCK_IN_PREFIXES = new Set(['WH/IN', 'EN/ST', 'PUR', 'FTF', 'NC']);
+const STOCK_OUT_PREFIXES = new Set(['VD', 'TK', 'FT', 'DP', 'WH/LOSS', 'CP', 'ND']);
+const CLIENT_CREDIT_PREFIXES = new Set(['RCA', 'AD']);
+const SUPPLIER_CREDIT_PREFIXES = new Set(['PAAD']);
+const DEFAULT_PAID_PREFIXES = new Set(['VD', 'TK', 'RC', 'RCA', 'AD', 'PAG', 'PAAD', 'NC', 'ND', 'DP', 'CP']);
+
+function resolveStockSign(prefix, documentType) {
+  const p = String(prefix || '').toUpperCase();
+  const type = String(documentType || '').trim().toLowerCase();
+  if (
+    STOCK_IN_PREFIXES.has(p) ||
+    type === 'entrada de stock' ||
+    type === 'entrada de armazem' ||
+    type === 'entrada de armazém' ||
+    type === 'compra' ||
+    type === 'fatura de fornecedor'
+  ) {
+    return 1;
+  }
+  if (STOCK_OUT_PREFIXES.has(p)) return -1;
+  return 0;
+}
+
+function resolveMovementType(prefix, stockSign) {
+  const p = String(prefix || '').toUpperCase();
+  if (stockSign > 0) {
+    if (p === 'NC') return 'restock';
+    return 'restock';
+  }
+  if (p === 'VD' || p === 'TK' || p === 'FT') return 'sale';
+  if (p === 'DP' || p === 'WH/LOSS') return 'adjustment';
+  if (p === 'CP' || p === 'ND') return 'adjustment';
+  return 'adjustment';
+}
 
 const DASHBOARD_SUMMARY_CACHE_TTL_MS = Math.max(1000, Number(process.env.DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 8000));
 const dashboardSummaryCache = new Map();
@@ -327,26 +370,112 @@ export async function postDocumento(payload = {}, user = null) {
   const documentType = String(payload.documentType ?? 'Documento').trim() || 'Documento';
   const prefix = String(payload.prefix ?? '').trim().toUpperCase();
   const discount = Number(payload.discount ?? 0);
-  const total = Number(payload.total ?? 0);
   const customerId = payload.customerId == null ? null : String(payload.customerId).trim() || null;
   const customerName = payload.customerName == null ? null : String(payload.customerName).trim() || null;
   const userId = payload.userId == null ? null : String(payload.userId).trim() || null;
   const userName = payload.userName == null ? null : String(payload.userName).trim() || null;
   const paymentMethod = payload.paymentMethod == null ? null : String(payload.paymentMethod).trim() || null;
-  const paid = Boolean(payload.paid);
   const items = Array.isArray(payload.items) ? payload.items : [];
-  const status = paid ? 'completed' : 'pending';
+  const allowNegativeStock = Boolean(payload.allowNegativeStock);
+  const physicalReturn = payload.physicalReturn !== false; // NC/ND: por defeito movimenta stock
+
+  // Totais a partir das linhas (unitGross / taxAmount) quando a compra envia breakdown de IVA.
+  const roundMoney = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  let fromItemsNet = 0;
+  let fromItemsTax = 0;
+  let fromItemsGross = 0;
+  let hasLineTaxBreakdown = false;
+  for (const rawItem of items) {
+    const quantity = Number(rawItem?.quantity ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    const unitPrice = Number(rawItem?.unitPrice ?? rawItem?.price ?? 0);
+    const unitGrossRaw = rawItem?.unitGross ?? rawItem?.unit_gross;
+    const taxAmountRaw = rawItem?.taxAmount ?? rawItem?.tax_amount;
+    const unitGross =
+      unitGrossRaw != null && Number.isFinite(Number(unitGrossRaw)) ? Number(unitGrossRaw) : null;
+    const taxAmount =
+      taxAmountRaw != null && Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : null;
+    if (unitGross != null || taxAmount != null) hasLineTaxBreakdown = true;
+    const lineNet = (Number.isFinite(unitPrice) ? unitPrice : 0) * quantity;
+    const lineTax = (taxAmount != null ? taxAmount : 0) * quantity;
+    const lineGross =
+      unitGross != null ? unitGross * quantity : lineNet + lineTax;
+    fromItemsNet += lineNet;
+    fromItemsTax += lineTax;
+    fromItemsGross += lineGross;
+  }
+  fromItemsNet = roundMoney(fromItemsNet);
+  fromItemsTax = roundMoney(fromItemsTax);
+  fromItemsGross = roundMoney(fromItemsGross);
+
+  let total = Number(payload.total ?? 0);
+  let subtotal =
+    payload.subtotal != null && Number.isFinite(Number(payload.subtotal))
+      ? Number(payload.subtotal)
+      : total;
+  let tax =
+    payload.tax != null && Number.isFinite(Number(payload.tax))
+      ? Number(payload.tax)
+      : 0;
+
+  const purchasePrefix =
+    prefix === 'FTF' || prefix === 'PUR' || prefix === 'EN/ST';
+
+  // 1) Linhas com breakdown explícito → preferir soma das linhas.
+  if (
+    hasLineTaxBreakdown &&
+    fromItemsGross > 0 &&
+    (tax === 0 || Math.abs(subtotal - total) < 0.0001) &&
+    Math.abs(fromItemsGross - fromItemsNet) > 0.0001
+  ) {
+    subtotal = fromItemsNet;
+    tax = fromItemsTax > 0 ? fromItemsTax : roundMoney(fromItemsGross - fromItemsNet);
+    total = fromItemsGross;
+  } else if (
+    // 2) Compra: total (pago) > soma dos custos líquidos nas linhas e tax=0 → derivar IVA.
+    purchasePrefix &&
+    tax === 0 &&
+    fromItemsNet > 0 &&
+    Number.isFinite(total) &&
+    total > fromItemsNet + 0.009
+  ) {
+    subtotal = fromItemsNet;
+    tax = roundMoney(total - fromItemsNet);
+  } else {
+    total = Number.isFinite(total) ? total : fromItemsGross || 0;
+    subtotal = Number.isFinite(subtotal) ? subtotal : total;
+    tax = Number.isFinite(tax) ? tax : 0;
+  }
 
   if (!prefix) throw new HttpError(400, 'prefix obrigatorio');
-  const normalizedDocType = String(documentType).trim().toLowerCase();
-  const shouldIncreaseStock =
-    prefix === 'WH/IN' ||
-    prefix === 'EN/ST' ||
-    prefix === 'PUR' ||
-    normalizedDocType === 'entrada de stock' ||
-    normalizedDocType === 'entrada de armazem' ||
-    normalizedDocType === 'entrada de armazém' ||
-    normalizedDocType === 'compra';
+
+  let paid = Boolean(payload.paid);
+  if (payload.paid == null && DEFAULT_PAID_PREFIXES.has(prefix)) {
+    paid = true;
+  }
+  if (prefix === 'FP') paid = false;
+  // Compra a fornecedor (FTF/PUR/EN/ST): factura em dívida por defeito.
+  if (prefix === 'FTF' || prefix === 'PUR' || prefix === 'EN/ST') {
+    paid = false;
+  }
+  if ((prefix === 'FT') && payload.paid == null) {
+    paid = false;
+  }
+
+  const status = paid ? 'completed' : 'pending';
+  let stockSign = resolveStockSign(prefix, documentType);
+  // NC/ND sem devolução física: não mexer no stock
+  if ((prefix === 'NC' || prefix === 'ND') && !physicalReturn) {
+    stockSign = 0;
+  }
+
+  const warehouseId =
+    stockSign !== 0
+      ? await resolveWarehouseId({
+          tenantId,
+          explicitWarehouseId: payload.warehouseId ?? payload.warehouse_id ?? null,
+        })
+      : null;
 
   const dateObj = new Date(documentDate);
   const year = Number.isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
@@ -360,9 +489,19 @@ export async function postDocumento(payload = {}, user = null) {
     await beginImmediateTransaction();
     const nextSequenceRow = await getNextOrderSequence(prefix, year, tenantId);
     usedSequence = Number(nextSequenceRow?.next ?? 1);
-    const padSize = prefix === 'FP' ? 4 : 5;
+    const padSize = prefix === 'FP' || prefix === 'VD' || prefix === 'TK' ? 4 : 5;
     documentNumber = `${prefix}/${year}/${String(usedSequence).padStart(padSize, '0')}`;
     orderId = crypto.randomUUID();
+
+    const effectivePaymentMethod =
+      paymentMethod ||
+      (paid && (prefix === 'VD' || prefix === 'TK' || prefix === 'RC' || prefix === 'RCA' || prefix === 'AD')
+        ? 'Dinheiro'
+        : paid && (prefix === 'PAG' || prefix === 'PAAD')
+          ? 'Transferência'
+          : prefix === 'FT' || prefix === 'FTF' || prefix === 'EN/ST' || prefix === 'PUR'
+            ? 'Conta corrente'
+            : paymentMethod);
 
     await insertOrder([
       orderId,
@@ -370,10 +509,10 @@ export async function postDocumento(payload = {}, user = null) {
       userId,
       userName,
       total,
-      total,
-      0,
+      subtotal,
+      tax,
       discount,
-      paymentMethod,
+      effectivePaymentMethod,
       status,
       documentType,
       prefix,
@@ -392,6 +531,35 @@ export async function postDocumento(payload = {}, user = null) {
       const discountAmount = Number(rawItem?.discountAmount ?? 0);
       const productId = rawItem?.productId != null ? String(rawItem.productId) : null;
 
+      const lotCode =
+        rawItem?.lotCode ?? rawItem?.lot_code ?? rawItem?.lote ?? null;
+      let lineUnitCost = null;
+      let lineCogsTotal = null;
+
+      if (stockSign !== 0 && productId && warehouseId) {
+        const productRow = await getProductForSync(productId, tenantId);
+        const isService = Number(productRow?.is_service ?? 0) !== 0;
+        if (!isService) {
+          const deltaResult = await applyWarehouseDelta({
+            tenantId,
+            warehouseId,
+            productId,
+            delta: stockSign * quantity,
+            movementType: resolveMovementType(prefix, stockSign),
+            referenceId: `${prefix}:${documentNumber}`,
+            // Entrada: unitPrice = custo da camada. Saída: NUNCA passar preço de venda.
+            cost: stockSign > 0 && Number.isFinite(unitPrice) ? unitPrice : null,
+            lotCode: stockSign > 0 ? lotCode : null,
+            allowNegative: allowNegativeStock || stockSign > 0,
+          });
+          if (stockSign < 0 && deltaResult) {
+            lineUnitCost = Number(deltaResult.unitCostFifo ?? 0) || 0;
+            lineCogsTotal = Number(deltaResult.cogsTotal ?? 0) || 0;
+          }
+          touchedProductIds.add(String(productId));
+        }
+      }
+
       await insertOrderItem([
         crypto.randomUUID(),
         orderId,
@@ -403,31 +571,73 @@ export async function postDocumento(payload = {}, user = null) {
         Number.isFinite(discountAmount) ? discountAmount : 0,
         now,
         now,
+        lineUnitCost,
+        lineCogsTotal,
       ]);
+    }
 
-      if (shouldIncreaseStock && productId) {
-        const productRow = await getProductForSync(productId, tenantId);
-        const isService = Number(productRow?.is_service ?? 0) !== 0;
-        // Serviço / sem controlo de stock: mantém o documento, não altera quantidade.
-        if (!isService) {
-          await increaseProductStock([
-            quantity,
-            Number.isFinite(unitPrice) ? unitPrice : 0,
-            now,
-            productId,
-            tenantId,
-          ]);
-          touchedProductIds.add(String(productId));
-          await insertStockMovement([
-            crypto.randomUUID(),
-            tenantId,
-            Number(productId),
-            'restock',
-            quantity,
-            `${prefix}:${documentNumber}`,
-            now,
-            now,
-          ]);
+    if (CLIENT_CREDIT_PREFIXES.has(prefix) && customerId && total > 0) {
+      await insertPartyCredit([
+        createPartyCreditId(),
+        tenantId,
+        customerId,
+        'customer',
+        total,
+        total,
+        orderId,
+        documentNumber,
+        prefix,
+        null,
+        now,
+        now,
+      ]);
+    }
+
+    if (SUPPLIER_CREDIT_PREFIXES.has(prefix) && customerId && total > 0) {
+      await insertPartyCredit([
+        createPartyCreditId(),
+        tenantId,
+        customerId,
+        'supplier',
+        total,
+        total,
+        orderId,
+        documentNumber,
+        prefix,
+        null,
+        now,
+        now,
+      ]);
+    }
+
+    // Ligar/liquidar documento origem via «Documento externo»
+    const linkedDocNumber = String(payload.sourceDocumentNumber ?? payload.externalDocument ?? '').trim();
+    if (linkedDocNumber && (prefix === 'PAG' || prefix === 'RC' || prefix === 'NC' || prefix === 'ND')) {
+      await updateOrderSourceReference(
+        orderId,
+        prefix === 'PAG' || prefix === 'ND' ? 'FTF' : 'FT',
+        linkedDocNumber,
+        now,
+        tenantId
+      );
+      if (prefix === 'RC' || prefix === 'PAG') {
+        const linkedOrder = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+        if (linkedOrder?.id) {
+          try {
+            await updateOrderDocumentPayment(
+              String(linkedOrder.id),
+              {
+                paymentMethod: effectivePaymentMethod,
+                status: 'completed',
+                approvedDocType: prefix,
+                approvedDocumentNumber: documentNumber,
+                updatedAt: now,
+              },
+              tenantId
+            );
+          } catch (linkErr) {
+            console.warn('[documentos] falha ao liquidar documento origem', linkErr?.message);
+          }
         }
       }
     }
@@ -437,10 +647,12 @@ export async function postDocumento(payload = {}, user = null) {
     try {
       await rollbackTransaction();
     } catch {}
-    throw new HttpError(500, 'Falha ao salvar documento');
+    if (error instanceof HttpError) throw error;
+    console.error('[documentos] postDocumento falhou', error);
+    throw new HttpError(500, error?.message || 'Falha ao salvar documento');
   }
 
-  if (shouldIncreaseStock && touchedProductIds.size > 0) {
+  if (stockSign !== 0 && touchedProductIds.size > 0) {
     for (const localProductId of touchedProductIds) {
       try {
         const productRow = await getProductForSync(localProductId, tenantId);
@@ -638,14 +850,30 @@ function resolvePayableDocumentKind(row, sourceType) {
   const number = String(row?.document_number ?? '').trim().toUpperCase();
   const parts = parseDocumentNumberParts(number);
 
-  if (docPrefix === 'FP' || docType === 'FP' || docType.includes('PROFORMA') || parts?.prefix === 'FP') {
+  // 1) Número do documento (fonte mais fiável) — FTF antes de FT.
+  if (number.startsWith('FTF/') || parts?.prefix === 'FTF') return 'FTF';
+  if (number.startsWith('FP/') || parts?.prefix === 'FP') return 'FP';
+  if (number.startsWith('FT/') || parts?.prefix === 'FT') return 'FT';
+
+  // 2) Prefixo / tipo gravados na BD
+  if (
+    docPrefix === 'FTF' ||
+    docType === 'FTF' ||
+    docType === 'COMPRA' ||
+    docType.includes('FORNECEDOR') ||
+    docType.includes('COMPRA')
+  ) {
+    return 'FTF';
+  }
+  if (docPrefix === 'FP' || docType === 'FP' || docType.includes('PROFORMA') || docType.includes('COTAC')) {
     return 'FP';
   }
+  if (docPrefix === 'FT' || docType === 'FT' || docType === 'FATURA') {
+    return 'FT';
+  }
+
+  // 3) Fallback: conta corrente só para FT de cliente (nunca FTF).
   if (
-    docPrefix === 'FT' ||
-    docType === 'FT' ||
-    docType === 'FATURA' ||
-    parts?.prefix === 'FT' ||
     String(row?.payment_method ?? '')
       .toLowerCase()
       .includes('conta corrente')
@@ -692,20 +920,34 @@ export async function previewDocumentPayment(query = {}, user = null) {
   const loaded = await loadPayableDocument(documentNumber, tenantId);
   if (!loaded) throw new HttpError(404, 'documento nao encontrado');
   if (!loaded.payableKind) {
-    throw new HttpError(400, 'apenas faturas (FT) ou cotacoes (FP) podem ser pagas por este ecran');
+    throw new HttpError(
+      400,
+      'apenas faturas (FT), faturas de fornecedor (FTF) ou cotacoes (FP) podem ser pagas por este ecran',
+    );
   }
 
   const alreadyPaid = isDocumentAlreadyPaid(loaded.sourceRow);
-  const generatedDocumentType = loaded.payableKind === 'FP' ? 'VD' : 'RC';
+  const generatedDocumentType =
+    loaded.payableKind === 'FP' ? 'VD' : loaded.payableKind === 'FTF' ? 'PAG' : 'RC';
+  const generatedDocumentLabel =
+    generatedDocumentType === 'VD'
+      ? 'Venda a dinheiro (VD)'
+      : generatedDocumentType === 'PAG'
+        ? 'Pagamento a fornecedor (PAG)'
+        : 'Recibo (RC)';
   const resolvedDocumentNumber = String(loaded.sourceRow.document_number ?? documentNumber).trim();
+  const partyLabel =
+    loaded.payableKind === 'FTF'
+      ? String(loaded.sourceRow.client_name ?? 'Fornecedor')
+      : String(loaded.sourceRow.client_name ?? 'Consumidor final');
 
   return {
     documentNumber: resolvedDocumentNumber,
-    clientName: String(loaded.sourceRow.client_name ?? 'Consumidor final'),
+    clientName: partyLabel,
     total: Number(loaded.sourceRow.total ?? 0),
     payableKind: loaded.payableKind,
     generatedDocumentType,
-    generatedDocumentLabel: generatedDocumentType === 'VD' ? 'Venda a dinheiro (VD)' : 'Recibo (RC)',
+    generatedDocumentLabel,
     alreadyPaid,
     canPay: !alreadyPaid,
   };
@@ -808,6 +1050,46 @@ async function createReceiptDocument({
   return orderId;
 }
 
+async function createSupplierPaymentDocument({
+  sourceDocumentNumber,
+  sourceDocType,
+  generatedDocumentNumber,
+  paymentMethod,
+  details,
+  tenantId,
+  now,
+}) {
+  const parts = parseDocumentNumberParts(generatedDocumentNumber);
+  const year = parts?.year ?? new Date().getFullYear();
+  const sequence = parts?.sequence ?? 1;
+  const orderId = crypto.randomUUID();
+
+  await insertOrder([
+    orderId,
+    details.customerId,
+    details.userId,
+    details.userName,
+    details.total,
+    details.subtotal,
+    details.tax,
+    details.discount,
+    paymentMethod,
+    'completed',
+    'Pagamento',
+    'PAG',
+    year,
+    sequence,
+    generatedDocumentNumber,
+    now,
+    now,
+    tenantId,
+  ]);
+
+  await updateOrderSourceReference(orderId, sourceDocType, sourceDocumentNumber, now, tenantId);
+  await copyDocumentItemsToTarget(orderId, details.items, tenantId, now);
+  return orderId;
+}
+
 async function createVendaDocument({
   sourceDocumentNumber,
   sourceDocType,
@@ -816,6 +1098,8 @@ async function createVendaDocument({
   details,
   tenantId,
   now,
+  warehouseId = null,
+  applyStock = true,
 }) {
   const parts = parseDocumentNumberParts(generatedDocumentNumber);
   const sequence = parts?.sequence ?? 1;
@@ -839,6 +1123,32 @@ async function createVendaDocument({
     throw new HttpError(500, 'falha ao criar venda a dinheiro');
   }
   await copyDocumentItemsToTarget(String(saleId), details.items, tenantId, now);
+
+  if (applyStock && Array.isArray(details.items) && details.items.length > 0) {
+    const resolvedWarehouseId =
+      warehouseId ||
+      (await resolveWarehouseId({
+        tenantId,
+        explicitWarehouseId: null,
+      }));
+    for (const item of details.items) {
+      const productId = item?.product_id ?? item?.productId;
+      const quantity = Number(item?.quantity ?? 0);
+      if (!productId || !Number.isFinite(quantity) || quantity <= 0) continue;
+      const productRow = await getProductForSync(productId, tenantId);
+      if (Number(productRow?.is_service ?? 0) !== 0) continue;
+      await applyWarehouseDelta({
+        tenantId,
+        warehouseId: resolvedWarehouseId,
+        productId,
+        delta: -quantity,
+        movementType: 'sale',
+        referenceId: `VD:${generatedDocumentNumber}`,
+        allowNegative: false,
+      });
+    }
+  }
+
   return saleId;
 }
 
@@ -847,15 +1157,41 @@ export async function registerDocumentPayment(payload = {}, user = null) {
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
   const documentNumber = String(payload.documentNumber ?? '').trim();
   const paymentMethod = String(payload.paymentMethod ?? '').trim();
+  const requestedKind = String(payload.payableKind ?? payload.documentKind ?? '')
+    .trim()
+    .toUpperCase();
   if (!documentNumber) throw new HttpError(400, 'documentNumber obrigatorio');
   if (!paymentMethod) throw new HttpError(400, 'paymentMethod obrigatorio');
 
   const loaded = await loadPayableDocument(documentNumber, tenantId);
   if (!loaded) throw new HttpError(404, 'documento nao encontrado');
 
-  const { sourceType, sourceRow, payableKind } = loaded;
+  const { sourceType, sourceRow } = loaded;
+  let payableKind = loaded.payableKind;
+
+  // O ecran de Documentos pode indicar o tipo esperado (FTF → PAG).
+  if (requestedKind === 'FTF' || requestedKind === 'FT' || requestedKind === 'FP') {
+    const number = String(sourceRow?.document_number ?? documentNumber).trim().toUpperCase();
+    if (requestedKind === 'FTF' && (number.startsWith('FTF/') || String(sourceRow?.doc_prefix ?? '').toUpperCase() === 'FTF')) {
+      payableKind = 'FTF';
+    } else if (requestedKind === 'FP' && (number.startsWith('FP/') || String(sourceRow?.doc_prefix ?? '').toUpperCase() === 'FP')) {
+      payableKind = 'FP';
+    } else if (requestedKind === 'FT' && number.startsWith('FT/') && !number.startsWith('FTF/')) {
+      payableKind = 'FT';
+    } else if (requestedKind === 'FTF') {
+      // Pedido explícito de pagamento a fornecedor com número FTF / Compra
+      const docType = String(sourceRow?.doc_type ?? '').trim().toUpperCase();
+      if (docType === 'COMPRA' || docType.includes('FORNECEDOR') || number.startsWith('FTF/')) {
+        payableKind = 'FTF';
+      }
+    }
+  }
+
   if (!payableKind) {
-    throw new HttpError(400, 'apenas faturas (FT) ou cotacoes (FP) podem ser pagas por este ecran');
+    throw new HttpError(
+      400,
+      'apenas faturas (FT), faturas de fornecedor (FTF) ou cotacoes (FP) podem ser pagas por este ecran',
+    );
   }
   if (isDocumentAlreadyPaid(sourceRow)) {
     throw new HttpError(409, 'documento ja se encontra pago');
@@ -863,11 +1199,13 @@ export async function registerDocumentPayment(payload = {}, user = null) {
 
   const now = new Date().toISOString();
   const year = new Date().getFullYear();
-  const generatedDocumentType = payableKind === 'FP' ? 'VD' : 'RC';
+  const generatedDocumentType =
+    payableKind === 'FP' ? 'VD' : payableKind === 'FTF' ? 'PAG' : 'RC';
   let generatedDocumentNumber = '';
   const details = await loadPayableDocumentDetails(sourceType, sourceRow, tenantId);
   const sourceDocumentNumber = String(details.sourceDocumentNumber || documentNumber).trim();
-  const sourceDocType = payableKind === 'FP' ? 'FP' : 'FT';
+  const sourceDocType =
+    payableKind === 'FP' ? 'FP' : payableKind === 'FTF' ? 'FTF' : 'FT';
 
   try {
     await beginImmediateTransaction();
@@ -877,6 +1215,19 @@ export async function registerDocumentPayment(payload = {}, user = null) {
       const sequence = Number(nextVd?.next ?? 1);
       generatedDocumentNumber = formatGeneratedDocumentNumber('VD', year, sequence);
       await createVendaDocument({
+        sourceDocumentNumber,
+        sourceDocType,
+        generatedDocumentNumber,
+        paymentMethod,
+        details,
+        tenantId,
+        now,
+      });
+    } else if (payableKind === 'FTF') {
+      const nextPag = await getNextOrderSequence('PAG', year, tenantId);
+      const sequence = Number(nextPag?.next ?? 1);
+      generatedDocumentNumber = formatGeneratedDocumentNumber('PAG', year, sequence);
+      await createSupplierPaymentDocument({
         sourceDocumentNumber,
         sourceDocType,
         generatedDocumentNumber,

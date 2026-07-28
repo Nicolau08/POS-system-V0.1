@@ -16,6 +16,7 @@ import {
   updateLocation,
   updateTable,
 } from '../repositories/locations.repository.js';
+import { assertWarehouseActive } from './warehouses.service.js';
 
 const LOCATION_TYPES = new Set(['dining', 'takeaway', 'delivery', 'counter', 'other']);
 const MAX_TABLES_PER_SPEC = 200;
@@ -37,6 +38,7 @@ function normalizeLocation(row, tables = []) {
     active: Boolean(row.active),
     sortOrder: Number(row.sort_order ?? 0),
     allowCustomNames: Boolean(row.allow_custom_names),
+    warehouseId: row.warehouse_id != null ? String(row.warehouse_id) : null,
     tables: normalizedTables,
     tablesSummary: formatTablesRangeFromRows(normalizedTables),
     createdAt: row.created_at ?? null,
@@ -188,6 +190,7 @@ export async function ensureDefaultBalcao(tenantId) {
     1,
     0,
     0,
+    null,
     now,
     now,
   ]);
@@ -217,6 +220,14 @@ export async function createLocation(payload = {}, actorUser = null) {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const allowCustomNames = payload.allowCustomNames === true || payload.allow_custom_names === true;
+  const warehouseIdRaw = payload.warehouseId ?? payload.warehouse_id;
+  const warehouseId =
+    warehouseIdRaw === undefined
+      ? null
+      : warehouseIdRaw == null || String(warehouseIdRaw).trim() === ''
+        ? null
+        : await assertWarehouseActive(warehouseIdRaw, tenantId);
+
   try {
     await insertLocation([
       id,
@@ -227,6 +238,7 @@ export async function createLocation(payload = {}, actorUser = null) {
       payload.active === false ? 0 : 1,
       Math.max(0, Number(payload.sortOrder ?? payload.sort_order ?? 0) || 0),
       allowCustomNames ? 1 : 0,
+      warehouseId,
       now,
       now,
     ]);
@@ -252,6 +264,7 @@ export async function createLocation(payload = {}, actorUser = null) {
       active: payload.active === false ? 0 : 1,
       sort_order: Math.max(0, Number(payload.sortOrder ?? 0) || 0),
       allow_custom_names: allowCustomNames ? 1 : 0,
+      warehouse_id: warehouseId,
       created_at: now,
       updated_at: now,
     },
@@ -286,6 +299,15 @@ export async function updateLocationById(id, payload = {}, actorUser = null) {
           ? 1
           : 0;
 
+  let warehouseId = existing.warehouse_id != null ? String(existing.warehouse_id) : null;
+  if (Object.prototype.hasOwnProperty.call(payload, 'warehouseId') || Object.prototype.hasOwnProperty.call(payload, 'warehouse_id')) {
+    const warehouseIdRaw = payload.warehouseId ?? payload.warehouse_id;
+    warehouseId =
+      warehouseIdRaw == null || String(warehouseIdRaw).trim() === ''
+        ? null
+        : await assertWarehouseActive(warehouseIdRaw, tenantId);
+  }
+
   try {
     await updateLocation(String(id), tenantId, [
       name,
@@ -294,6 +316,7 @@ export async function updateLocationById(id, payload = {}, actorUser = null) {
       payload.active === false ? 0 : payload.active === true ? 1 : existing.active ? 1 : 0,
       Math.max(0, Number(payload.sortOrder ?? payload.sort_order ?? existing.sort_order ?? 0) || 0),
       allowCustomNames,
+      warehouseId,
       now,
     ]);
   } catch (error) {

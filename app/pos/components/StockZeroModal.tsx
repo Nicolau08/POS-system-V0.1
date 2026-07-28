@@ -36,9 +36,9 @@ export function StockZeroModal({
                 <AlertTriangle size={32} />
               </div>
               <div>
-                <h2 className="text-xl font-bold text-white tracking-tight">Produto sem Estoque</h2>
+                <h2 className="text-xl font-bold text-white tracking-tight">Produto sem Stock</h2>
                 <p className="text-sm text-zinc-400 mt-2">
-                  O produto <span className="text-white font-bold">&quot;{productName}&quot;</span> está com quantidade zero no estoque.
+                  O produto <span className="text-white font-bold">&quot;{productName}&quot;</span> está com quantidade zero no stock.
                 </p>
                 <p className="text-sm text-zinc-500 mt-1 italic">
                   Deseja continuar com a venda mesmo assim?

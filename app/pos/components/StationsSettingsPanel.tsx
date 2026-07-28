@@ -330,6 +330,7 @@ export function StationsSettingsPanel() {
                   { value: 'caixa', label: 'Caixa' },
                   { value: 'garcom', label: 'Garçom' },
                   { value: 'consulta', label: 'Consulta' },
+                  { value: 'cozinha', label: 'Cozinha' },
                 ]}
                 size="md"
                 triggerClassName="!bg-[#121212] !border-zinc-600"
@@ -350,15 +351,18 @@ export function StationsSettingsPanel() {
         <div className="space-y-4 rounded border border-zinc-800 bg-[#171717] p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Posto remoto</p>
           <label className="block">
-            <span className="text-zinc-300">URL da API do servidor</span>
+            <span className="text-zinc-300">IP da API do servidor</span>
             <input
               value={client.serverApiBaseUrl}
               onChange={(e) =>
                 persistClient({ ...client, serverApiBaseUrl: e.target.value })
               }
-              placeholder="http://192.168.1.20:3731"
+              placeholder="192.168.1.20"
               className="mt-1 h-9 w-full max-w-md rounded border border-zinc-600 bg-[#121212] px-3 font-mono text-sm text-white"
             />
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              Basta o IP — acrescentamos http e a porta 3731. Em dev use IP:3001.
+            </span>
           </label>
           <div className="flex flex-wrap gap-2">
             <button
@@ -437,6 +441,7 @@ export function StationsSettingsPanel() {
                     { value: 'caixa', label: 'Caixa' },
                     { value: 'garcom', label: 'Garçom' },
                     { value: 'consulta', label: 'Consulta' },
+                    { value: 'cozinha', label: 'Cozinha' },
                   ]}
                   size="md"
                   triggerClassName="!bg-[#121212] !border-zinc-600"

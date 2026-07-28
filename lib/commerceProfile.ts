@@ -1,3 +1,6 @@
+import type { CapabilityId } from '@/lib/capabilities';
+import { hasCapability as capabilityEnabled } from '@/lib/capabilities';
+
 /**
  * Tipo de comércio da licença — define o perfil de funcionalidades do POS.
  * Criado na consola de licenças e sincronizado para a instalação local.
@@ -82,6 +85,21 @@ export function normalizeCommerceType(value: unknown): CommerceType {
 
 export function getCommerceFeatures(commerceType: unknown): CommerceFeatures {
   return FEATURES[normalizeCommerceType(commerceType)];
+}
+
+export function getCommerceFeaturesFromCapabilities(capabilities: CapabilityId[]): CommerceFeatures {
+  const tables = capabilityEnabled(capabilities, 'tables');
+  const inventory = capabilityEnabled(capabilities, 'inventory');
+  const controlledItems = capabilityEnabled(capabilities, 'controlled_items');
+
+  return {
+    tables,
+    locations: tables || capabilityEnabled(capabilities, 'multi_station') || inventory,
+    printCenters: capabilityEnabled(capabilities, 'print_centers'),
+    askTableDefault: tables,
+    pharmacy: controlledItems,
+    defaultSalesMode: tables ? 'table' : 'customer',
+  };
 }
 
 export function commerceTypeLabel(commerceType: unknown): string {

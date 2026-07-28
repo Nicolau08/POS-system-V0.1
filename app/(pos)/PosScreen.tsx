@@ -79,6 +79,7 @@ import { StockZeroModal } from '@/app/pos/components/StockZeroModal';
 import { MinStockAlertModal } from '@/app/pos/components/MinStockAlertModal';
 import { DiscountModal } from '@/app/pos/components/DiscountModal';
 import { QuantityModal } from '@/app/pos/components/QuantityModal';
+import { ItemNotesModal } from '@/app/pos/components/ItemNotesModal';
 import { CancelOrderModal } from '@/app/pos/components/CancelOrderModal';
 import { LoginScreen } from '@/app/pos/components/LoginScreen';
 import { useCart } from '@/hooks/useCart';
@@ -87,7 +88,7 @@ import { usePosDraftPersistence } from '@/hooks/usePosDraftPersistence';
 import { loadPosSettings, savePosSettings, syncReceiptPrinterToServer } from '@/lib/posSettings';
 import { openCashDrawerIfNeeded } from '@/lib/cashDrawerClient';
 import { resolveThermalWidthMm } from '@/lib/thermalPrintPage';
-import { printProductionTickets } from '@/lib/productionPrint';
+import { submitKitchenOrder } from '@/lib/kitchenOrder';
 import { useProducts } from '@/hooks/useProducts';
 import { useAuth } from '@/hooks/useAuth';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -110,6 +111,22 @@ import {
   type SetupStatusPayload,
 } from '@/lib/services/posService';
 import { resolveCategoryColor } from '@/lib/categoryColors';
+import {
+  clearPosSessionCache,
+  getCachedActivationState,
+  getCachedLocationsTables,
+  getCachedLoginUsers,
+  getCachedSetupStatus,
+  getPosCatalogCache,
+  setCachedActivationState,
+  setCachedCategories,
+  setCachedLocationsTables,
+  setCachedLoginUsers,
+  setCachedSetupStatus,
+  setPosCatalogCache,
+  getCachedPosWorkspace,
+  setCachedPosWorkspace,
+} from '@/lib/posSessionCache';
 import LicenseExpiredScreen from '@/components/LicenseExpiredScreen';
 import { useLicenseGuard } from '@/components/LicenseGuardProvider';
 import { isReactivationTokenInput } from '@/lib/licensing/reactivationToken.js';
@@ -271,11 +288,20 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   use(params);
   use(searchParams);
   const router = useRouter();
-  const { licenseExpired, tenantName, expiresAt, refreshLicenseStatus, isCheckingLicense } =
+  const { licenseExpired, tenantName, expiresAt, refreshLicenseStatus } =
     useLicenseGuard();
   const { features: commerceFeatures, commerceType } = useCommerceProfile();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [familyColors, setFamilyColors] = useState<Record<string, string>>({});
+  const [products, setProducts] = useState<Product[]>(() => getPosCatalogCache()?.products ?? []);
+  const [customers, setCustomers] = useState<Customer[]>(() => getPosCatalogCache()?.customers ?? []);
+  const [familyColors, setFamilyColors] = useState<Record<string, string>>(
+    () => getPosCatalogCache()?.familyColors ?? {}
+  );
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>(
+    () => getPosCatalogCache()?.paymentMethods ?? []
+  );
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(
+    () => getPosCatalogCache()?.companyProfile ?? null
+  );
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -288,6 +314,11 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const [editingItem, setEditingItem] = useState<CartItem | null>(null);
   const [tempQuantity, setTempQuantity] = useState('');
 
+  // Item notes (cozinha) Modal State
+  const [isItemNotesModalOpen, setIsItemNotesModalOpen] = useState(false);
+  const [notesEditingItem, setNotesEditingItem] = useState<CartItem | null>(null);
+  const [tempItemNotes, setTempItemNotes] = useState('');
+
   // Payment Modal State
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
@@ -298,7 +329,6 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const [isMultiplePayment, setIsMultiplePayment] = useState(false);
   const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('cash');
   const [multiplePaymentAmount, setMultiplePaymentAmount] = useState('');
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
   const [isFinalizingPayment, setIsFinalizingPayment] = useState(false);
   const [paymentFinalizeError, setPaymentFinalizeError] = useState<string | null>(null);
   const [allowStockOverrideOnCheckout, setAllowStockOverrideOnCheckout] = useState(false);
@@ -308,13 +338,18 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   // Customer Modal State
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isSaleFinalized, setIsSaleFinalized] = useState(false);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [users, setUsers] = useState<PosUser[]>([]);
-  const [setupStatus, setSetupStatus] = useState<SetupStatusPayload | null>(null);
-  const [isSetupLoading, setIsSetupLoading] = useState(() => !isPosUiBootstrapped());
+  const [users, setUsers] = useState<PosUser[]>(() => getCachedLoginUsers() ?? []);
+  const [setupStatus, setSetupStatus] = useState<SetupStatusPayload | null>(
+    () => getCachedSetupStatus()
+  );
+  const [isSetupLoading, setIsSetupLoading] = useState(() => !isPosUiBootstrapped() && !getCachedSetupStatus());
   const [setupRevalidating, setSetupRevalidating] = useState(false);
-  const [activationState, setActivationState] = useState<ActivationStatePayload | null>(null);
-  const [isActivationLoading, setIsActivationLoading] = useState(() => !isPosUiBootstrapped());
+  const [activationState, setActivationState] = useState<ActivationStatePayload | null>(
+    () => getCachedActivationState()
+  );
+  const [isActivationLoading, setIsActivationLoading] = useState(
+    () => !isPosUiBootstrapped() && !getCachedActivationState()
+  );
   const [isActivatingLicense, setIsActivatingLicense] = useState(false);
   const [isRevalidatingLicense, setIsRevalidatingLicense] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -351,24 +386,33 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const { can, denyMessage } = usePermissions(currentUser?.accessLevel);
   const [nextVDNumber, setNextVDNumber] = useState(1);
   const [currentReceiptNumber, setCurrentReceiptNumber] = useState<string | null>(null);
-  const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [salesMode, setSalesMode] = useState<'customer' | 'table'>('customer');
-  const [docType, setDocType] = useState<'VD' | 'TK' | 'FP' | 'FT'>('VD');
+  const [salesMode, setSalesMode] = useState<'customer' | 'table'>(
+    () => getCachedPosWorkspace()?.salesMode ?? 'customer'
+  );
+  const [docType, setDocType] = useState<'VD' | 'TK' | 'FP' | 'FT'>(
+    () => getCachedPosWorkspace()?.docType ?? 'VD'
+  );
   const [finalizedDocType, setFinalizedDocType] = useState<'VD' | 'TK' | 'FP' | 'FT'>('VD');
   const [loadedQuotationSource, setLoadedQuotationSource] = useState<{ sourceId: string; sourceType: 'order' | 'sale' } | null>(null);
   const [tableOrders, setTableOrders] = useState<{[key: string]: { cart: CartItem[], globalDiscount: {type: 'value' | 'percentage', amount: number} | null, selectedCustomer: Customer | null, docType: 'VD' | 'TK' | 'FP' | 'FT' }}>({});
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [tableLabels, setTableLabels] = useState<Record<string, string>>({});
-  const [posTableIds, setPosTableIds] = useState<string[]>(DEFAULT_TABLE_IDS);
-  const [posTablesSummary, setPosTablesSummary] = useState('1:20');
-  const [allowTableCustomNames, setAllowTableCustomNames] = useState(false);
+  const [posTableIds, setPosTableIds] = useState<string[]>(
+    () => getCachedLocationsTables()?.tableIds ?? DEFAULT_TABLE_IDS
+  );
+  const [posTablesSummary, setPosTablesSummary] = useState(
+    () => getCachedLocationsTables()?.tablesSummary ?? '1:20'
+  );
+  const [allowTableCustomNames, setAllowTableCustomNames] = useState(
+    () => getCachedLocationsTables()?.allowCustomNames ?? false
+  );
   const tableOrderUpdatedAtRef = useRef<Record<string, string>>({});
   const floorCurrentOrder = useMemo(
     () => ({ cart, globalDiscount, selectedCustomer, docType }),
     [cart, globalDiscount, selectedCustomer, docType],
   );
-  const { isTableFloorOpen, setIsTableFloorOpen, openTableFloor } = useTableFloor({
+  const { isTableFloorOpen, setIsTableFloorOpen, openTableFloor, activeLocationId } = useTableFloor({
     tablesEnabled: commerceFeatures.tables,
     selectedTableId,
     currentOrder: floorCurrentOrder,
@@ -704,12 +748,15 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       const data = await posFetchUsers();
 
       if (data && data.length > 0) {
-        setUsers(data as PosUser[]);
+        const list = data as PosUser[];
+        setUsers(list);
+        setCachedLoginUsers(list);
         setSelectedLoginUser((previous) =>
-          (data as PosUser[]).find((user) => user.id === previous?.id) ?? (data[0] as PosUser)
+          list.find((user) => user.id === previous?.id) ?? list[0]
         );
       } else {
         setUsers([]);
+        setCachedLoginUsers([]);
         setSelectedLoginUser(null);
       }
     } catch (error) {
@@ -732,6 +779,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         skipRegistrySync: options?.skipRegistrySync ?? isPosUiBootstrapped(),
       });
       setSetupStatus(status);
+      setCachedSetupStatus(status);
       if (status?.isSetupComplete) {
         markPosUiBootstrapped();
       }
@@ -752,6 +800,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         activationCode: '',
       };
       setActivationState(fallback);
+      setCachedActivationState(fallback);
       setIsActivationLoading(false);
       return fallback;
     }
@@ -767,6 +816,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         licensePath: state?.licensePath ? String(state.licensePath) : undefined,
       };
       setActivationState(normalized);
+      setCachedActivationState(normalized);
       return normalized;
     } catch {
       const failed: ActivationStatePayload = {
@@ -777,6 +827,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         reason: 'Falha ao obter estado de ativação.',
       };
       setActivationState(failed);
+      setCachedActivationState(failed);
       return failed;
     } finally {
       setIsActivationLoading(false);
@@ -927,6 +978,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         setCompanyProfile(companyData);
         const normalizedMethods = Array.isArray(paymentMethodsData) ? paymentMethodsData : [];
         setPaymentMethods(normalizedMethods);
+        if (Array.isArray(categoriesData)) {
+          setCachedCategories(categoriesData);
+        }
+        setPosCatalogCache({
+          products: productsData || [],
+          customers: customersData || [],
+          familyColors: colorMap,
+          paymentMethods: normalizedMethods,
+          companyProfile: companyData,
+        });
         const firstEnabledMethod = normalizedMethods.find((method) => method.enabled);
         if (firstEnabledMethod?.code) {
           setMultiplePaymentMethod(firstEnabledMethod.code);
@@ -938,6 +999,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         setCustomers([]);
         setCompanyProfile(null);
         setPaymentMethods(FALLBACK_PAYMENT_METHODS);
+        clearPosCatalogCache();
       }
     };
 
@@ -997,6 +1059,10 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     setGlobalDiscount(d.globalDiscount ?? null);
     setDocType((d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT');
     setSalesMode(d.salesMode === 'table' ? 'table' : 'customer');
+    setCachedPosWorkspace({
+      docType: (d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT',
+      salesMode: d.salesMode === 'table' ? 'table' : 'customer',
+    });
     setSelectedTableId(d.selectedTableId ?? null);
     setTableOrders(d.tableOrders && typeof d.tableOrders === 'object' ? d.tableOrders : {});
     const sid = typeof d.selectedCartItemId === 'string' ? d.selectedCartItemId : null;
@@ -1071,6 +1137,11 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   }, [isLoggedIn, isAuthRestored, commerceFeatures.tables, commerceFeatures.askTableDefault, commerceType]);
 
   useEffect(() => {
+    if (!isLoggedIn || !isAuthRestored) return;
+    setCachedPosWorkspace({ docType, salesMode });
+  }, [docType, salesMode, isLoggedIn, isAuthRestored]);
+
+  useEffect(() => {
     if (!isLoggedIn || !isAuthRestored || !currentUser?.id) return;
     void ensureCashSession().catch(() => undefined);
   }, [isLoggedIn, isAuthRestored, currentUser?.id]);
@@ -1094,6 +1165,11 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           setPosTablesSummary(balcao.tablesSummary || formatTablesRange(ids));
         }
         setAllowTableCustomNames(Boolean(balcao.allowCustomNames));
+        setCachedLocationsTables({
+          tableIds: ids.length ? ids : DEFAULT_TABLE_IDS,
+          tablesSummary: balcao.tablesSummary || formatTablesRange(ids.length ? ids : DEFAULT_TABLE_IDS),
+          allowCustomNames: Boolean(balcao.allowCustomNames),
+        });
       } catch {
         // mantém 1:20 por defeito
       }
@@ -1206,6 +1282,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         selectedUserId: currentUser?.id || null,
         selectedUserName: currentUser?.name || null,
         selectedTableId: selectedTableId || null,
+        locationId: activeLocationId || null,
         docType: saleDocType,
         total,
         subtotal,
@@ -1218,8 +1295,17 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         paymentStatus,
         saleTimestamp,
         saleDate,
-        allowNegativeStockOverride: isProforma ? false : allowStockOverrideOnCheckout,
-        stockOverrideReason: !isProforma && allowStockOverrideOnCheckout ? 'Override confirmado no POS durante checkout.' : null,
+        allowNegativeStockOverride:
+          isProforma
+            ? false
+            : allowStockOverrideOnCheckout || Boolean(loadPosSettings().allowNegativeStock),
+        stockOverrideReason:
+          !isProforma &&
+          (allowStockOverrideOnCheckout || Boolean(loadPosSettings().allowNegativeStock))
+            ? allowStockOverrideOnCheckout
+              ? 'Override confirmado no POS durante checkout.'
+              : 'Stock negativo permitido nas configurações do POS.'
+            : null,
       }, {
         idempotencyKey,
       });
@@ -1227,15 +1313,18 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       checkoutIdempotencyKeyRef.current = null;
       setPaymentFinalizeError(null);
 
-      // Tickets de produção (Imp Cozinha / Imp Balcão) — só restauração.
+      // Tickets de produção / KDS (Imp Cozinha / Imp Balcão) — só restauração.
       if (!isProforma && commerceFeatures.printCenters) {
         const productionItems = cart.map((item) => ({
+          id: item.id,
           name: item.name,
           quantity: item.quantity,
           category_id: item.category_id ?? null,
           category: item.category ?? null,
+          notes: item.notes ?? null,
         }));
         const productionMeta = {
+          tableKey: selectedTableId ?? null,
           tableLabel: selectedTableId
             ? tableLabels[selectedTableId]
               ? `${selectedTableId} (${tableLabels[selectedTableId]})`
@@ -1243,9 +1332,18 @@ export default function POSPage({ params, searchParams }: RouteProps) {
             : null,
           docLabel: `${saleDocType} ${String(result.usedDocumentNumber ?? '')}`.trim(),
           timeLabel: new Date().toLocaleString('pt-MZ'),
+          printAlso: true,
+          source: 'pos_desktop',
         };
-        void printProductionTickets(productionItems, productionMeta).then((prod) => {
-          if (prod.printed > 0) {
+        void submitKitchenOrder(productionItems, productionMeta).then((prod) => {
+          if (prod.tickets.length > 0) {
+            showToast(
+              prod.tickets.length === 1
+                ? 'Pedido enviado à cozinha (KDS).'
+                : `Pedido enviado a ${prod.tickets.length} estações KDS.`,
+              'success',
+            );
+          } else if (prod.printed > 0) {
             showToast(
               prod.printed === 1
                 ? 'Pedido enviado ao centro de impressão.'
@@ -1394,6 +1492,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           if (productsData && productsData.length > 0) setProducts(productsData);
           // Só actualiza a lista — não reaplicar selectedCustomer (resetForNewSale já o limpou).
           if (Array.isArray(customersData)) setCustomers(customersData);
+          if (productsData || customersData) {
+            const prev = getPosCatalogCache();
+            setPosCatalogCache({
+              products: productsData?.length ? productsData : prev?.products ?? [],
+              customers: Array.isArray(customersData) ? customersData : prev?.customers ?? [],
+              familyColors: prev?.familyColors ?? {},
+              paymentMethods: prev?.paymentMethods ?? [],
+              companyProfile: prev?.companyProfile ?? null,
+            });
+          }
         } catch {
           // Non-fatal: stock/customers will be corrected on next refresh / error flow.
         }
@@ -1404,7 +1512,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       if (code === 'CHECKOUT_IN_PROGRESS') {
         setPaymentFinalizeError('Este pedido já está a ser processado. Aguarde e tente novamente.');
       } else if (code === 'INSUFFICIENT_STOCK') {
-        setPaymentFinalizeError('Estoque insuficiente. Solicite autorização para venda sem stock ou ajuste o carrinho.');
+        setPaymentFinalizeError('Stock insuficiente. Solicite autorização para venda sem stock ou ajuste o carrinho.');
       } else {
         setPaymentFinalizeError(`Falha ao salvar pedido: ${err.message}`);
       }
@@ -1525,15 +1633,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const hasElectronActivation =
     typeof window !== 'undefined' && typeof window.electronAPI?.getActivationState === 'function';
 
-  if (isCheckingLicense) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-200">
-        <div className="rounded border border-zinc-800 bg-zinc-900/80 px-6 py-4 text-sm">
-          A validar licença POSly…
-        </div>
-      </div>
-    );
-  }
+  // Licença / setup / ativação: sem ecrãs «A validar…» no arranque — segue para login ou UI.
 
   if (licenseExpired) {
     return (
@@ -1555,16 +1655,6 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           hasElectronActivation ? handleElectronLicenseActivate : undefined
         }
       />
-    );
-  }
-
-  if (isSetupLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-200">
-        <div className="rounded border border-zinc-800 bg-zinc-900/80 px-6 py-4 text-sm">
-          A preparar configuração inicial...
-        </div>
-      </div>
     );
   }
 
@@ -1598,17 +1688,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     }
   }
 
-  if (hasElectronActivation && isActivationLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-200">
-        <div className="rounded border border-zinc-800 bg-zinc-900/80 px-6 py-4 text-sm">
-          A validar ativação da licença...
-        </div>
-      </div>
-    );
-  }
-
-  if (hasElectronActivation && !isActivationLoading && activationState && !activationState.isActivated) {
+  if (hasElectronActivation && activationState && !activationState.isActivated) {
     let isStationClient = false;
     try {
       const raw = localStorage.getItem('pos:station-settings');
@@ -1722,105 +1802,119 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         billPreviewEnabled={cart.length > 0}
         onOpenAdminSidebar={() => setIsAdminSidebarOpen(true)}
         userName={currentUser?.name ?? null}
-        onLogout={logout}
+        onLogout={() => {
+          clearPosSessionCache();
+          logout();
+        }}
       />
 
-      <main className="flex flex-1 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {commerceFeatures.tables && isTableFloorOpen ? (
-            <TableFloorPanel
-              tableIds={posTableIds}
-              tablesSummary={posTablesSummary}
-              allowCustomNames={allowTableCustomNames}
-              selectedTableId={selectedTableId}
-              salesMode={salesMode}
-              tableOrders={tableOrders}
-              tableLabels={tableLabels}
-              onSelect={handleTableSelect}
-              onClose={() => setIsTableFloorOpen(false)}
-            />
-          ) : (
-            <ProductList
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              onSearchSubmit={handleSearchSubmit}
-              productFamilies={productFamilies}
-              familyColors={familyColors}
-              selectedCategory={selectedCategory}
-              onSelectCategory={setSelectedCategory}
-              visibleProducts={visibleProducts}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {commerceFeatures.tables && isTableFloorOpen ? (
+              <TableFloorPanel
+                tableIds={posTableIds}
+                tablesSummary={posTablesSummary}
+                allowCustomNames={allowTableCustomNames}
+                selectedTableId={selectedTableId}
+                salesMode={salesMode}
+                tableOrders={tableOrders}
+                tableLabels={tableLabels}
+                onSelect={handleTableSelect}
+                onClose={() => setIsTableFloorOpen(false)}
+              />
+            ) : (
+              <ProductList
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onSearchSubmit={handleSearchSubmit}
+                productFamilies={productFamilies}
+                familyColors={familyColors}
+                selectedCategory={selectedCategory}
+                onSelectCategory={setSelectedCategory}
+                visibleProducts={visibleProducts}
+                formatPrice={formatPrice}
+                onAddToCart={addToCart}
+                familiesScrollRef={familiesScrollRef}
+                onFamiliesPointerDown={handleFamiliesPointerDown}
+                onFamiliesPointerMove={handleFamiliesPointerMove}
+                onFamiliesPointerRelease={handleFamiliesPointerRelease}
+                onFamiliesClickCapture={(e) => {
+                  if (familiesDragStateRef.current.moved) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    familiesDragStateRef.current.moved = false;
+                  }
+                }}
+              />
+            )}
+          </div>
+          {/* Na grelha de mesas o ecrã fica só com as mesas; o carrinho volta ao abrir uma mesa. */}
+          {!(commerceFeatures.tables && isTableFloorOpen) ? (
+            <Cart
+              selectedCartItemId={selectedCartItemId}
+              docType={docType}
+              onCycleDocType={() => {
+                const types: ('VD' | 'TK' | 'FP')[] = ['VD', 'TK', 'FP'];
+                const currentDocType = docType === 'FT' ? 'VD' : docType;
+                const nextIndex = (types.indexOf(currentDocType) + 1) % types.length;
+                setDocType(types[nextIndex]);
+              }}
+              selectedCustomer={selectedCustomer}
+              customerName={customerName}
+              onCustomerNameChange={setCustomerName}
+              customers={customers}
+              onSelectCustomer={(customer) => {
+                setSelectedCustomer(customer);
+                if (customer) setCustomerName('');
+              }}
+              onCreateCustomerFromName={() => {
+                setNewCustomer({ ...newCustomer, name: customerName });
+                setIsAddingCustomer(true);
+                setIsCustomerModalOpen(true);
+              }}
+              cart={cart}
+              globalDiscount={globalDiscount}
               formatPrice={formatPrice}
-              onAddToCart={addToCart}
-              familiesScrollRef={familiesScrollRef}
-              onFamiliesPointerDown={handleFamiliesPointerDown}
-              onFamiliesPointerMove={handleFamiliesPointerMove}
-              onFamiliesPointerRelease={handleFamiliesPointerRelease}
-              onFamiliesClickCapture={(e) => {
-                if (familiesDragStateRef.current.moved) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  familiesDragStateRef.current.moved = false;
+              onToggleItemSelection={(id) => setSelectedCartItemId((prev) => (prev === id ? null : id))}
+              onEditItemQuantity={(item) => {
+                setEditingItem(item);
+                setTempQuantity(item.quantity.toString());
+                setIsQuantityModalOpen(true);
+              }}
+              allowItemNotes={Boolean(commerceFeatures.printCenters)}
+              onEditItemNotes={(item) => {
+                setNotesEditingItem(item);
+                setTempItemNotes(String(item.notes ?? ''));
+                setIsItemNotesModalOpen(true);
+              }}
+              onRemoveItem={(id) => {
+                if (!requireAccess('vendas.cancelar_item', 'Cancelar item')) return;
+                removeFromCart(id);
+              }}
+              onClearSelection={() => setSelectedCartItemId(null)}
+              originalSubtotal={originalSubtotal}
+              totalDiscount={totalDiscount}
+              tax={tax}
+              total={total}
+              canCancelOrder={can('vendas.cancelar_pedido')}
+              onCancelOrder={() => {
+                if (cart.length === 0) {
+                  showToast('Não existe nada no carrinho de compra', 'error');
+                  return;
                 }
+                if (!requireAccess('vendas.cancelar_pedido', 'Cancelar pedido')) return;
+                setIsCancelModalOpen(true);
+              }}
+              onOpenPayment={() => {
+                if (cart.length <= 0) return;
+                setPaymentFinalizeError(null);
+                setIsPaymentModalOpen(true);
               }}
             />
-          )}
-          <PosStatusFooter />
+          ) : null}
         </div>
-        <Cart
-          selectedCartItemId={selectedCartItemId}
-          docType={docType}
-          onCycleDocType={() => {
-            const types: ('VD' | 'TK' | 'FP')[] = ['VD', 'TK', 'FP'];
-            const currentDocType = docType === 'FT' ? 'VD' : docType;
-            const nextIndex = (types.indexOf(currentDocType) + 1) % types.length;
-            setDocType(types[nextIndex]);
-          }}
-          selectedCustomer={selectedCustomer}
-          customerName={customerName}
-          onCustomerNameChange={setCustomerName}
-          customers={customers}
-          onSelectCustomer={(customer) => {
-            setSelectedCustomer(customer);
-            if (customer) setCustomerName('');
-          }}
-          onCreateCustomerFromName={() => {
-            setNewCustomer({ ...newCustomer, name: customerName });
-            setIsAddingCustomer(true);
-            setIsCustomerModalOpen(true);
-          }}
-          cart={cart}
-          globalDiscount={globalDiscount}
-          formatPrice={formatPrice}
-          onToggleItemSelection={(id) => setSelectedCartItemId((prev) => (prev === id ? null : id))}
-          onEditItemQuantity={(item) => {
-            setEditingItem(item);
-            setTempQuantity(item.quantity.toString());
-            setIsQuantityModalOpen(true);
-          }}
-          onRemoveItem={(id) => {
-            if (!requireAccess('vendas.cancelar_item', 'Cancelar item')) return;
-            removeFromCart(id);
-          }}
-          onClearSelection={() => setSelectedCartItemId(null)}
-          originalSubtotal={originalSubtotal}
-          totalDiscount={totalDiscount}
-          tax={tax}
-          total={total}
-          canCancelOrder={can('vendas.cancelar_pedido')}
-          onCancelOrder={() => {
-            if (cart.length === 0) {
-              showToast('Não existe nada no carrinho de compra', 'error');
-              return;
-            }
-            if (!requireAccess('vendas.cancelar_pedido', 'Cancelar pedido')) return;
-            setIsCancelModalOpen(true);
-          }}
-          onOpenPayment={() => {
-            if (cart.length <= 0) return;
-            setPaymentFinalizeError(null);
-            setIsPaymentModalOpen(true);
-          }}
-        />
+        <PosStatusFooter />
       </main>
 
       <StockZeroModal
@@ -1832,7 +1926,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         }}
         onConfirm={() => {
           if (!pendingProduct) return;
-          if (!requireAccess('vendas.venda_estoque_zero', 'Venda de quantidade de estoque zero')) {
+          if (!requireAccess('vendas.venda_estoque_zero', 'Venda de quantidade de stock zero')) {
             return;
           }
           executeAddToCart(pendingProduct);
@@ -1913,6 +2007,26 @@ export default function POSPage({ params, searchParams }: RouteProps) {
             updateQuantity(editingItem.id, q);
           }
           setIsQuantityModalOpen(false);
+        }}
+      />
+
+      <ItemNotesModal
+        isOpen={isItemNotesModalOpen && !!notesEditingItem}
+        itemName={notesEditingItem?.name ?? ''}
+        notes={tempItemNotes}
+        setNotes={setTempItemNotes}
+        onClose={() => {
+          setIsItemNotesModalOpen(false);
+          setNotesEditingItem(null);
+        }}
+        onConfirm={() => {
+          if (!notesEditingItem) return;
+          const notes = tempItemNotes.trim().slice(0, 500) || null;
+          setCart((prev) =>
+            prev.map((row) => (row.id === notesEditingItem.id ? { ...row, notes } : row))
+          );
+          setIsItemNotesModalOpen(false);
+          setNotesEditingItem(null);
         }}
       />
 
@@ -2026,11 +2140,8 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         }}
         onLogout={() => {
           void clearDraftEverywhere();
-          localStorage.setItem('isLoggedIn', 'false');
-          localStorage.removeItem('currentUser');
-          window.dispatchEvent(new Event('pos-auth-changed'));
-          setIsLoggedIn(false);
-          setCurrentUser(null);
+          clearPosSessionCache();
+          logout();
           setIsAdminSidebarOpen(false);
         }}
       />

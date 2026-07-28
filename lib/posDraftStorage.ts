@@ -50,11 +50,16 @@ export function isMeaningfulPosDraft(draft: PosDraftSnapshot | null | undefined)
   if (Boolean(draft.selectedCustomer)) return true;
   if (typeof draft.customerName === 'string' && draft.customerName.trim() !== '') return true;
   if (draft.globalDiscount != null) return true;
+  // Tipo de documento / modo mesa escolhidos pelo operador (ex.: FP sem itens ainda).
+  if (draft.docType && draft.docType !== 'VD') return true;
+  if (draft.salesMode === 'table') return true;
+  if (draft.selectedTableId) return true;
   if (draft.tableOrders) {
     for (const order of Object.values(draft.tableOrders)) {
       if (Array.isArray(order?.cart) && order.cart.length > 0) return true;
       if (order?.selectedCustomer) return true;
       if (order?.globalDiscount != null) return true;
+      if (order?.docType && order.docType !== 'VD') return true;
     }
   }
   return false;

@@ -1,12 +1,43 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@/app/pos/types';
-import { getPosApiBase, setStoredAuthToken } from '@/lib/apiBase';
+import {
+  clearPosAuthSession,
+  getPosApiBase,
+  isPosSessionActive,
+  markPosSessionActive,
+  setStoredAuthToken,
+} from '@/lib/apiBase';
 
 const LOGIN_KEY = 'isLoggedIn';
 const USER_KEY = 'currentUser';
 
+function readBootAuth(): { isLoggedIn: boolean; currentUser: User | null } {
+  if (typeof window === 'undefined') {
+    return { isLoggedIn: false, currentUser: null };
+  }
+
+  // Fechar e reabrir o app = sessionStorage vazio → logout obrigatório.
+  if (!isPosSessionActive()) {
+    clearPosAuthSession();
+    return { isLoggedIn: false, currentUser: null };
+  }
+
+  const savedLogin = localStorage.getItem(LOGIN_KEY);
+  const savedUser = localStorage.getItem(USER_KEY);
+  if (savedLogin === 'true' && savedUser) {
+    try {
+      return { isLoggedIn: true, currentUser: JSON.parse(savedUser) as User };
+    } catch {
+      clearPosAuthSession();
+    }
+  }
+
+  return { isLoggedIn: false, currentUser: null };
+}
+
 // Keeps current localStorage-based session behavior isolated in one place.
 export function useAuth() {
+  // Sempre o mesmo estado inicial no SSR e no 1.º paint do cliente — evita hydration mismatch.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
@@ -15,18 +46,9 @@ export function useAuth() {
   const [loginError, setLoginError] = useState(false);
 
   useEffect(() => {
-    const savedLogin = localStorage.getItem(LOGIN_KEY);
-    const savedUser = localStorage.getItem(USER_KEY);
-    if (savedLogin === 'true' && savedUser) {
-      try {
-        const parsed = JSON.parse(savedUser) as User;
-        setCurrentUser(parsed);
-        setIsLoggedIn(true);
-      } catch {
-        localStorage.removeItem(USER_KEY);
-        localStorage.setItem(LOGIN_KEY, 'false');
-      }
-    }
+    const next = readBootAuth();
+    setCurrentUser(next.currentUser);
+    setIsLoggedIn(next.isLoggedIn);
     setIsAuthRestored(true);
   }, []);
 
@@ -84,6 +106,7 @@ export function useAuth() {
         active: payload?.user?.active === false ? false : Boolean(payload?.user?.active ?? selectedUser.active ?? true),
       };
 
+      markPosSessionActive();
       setCurrentUser(loggedUser);
       setIsLoggedIn(true);
       setLoginError(false);
@@ -103,9 +126,7 @@ export function useAuth() {
   const logout = useCallback(() => {
     setCurrentUser(null);
     setIsLoggedIn(false);
-    localStorage.setItem(LOGIN_KEY, 'false');
-    localStorage.removeItem(USER_KEY);
-    window.dispatchEvent(new Event('pos-auth-changed'));
+    clearPosAuthSession();
   }, []);
 
   return {

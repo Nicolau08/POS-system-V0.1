@@ -7,6 +7,7 @@ import {
   upsertPosTableOrder,
 } from '../repositories/pos-table-orders.repository.js';
 import { publishTableOrderEvent } from './table-orders-events.js';
+import { reconcileKitchenWithTableCart } from './kitchen.service.js';
 
 async function resolveTenantId(actorUser) {
   const fromUser = String(actorUser?.tenant_id ?? '').trim();
@@ -31,15 +32,31 @@ function normalizeCart(raw) {
     .map((row) => {
       const id = String(row?.id ?? '').trim();
       if (!id) return null;
+      const notesRaw = row?.notes;
+      const notes =
+        notesRaw == null
+          ? null
+          : String(notesRaw)
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .trim()
+              .slice(0, 500) || null;
+      const quantity = Math.max(1, Number(row?.quantity) || 1);
+      const sentRaw = row?.sentQuantity ?? row?.sent_quantity;
+      const sentQuantity =
+        sentRaw == null
+          ? undefined
+          : Math.max(0, Math.min(quantity, Number(sentRaw) || 0));
       return {
         id,
         name: String(row?.name ?? 'Produto'),
         price: Number(row?.price) || 0,
-        quantity: Math.max(1, Number(row?.quantity) || 1),
+        quantity,
+        ...(sentQuantity != null ? { sentQuantity } : {}),
         category: String(row?.category ?? 'Geral'),
         category_id: row?.category_id != null ? String(row.category_id) : null,
         cloud_id: row?.cloud_id != null ? String(row.cloud_id) : null,
         discount: row?.discount ?? undefined,
+        notes: notes || undefined,
       };
     })
     .filter(Boolean);
@@ -92,6 +109,10 @@ export async function saveSharedTableOrder(tableKeyRaw, body = {}, actorUser = n
         : null;
 
   const existing = await getPosTableOrder(tenantId, tableKey);
+  const previousCart = normalizeCart(
+    (parsePayload(existing?.payload_json) || { cart: [] }).cart,
+  );
+
   if (existing && expectedUpdatedAt != null) {
     const current = String(existing.updated_at ?? '');
     if (current && current !== expectedUpdatedAt) {
@@ -125,6 +146,7 @@ export async function saveSharedTableOrder(tableKeyRaw, body = {}, actorUser = n
       updatedAt: now,
       cleared: true,
     });
+    void reconcileKitchenWithTableCart(tableKey, previousCart, [], actorUser).catch(() => {});
     return { tableKey, order: null, updatedAt: now, cleared: true };
   }
 
@@ -143,6 +165,9 @@ export async function saveSharedTableOrder(tableKeyRaw, body = {}, actorUser = n
     updatedAt: now,
     cleared: false,
   });
+  void reconcileKitchenWithTableCart(tableKey, previousCart, payload.cart, actorUser).catch(
+    () => {},
+  );
   return {
     tableKey,
     order: {
@@ -161,6 +186,10 @@ export async function clearSharedTableOrder(tableKeyRaw, actorUser = null) {
   const tenantId = await resolveTenantId(actorUser);
   const tableKey = String(tableKeyRaw ?? '').trim();
   if (!tableKey) throw new HttpError(400, 'Mesa obrigatória.');
+  const existing = await getPosTableOrder(tenantId, tableKey);
+  const previousCart = normalizeCart(
+    (parsePayload(existing?.payload_json) || { cart: [] }).cart,
+  );
   await deletePosTableOrder(tenantId, tableKey);
   publishTableOrderEvent(tenantId, {
     type: 'cleared',
@@ -168,6 +197,7 @@ export async function clearSharedTableOrder(tableKeyRaw, actorUser = null) {
     updatedAt: new Date().toISOString(),
     cleared: true,
   });
+  void reconcileKitchenWithTableCart(tableKey, previousCart, [], actorUser).catch(() => {});
   return { tableKey, cleared: true };
 }
 

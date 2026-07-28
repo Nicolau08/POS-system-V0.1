@@ -36,5 +36,15 @@ export function ManagementToolbarButton({
   );
 }
 
+/** Divisora vertical padrão dos toolbars (mesmo peso e tamanho em todo o app). */
+export function ManagementToolbarDivider() {
+  return (
+    <div
+      aria-hidden="true"
+      className="mx-2 h-8 w-px shrink-0 self-center bg-zinc-700/40"
+    />
+  );
+}
+
 export const MANAGEMENT_TOOLBAR_CLASS =
   'flex h-16 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-[#1a1a1a] px-2';

@@ -38,6 +38,12 @@ function requireTenantId(tenantCandidate, contextLabel) {
 }
 
 async function listSyncTenantIds() {
+  // Instalação single-tenant (POS local / dev-tenant): nunca misturar outros tenants no mesmo SQLite.
+  const installationTenantId = String(
+    process.env.POS_DEV_TENANT || process.env.DEFAULT_TENANT_ID || ''
+  ).trim();
+  if (installationTenantId) return [installationTenantId];
+
   if (await tableExists('tenants')) {
     const rows = await all(
       `SELECT id
@@ -635,7 +641,7 @@ async function syncProductsFromCloud(summary, tenantId) {
     if (isRemoteNewer(remoteTs, maxTs)) maxTs = remoteTs;
     const categoryLocalId = await mapCategoryIdFromCloud(row.category_id, scopedTenantId);
     const existing = await get(
-      `SELECT id, updated_at, image
+      `SELECT id, updated_at, image, track_lot
        FROM products
        WHERE cloud_id = ?
          AND tenant_id = ?
@@ -647,6 +653,16 @@ async function syncProductsFromCloud(summary, tenantId) {
     const remoteImageRaw = row.image ?? row.image_url ?? null;
     const normalizedRemoteImage = typeof remoteImageRaw === 'string' ? remoteImageRaw.trim() : remoteImageRaw;
     const mappedImage = normalizedRemoteImage || existing?.image || null;
+
+    // track_lot é local-first até a coluna existir de forma fiável na cloud.
+    const remoteHasTrackLot = Object.prototype.hasOwnProperty.call(row, 'track_lot') && row.track_lot != null;
+    const trackLotValue = remoteHasTrackLot
+      ? row.track_lot === true || Number(row.track_lot) === 1
+        ? 1
+        : 0
+      : Number(existing?.track_lot ?? 0) === 1
+        ? 1
+        : 0;
 
     const mapped = {
       cloud_id: String(row.id),
@@ -664,6 +680,7 @@ async function syncProductsFromCloud(summary, tenantId) {
       age_restriction: row.age_restriction == null ? null : Number(row.age_restriction),
       is_service: row.is_service ? 1 : 0,
       default_quantity: row.default_quantity === false ? 0 : 1,
+      track_lot: trackLotValue,
       stock_quantity: Number(row.stock_quantity ?? 0),
       min_stock: Number(row.min_stock ?? 0),
       color: row.color ?? null,
@@ -677,8 +694,8 @@ async function syncProductsFromCloud(summary, tenantId) {
     if (!existing) {
       await run(
         `INSERT INTO products
-          (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, deleted, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, track_lot, stock_quantity, min_stock, color, image, deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           mapped.cloud_id,
           mapped.tenant_id,
@@ -696,6 +713,7 @@ async function syncProductsFromCloud(summary, tenantId) {
           mapped.age_restriction,
           mapped.is_service,
           mapped.default_quantity,
+          mapped.track_lot,
           mapped.stock_quantity,
           mapped.min_stock,
           mapped.color,
@@ -719,7 +737,7 @@ async function syncProductsFromCloud(summary, tenantId) {
     await run(
       `UPDATE products SET
         code = ?, name = ?, category_id = ?, barcode = ?, cost = ?, price = ?, tax = ?, final_price = ?, active = ?, unit = ?,
-        description = ?, age_restriction = ?, is_service = ?, default_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = ?, tenant_id = ?, updated_at = ?
+        description = ?, age_restriction = ?, is_service = ?, default_quantity = ?, track_lot = ?, min_stock = ?, color = ?, image = ?, deleted = ?, tenant_id = ?, updated_at = ?
        WHERE id = ?`,
       [
         mapped.code,
@@ -736,6 +754,7 @@ async function syncProductsFromCloud(summary, tenantId) {
         mapped.age_restriction,
         mapped.is_service,
         mapped.default_quantity,
+        mapped.track_lot,
         mapped.min_stock,
         mapped.color,
         mapped.image,
@@ -1127,19 +1146,19 @@ async function syncTenantProfileFromCloud(summary, tenantId) {
   if (isInitialPull) {
     ({ data: rows, error } = await supabase
       .from('tenant_profile')
-      .select('id,name,nuit,license_type,updated_at,created_at')
+      .select('id,name,nuit,license_type,vertical,capabilities_json,updated_at,created_at')
       .eq('id', scopedTenantId));
   } else {
     ({ data: rows, error } = await supabase
       .from('tenant_profile')
-      .select('id,name,nuit,license_type,updated_at,created_at')
+      .select('id,name,nuit,license_type,vertical,capabilities_json,updated_at,created_at')
       .eq('id', scopedTenantId)
       .or(`updated_at.gt.${lastSyncAt},updated_at.is.null`)
       .order('updated_at', { ascending: true, nullsFirst: true }));
     if (error && String(error.code || '') === '42703') {
       ({ data: rows, error } = await supabase
         .from('tenant_profile')
-        .select('id,name,nuit,license_type,updated_at,created_at')
+        .select('id,name,nuit,license_type,vertical,capabilities_json,updated_at,created_at')
         .eq('id', scopedTenantId)
         .or(`created_at.gt.${lastSyncAt},created_at.is.null`)
         .order('created_at', { ascending: true, nullsFirst: true }));
@@ -1169,18 +1188,22 @@ async function syncTenantProfileFromCloud(summary, tenantId) {
 
     const existing = await get(`SELECT id, updated_at FROM tenant_profile WHERE id = ? LIMIT 1`, [remoteTenantId]);
     const upsertResult = await run(
-      `INSERT INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO tenant_profile (id, name, nuit, license_type, vertical, capabilities_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          nuit = excluded.nuit,
          license_type = excluded.license_type,
+         vertical = excluded.vertical,
+         capabilities_json = excluded.capabilities_json,
          updated_at = excluded.updated_at`,
       [
         remoteTenantId,
         row.name ?? 'Loja',
         row.nuit ?? null,
         row.license_type ?? 'BASIC',
+        row.vertical ?? null,
+        row.capabilities_json ?? null,
         normalizeTimestamp(row.created_at) || remoteTs,
         remoteTs,
       ]
@@ -1628,7 +1651,7 @@ async function fullSyncFromCloud(tenantId) {
       ),
       fetchAllRows('customers', 'id,name,phone,email,address,tenant_id,updated_at,created_at', 'created_at', scopedTenantId),
       fetchAllRows('users', 'id,name,role,pin,password,tenant_id,updated_at,created_at', 'created_at', scopedTenantId),
-      fetchAllRows('tenant_profile', 'id,name,nuit,license_type,created_at,updated_at', 'updated_at', scopedTenantId),
+      fetchAllRows('tenant_profile', 'id,name,nuit,license_type,vertical,capabilities_json,created_at,updated_at', 'updated_at', scopedTenantId),
       fetchAllRows('stock_movements', 'id,tenant_id,product_id,type,quantity,reference_id,created_at', 'created_at', scopedTenantId),
       fetchAllRows(
         'orders',
@@ -1650,21 +1673,21 @@ async function fullSyncFromCloud(tenantId) {
     );
 
     const localImageByCloudId = new Map();
+    const localTrackLotByCloudId = new Map();
     if (await tableExists('products')) {
       const localImages = await all(
-        `SELECT cloud_id, image
+        `SELECT cloud_id, image, track_lot
          FROM products
          WHERE cloud_id IS NOT NULL
-           AND tenant_id = ?
-           AND TRIM(COALESCE(image, '')) <> ''`
-        ,
+           AND tenant_id = ?`,
         [scopedTenantId]
       );
       for (const row of localImages ?? []) {
         const cloudId = String(row?.cloud_id ?? '').trim();
-        const image = typeof row?.image === 'string' ? row.image : null;
-        if (!cloudId || !image) continue;
-        localImageByCloudId.set(cloudId, image);
+        if (!cloudId) continue;
+        const image = typeof row?.image === 'string' ? row.image.trim() : '';
+        if (image) localImageByCloudId.set(cloudId, image);
+        if (Number(row?.track_lot ?? 0) === 1) localTrackLotByCloudId.set(cloudId, 1);
       }
     }
 
@@ -1730,8 +1753,8 @@ async function fullSyncFromCloud(tenantId) {
         const imageValue = normalizedRemoteImage || localImageByCloudId.get(cloudId) || null;
         const result = await run(
           `INSERT OR REPLACE INTO products
-            (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, stock_quantity, min_stock, color, image, deleted, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (cloud_id, tenant_id, code, name, category_id, barcode, cost, price, tax, final_price, active, unit, description, age_restriction, is_service, default_quantity, track_lot, stock_quantity, min_stock, color, image, deleted, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             cloudId,
             scopedTenantId,
@@ -1749,6 +1772,13 @@ async function fullSyncFromCloud(tenantId) {
             row.age_restriction == null ? null : Number(row.age_restriction),
             row.is_service ? 1 : 0,
             row.default_quantity === false ? 0 : 1,
+            Object.prototype.hasOwnProperty.call(row, 'track_lot') && row.track_lot != null
+              ? row.track_lot === true || Number(row.track_lot) === 1
+                ? 1
+                : 0
+              : localTrackLotByCloudId.get(cloudId) === 1
+                ? 1
+                : 0,
             Number(row.stock_quantity ?? 0),
             Number(row.min_stock ?? 0),
             row.color ?? null,
@@ -1818,13 +1848,15 @@ async function fullSyncFromCloud(tenantId) {
         if (!profileId || profileId !== scopedTenantId) continue;
         const profileTs = normalizeTimestamp(row.updated_at || row.created_at) || new Date().toISOString();
         await run(
-          `INSERT OR REPLACE INTO tenant_profile (id, name, nuit, license_type, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO tenant_profile (id, name, nuit, license_type, vertical, capabilities_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             profileId,
             row.name ?? 'Loja',
             row.nuit ?? null,
             row.license_type ?? 'BASIC',
+            row.vertical ?? null,
+            row.capabilities_json ?? null,
             normalizeTimestamp(row.created_at) || profileTs,
             profileTs,
           ]
@@ -2466,6 +2498,7 @@ async function syncProduct(payload) {
     age_restriction: payload.age_restriction == null ? null : Number(payload.age_restriction),
     is_service: payload.is_service ? true : false,
     default_quantity: payload.default_quantity === false ? false : true,
+    track_lot: payload.track_lot === true || payload.trackLot === true || Number(payload.track_lot) === 1,
     color: payload.color ?? null,
     image: payload.image ?? null,
     deleted: isDeleted ? 1 : 0,
@@ -2474,7 +2507,17 @@ async function syncProduct(payload) {
   };
 
   const { error } = await supabase.from('products').upsert(mapped, { onConflict: 'id' });
-  if (error) throw error;
+  if (error) {
+    const msg = String(error.message || error.details || '');
+    // Cloud ainda sem coluna track_lot: repetir sem o campo.
+    if (/track_lot/i.test(msg)) {
+      const { track_lot: _omit, ...withoutTrackLot } = mapped;
+      const retry = await supabase.from('products').upsert(withoutTrackLot, { onConflict: 'id' });
+      if (retry.error) throw retry.error;
+      return;
+    }
+    throw error;
+  }
 }
 
 async function syncCategory(payload) {

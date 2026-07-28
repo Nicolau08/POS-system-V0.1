@@ -64,6 +64,9 @@ export function PaymentModal({
   onToggleReceiptPrint,
   formatPrice,
   docType,
+  title,
+  contextLabel,
+  hideReceiptPrint = false,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -96,7 +99,12 @@ export function PaymentModal({
   isReceiptPrintEnabled: boolean;
   onToggleReceiptPrint: () => void;
   formatPrice: (value: number) => string;
-  docType: 'VD' | 'TK' | 'FP' | 'FT';
+  docType: 'VD' | 'TK' | 'FP' | 'FT' | 'FTF';
+  /** Título opcional (ex.: pagamento de documento em Gestão). */
+  title?: string;
+  /** Substitui a linha «Mesa: …» (ex.: número do documento). */
+  contextLabel?: string;
+  hideReceiptPrint?: boolean;
 }) {
   const isProforma = docType === 'FP';
   const receivedRaw = (receivedAmount ?? '').trim();
@@ -116,10 +124,12 @@ export function PaymentModal({
     (Number.isFinite(receivedParsed) && receivedParsed >= total);
 
   const canFinalize = isProforma
-    ? cart.length > 0
+    ? cart.length > 0 || total > 0
     : ((!isMultiplePayment && !!paymentMethod && cashInputAllowed) || (isMultiplePayment && totalPago >= total));
 
   const enabledMethods = paymentMethods.filter((method) => method.enabled);
+  const modalTitle = title || (isProforma ? 'Salvar Proforma' : 'Finalizar Pagamento');
+  const secondaryContext = contextLabel || `Mesa: ${tableNumber || 'N/A'}`;
 
   return (
     <AnimatePresence>
@@ -135,24 +145,26 @@ export function PaymentModal({
             <div className="p-4 border-b border-zinc-800 bg-zinc-900/50">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-xl font-bold text-white">{isProforma ? 'Salvar Proforma' : 'Finalizar Pagamento'}</h3>
+                  <h3 className="text-xl font-bold text-white">{modalTitle}</h3>
                   <div className="flex gap-4 mt-2 text-xs text-zinc-500">
                     <span className="flex items-center gap-1"><User size={12} /> {selectedCustomer ? selectedCustomer.name : (customerName || 'Consumidor Final')}</span>
-                    <span className="flex items-center gap-1"><Monitor size={12} /> Mesa: {tableNumber || 'N/A'}</span>
+                    <span className="flex items-center gap-1"><Monitor size={12} /> {secondaryContext}</span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={onToggleReceiptPrint}
-                  title={isReceiptPrintEnabled ? 'Impressão de recibo ativada' : 'Impressão de recibo desativada'}
-                  className={`w-14 h-12 rounded border flex items-center justify-center transition-colors ${
-                    isReceiptPrintEnabled
-                      ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-                      : 'bg-red-600/30 border-red-500 text-red-400 hover:bg-red-600/40'
-                  }`}
-                >
-                  <Printer size={20} />
-                </button>
+                {!hideReceiptPrint ? (
+                  <button
+                    type="button"
+                    onClick={onToggleReceiptPrint}
+                    title={isReceiptPrintEnabled ? 'Impressão de recibo ativada' : 'Impressão de recibo desativada'}
+                    className={`w-14 h-12 rounded border flex items-center justify-center transition-colors ${
+                      isReceiptPrintEnabled
+                        ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                        : 'bg-red-600/30 border-red-500 text-red-400 hover:bg-red-600/40'
+                    }`}
+                  >
+                    <Printer size={20} />
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -197,7 +209,7 @@ export function PaymentModal({
                 ) : null}
                 {isProforma ? (
                   <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                    Cotação / fatura proforma: não move caixa nem estoque. Pode ser convertida numa venda depois.
+                    Cotação / fatura proforma: não move caixa nem stock. Pode ser convertida numa venda depois.
                   </div>
                 ) : null}
                 {!isProforma && (

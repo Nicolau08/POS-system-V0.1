@@ -7,8 +7,10 @@ import {
   createLocationTableApi,
   deleteLocationApi,
   fetchLocations,
+  fetchWarehouses,
   updateLocationApi,
   type PosLocation,
+  type PosWarehouse,
 } from '@/lib/services/posService';
 import { formatTablesRange } from '@/lib/tableRange';
 import PosSelect from '@/components/PosSelect';
@@ -21,6 +23,8 @@ const LOCATION_TYPES = [
   { value: 'delivery', label: 'Delivery' },
   { value: 'other', label: 'Outro' },
 ];
+
+const DEFAULT_WAREHOUSE_OPTION = '__default__';
 
 function DarkInput({
   value,
@@ -49,8 +53,13 @@ function locationTablesSummary(location: PosLocation): string {
   return formatTablesRange(location.tables.map((t) => t.name));
 }
 
+function warehouseSelectValue(warehouseId: string | null | undefined): string {
+  return warehouseId ? String(warehouseId) : DEFAULT_WAREHOUSE_OPTION;
+}
+
 export function LocationsSettingsPanel() {
   const [locations, setLocations] = useState<PosLocation[]>([]);
+  const [warehouses, setWarehouses] = useState<PosWarehouse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -58,16 +67,28 @@ export function LocationsSettingsPanel() {
   const [newType, setNewType] = useState('dining');
   const [newCode, setNewCode] = useState('');
   const [newTablesSpec, setNewTablesSpec] = useState('');
+  const [newWarehouseId, setNewWarehouseId] = useState(DEFAULT_WAREHOUSE_OPTION);
   const [editSpecs, setEditSpecs] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const warehouseOptions = [
+    { value: DEFAULT_WAREHOUSE_OPTION, label: 'Armazém principal (default)' },
+    ...warehouses
+      .filter((w) => w.isActive)
+      .map((w) => ({
+        value: w.id,
+        label: w.isDefault ? `${w.name} (principal)` : w.name,
+      })),
+  ];
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const rows = await fetchLocations();
+      const [rows, whRows] = await Promise.all([fetchLocations(), fetchWarehouses()]);
       setLocations(rows);
+      setWarehouses(whRows);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao carregar locais.');
       setLocations([]);
@@ -101,11 +122,13 @@ export function LocationsSettingsPanel() {
         active: true,
         tablesSpec: newTablesSpec.trim() || undefined,
         allowCustomNames: false,
+        warehouseId: newWarehouseId === DEFAULT_WAREHOUSE_OPTION ? null : newWarehouseId,
       });
       setNewName('');
       setNewCode('');
       setNewType('dining');
       setNewTablesSpec('');
+      setNewWarehouseId(DEFAULT_WAREHOUSE_OPTION);
       await refresh();
       flash('Local criado.');
     } catch (err) {
@@ -144,6 +167,22 @@ export function LocationsSettingsPanel() {
     }
   };
 
+  const handleWarehouseChange = async (location: PosLocation, value: string) => {
+    setBusyId(`wh-${location.id}`);
+    setError('');
+    try {
+      await updateLocationApi(location.id, {
+        warehouseId: value === DEFAULT_WAREHOUSE_OPTION ? null : value,
+      });
+      await refresh();
+      flash('Armazém de stock actualizado.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao actualizar armazém.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleDelete = async (location: PosLocation) => {
     if (!window.confirm(`Apagar o local «${location.name}» e as suas mesas?`)) return;
     setBusyId(location.id);
@@ -167,11 +206,6 @@ export function LocationsSettingsPanel() {
     setBusyId(`table-${location.id}`);
     setError('');
     try {
-      // Substitui: apagar local tables via re-create by deleting each is heavy;
-      // API addTablesFromSpec ignores duplicates — for replace we need clear first.
-      // Use delete location tables by recreating: call delete each via API is N calls.
-      // Simpler: deleteLocation + create is bad. Add replace endpoint? For now:
-      // delete all tables then add — use existing delete per table in a batch via fetch.
       const { deleteLocationTableApi } = await import('@/lib/services/posService');
       for (const table of location.tables) {
         await deleteLocationTableApi(table.id);
@@ -232,6 +266,20 @@ export function LocationsSettingsPanel() {
                 triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
               />
             </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-zinc-500">Armazém de stock</label>
+            <PosSelect
+              value={newWarehouseId}
+              onChange={setNewWarehouseId}
+              options={warehouseOptions}
+              size="md"
+              triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Vendas neste local debitam stock deste armazém. Se escolher o principal, segue o default
+              das configurações de Armazéns.
+            </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
             <div>
@@ -295,6 +343,22 @@ export function LocationsSettingsPanel() {
                       <Trash2 size={15} />
                     </button>
                   </div>
+                </div>
+
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs text-zinc-500">Armazém de stock</label>
+                  <PosSelect
+                    value={warehouseSelectValue(location.warehouseId)}
+                    onChange={(value) => void handleWarehouseChange(location, value)}
+                    options={warehouseOptions}
+                    size="md"
+                    triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+                    disabled={busyId === `wh-${location.id}`}
+                  />
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Vendas neste local debitam stock deste armazém. Se escolher o principal, segue o
+                    default das configurações de Armazéns.
+                  </p>
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-3">
@@ -364,7 +428,8 @@ export function LocationsSettingsPanel() {
                   <div>
                     <p className="text-sm text-zinc-200">Dar nome às mesas</p>
                     <p className="text-xs text-zinc-500">
-                      No front office, ao clicar na mesa pede um nome. Enter vazio = abre só com o número.
+                      No front office, ao clicar na mesa pede um nome. Enter vazio = abre só com o
+                      número.
                     </p>
                   </div>
                   <PosSwitch

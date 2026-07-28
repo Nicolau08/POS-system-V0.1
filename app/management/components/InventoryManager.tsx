@@ -5,15 +5,27 @@ import {
   RotateCcw, History, Printer, FileText, FileSpreadsheet, 
   PackagePlus, Zap, HelpCircle, Search, ChevronRight, ChevronLeft,
   ChevronDown, Folder, Loader2, AlertCircle, Delete, CornerDownLeft, X,
-  CalendarDays, Check
+  CalendarDays, Check, ArrowLeftRight
 } from 'lucide-react';
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import {
+  getCachedCategories,
+  getCachedWarehouses,
+  getPosCatalogCache,
+  patchPosCatalogCache,
+  setCachedCategories,
+  setCachedWarehouses,
+} from '@/lib/posSessionCache';
 import { formatMoneyMt } from '@/lib/currency';
-import { setStockCountedQuantity } from '@/lib/services/posService';
+import { calcMargin } from '@/lib/margin';
+import { usePermissions } from '@/hooks/usePermissions';
+import { setStockCountedQuantity, fetchWarehouses, type PosWarehouse } from '@/lib/services/posService';
 import PurchaseStockModal from '@/app/management/components/PurchaseStockModal';
-import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
+import TransferStockModal from '@/app/management/components/TransferStockModal';
+import { ManagementToolbarButton, ManagementToolbarDivider } from '@/components/ManagementToolbarButton';
+import PosSelect from '@/components/PosSelect';
 
 interface Product {
   id: string;
@@ -26,8 +38,11 @@ interface Product {
   final_price?: number;
   unit?: string;
   stock_quantity: number;
+  warehouse_quantity?: number | null;
   is_service?: boolean;
   product_kind?: 'simple' | 'composed' | 'ingredient' | 'service';
+  track_lot?: boolean;
+  tax_rate_id?: string | null;
   categories?: {
     name: string;
   };
@@ -47,6 +62,7 @@ interface ProductHistoryRow {
   document_number: string | null;
   document_id: string | null;
   customer_name: string;
+  warehouse_name?: string | null;
   quantity: number;
   quantity_abs: number;
   unit_price: number;
@@ -55,9 +71,17 @@ interface ProductHistoryRow {
 }
 
 export default function InventoryManager() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { can } = usePermissions();
+  const canSeeCost = can('estoque.ver_preco_custo');
+  const [products, setProducts] = useState<Product[]>(
+    () => (getPosCatalogCache()?.products as Product[] | undefined) ?? []
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => (getCachedCategories() as Category[] | null) ?? []
+  );
+  const [loading, setLoading] = useState(
+    () => !getPosCatalogCache()?.products?.length && !getCachedCategories()?.length
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
@@ -82,6 +106,12 @@ export default function InventoryManager() {
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [warehouses, setWarehouses] = useState<PosWarehouse[]>(
+    () => getCachedWarehouses() ?? []
+  );
+  const [filterWarehouseId, setFilterWarehouseId] = useState('');
+  const [quickWarehouseId, setQuickWarehouseId] = useState('');
   const [quickValue, setQuickValue] = useState('0');
   const [quickOverwrite, setQuickOverwrite] = useState(true);
   const [quickSaving, setQuickSaving] = useState(false);
@@ -95,17 +125,42 @@ export default function InventoryManager() {
 
   const formatPrice = (value: number) => formatMoneyMt(Number(value ?? 0));
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (warehouseId?: string) => {
+    const whParam = warehouseId ?? filterWarehouseId;
+    const hasCache =
+      !whParam &&
+      (Boolean(getPosCatalogCache()?.products?.length) || Boolean(getCachedCategories()?.length));
+    if (!hasCache) setLoading(true);
     try {
-      const [catRes, prodRes] = await Promise.all([
-        fetch(`${getPosApiBase()}/categorias`),
-        fetch(`${getPosApiBase()}/produtos`)
+      const authHeaders = getPosUserAuthHeaders();
+      const productsUrl = whParam
+        ? `${getPosApiBase()}/produtos?warehouseId=${encodeURIComponent(whParam)}`
+        : `${getPosApiBase()}/produtos`;
+      const [catRes, prodRes, whRows] = await Promise.all([
+        fetch(`${getPosApiBase()}/categorias`, { headers: { ...authHeaders } }),
+        fetch(productsUrl, { headers: { ...authHeaders } }),
+        fetchWarehouses().catch(() => [] as PosWarehouse[]),
       ]);
       const catData = unwrapApiSuccessPayload<any[]>(await catRes.json());
       const prodData = unwrapApiSuccessPayload<any[]>(await prodRes.json());
       setCategories(catData || []);
       setProducts(prodData || []);
+      const activeWh = (whRows || []).filter((w) => w.isActive);
+      setWarehouses(activeWh);
+      setCachedCategories(catData || []);
+      setCachedWarehouses(activeWh);
+      if (!whParam) {
+        patchPosCatalogCache({ products: (prodData || []) as any });
+      }
+      if (!filterWarehouseId) {
+        const def = activeWh.find((w) => w.isDefault) || activeWh[0];
+        if (def) {
+          setFilterWarehouseId(def.id);
+          setQuickWarehouseId(def.id);
+        }
+      } else if (!quickWarehouseId) {
+        setQuickWarehouseId(filterWarehouseId);
+      }
     } catch (error) {
       console.error('Error fetching inventory data:', error);
     } finally {
@@ -114,8 +169,15 @@ export default function InventoryManager() {
   };
 
   useEffect(() => {
-    fetchData();
+    void fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!filterWarehouseId) return;
+    void fetchData(filterWarehouseId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterWarehouseId]);
 
   useEffect(() => {
     if (!isPeriodModalOpen) return;
@@ -236,6 +298,16 @@ export default function InventoryManager() {
       return matchesSearch && matchesCategory && matchesFilter;
     });
   }, [products, searchQuery, selectedCategory, filterNegative, filterNonZero, filterZero]);
+
+  const stockSelectableProducts = useMemo(
+    () =>
+      products.filter(
+        (p) =>
+          !p.is_service &&
+          (p.product_kind ?? 'simple') !== 'composed'
+      ),
+    [products],
+  );
 
   const stats = useMemo(() => {
     const stockProducts = products.filter((p) => !p.is_service);
@@ -372,7 +444,7 @@ export default function InventoryManager() {
       (selectedProduct.product_kind ?? 'simple') === 'composed' ||
       (selectedProduct.product_kind ?? 'simple') === 'service'
     ) {
-      window.alert('Este produto está marcado como serviço (sem controlo de estoque).');
+      window.alert('Este produto está marcado como serviço (sem controlo de stock).');
       return;
     }
     setQuickValue(String(selectedProduct.stock_quantity ?? 0));
@@ -432,17 +504,27 @@ export default function InventoryManager() {
     setQuickSaving(true);
     setQuickError('');
     try {
-      const result = await setStockCountedQuantity(selectedProductId, counted) as {
+      const result = await setStockCountedQuantity(
+        selectedProductId,
+        counted,
+        quickWarehouseId || filterWarehouseId || null,
+      ) as {
         stock_after?: number;
+        warehouse_qty_after?: number;
         unchanged?: boolean;
         error?: string;
       };
       if (result?.error) throw new Error(result.error);
       const stockAfter = Number(result?.stock_after);
+      const whAfter = Number(result?.warehouse_qty_after);
       setProducts((prev) =>
         prev.map((p) =>
           String(p.id) === String(selectedProductId)
-            ? { ...p, stock_quantity: Number.isFinite(stockAfter) ? stockAfter : counted }
+            ? {
+                ...p,
+                stock_quantity: Number.isFinite(stockAfter) ? stockAfter : counted,
+                warehouse_quantity: Number.isFinite(whAfter) ? whAfter : counted,
+              }
             : p,
         ),
       );
@@ -452,7 +534,7 @@ export default function InventoryManager() {
     } finally {
       setQuickSaving(false);
     }
-  }, [quickSaving, quickValue, selectedProductId]);
+  }, [quickSaving, quickValue, selectedProductId, quickWarehouseId, filterWarehouseId]);
 
   useEffect(() => {
     if (!isQuickOpen) return;
@@ -495,6 +577,8 @@ export default function InventoryManager() {
         return 'Regularização';
       case 'inventario':
         return 'Inventário rápido';
+      case 'transferencia':
+        return 'Transferência';
       case 'fatura':
         return 'Fatura (dívida)';
       default:
@@ -506,8 +590,26 @@ export default function InventoryManager() {
     <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
       {/* Toolbar */}
       <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
+        {isPurchaseOpen ? (
+          <>
+            <ManagementToolbarButton
+              icon={<ChevronLeft size={20} />}
+              label="Voltar"
+              onClick={() => setIsPurchaseOpen(false)}
+            />
+            <ManagementToolbarDivider />
+            <ManagementToolbarButton
+              icon={<PackagePlus size={20} />}
+              label="Compra"
+              active
+            />
+            <div className="ml-auto" />
+            <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
+          </>
+        ) : (
+          <>
         <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
-        <div className="w-px h-8 bg-zinc-800 mx-2" />
+        <ManagementToolbarDivider />
         <ManagementToolbarButton
           icon={<History size={20} />}
           label="Histórico"
@@ -519,6 +621,12 @@ export default function InventoryManager() {
           icon={<PackagePlus size={20} />}
           label="Compra"
           onClick={() => setIsPurchaseOpen(true)}
+          active={isPurchaseOpen}
+        />
+        <ManagementToolbarButton
+          icon={<ArrowLeftRight size={20} />}
+          label="Transferir"
+          onClick={() => setIsTransferOpen(true)}
         />
         <ManagementToolbarButton
           icon={<Zap size={20} />}
@@ -532,14 +640,43 @@ export default function InventoryManager() {
           }
           title={!selectedProductId ? 'Selecione um produto primeiro' : undefined}
         />
-        <div className="w-px h-8 bg-zinc-800 mx-2" />
+        <div className="ml-auto flex min-w-[200px] items-center gap-2 px-2">
+          <span className="whitespace-nowrap text-[10px] font-bold uppercase text-zinc-500">Armazém</span>
+          <PosSelect
+            value={filterWarehouseId}
+            onChange={(value) => {
+              setFilterWarehouseId(value);
+              setQuickWarehouseId(value);
+            }}
+            options={warehouses.map((w) => ({
+              value: w.id,
+              label: w.isDefault ? `${w.name} (principal)` : w.name,
+            }))}
+            size="sm"
+            triggerClassName="!h-8 !bg-[#171717] !border-zinc-700"
+          />
+        </div>
+        <ManagementToolbarDivider />
         <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" />
         <ManagementToolbarButton icon={<FileText size={20} />} label="PDF" />
         <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Excel" />
-        <div className="w-px h-8 bg-zinc-800 mx-2" />
+        <ManagementToolbarDivider />
         <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
+          </>
+        )}
       </div>
 
+      {isPurchaseOpen ? (
+        <PurchaseStockModal
+          isOpen={isPurchaseOpen}
+          onClose={() => setIsPurchaseOpen(false)}
+          products={stockSelectableProducts}
+          initialProductId={selectedProductId}
+          onSaved={async () => {
+            await fetchData();
+          }}
+        />
+      ) : (
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar Tree */}
         <div 
@@ -649,11 +786,17 @@ export default function InventoryManager() {
                 <tr className="border-b border-[#0001fb]/70">
                   <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Código</th>
                   <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap">Nome</th>
-                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Quantidade</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">No armazém</th>
+                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Total</th>
                   <th className="px-3 py-2 text-center text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Unidade</th>
                   <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Preço</th>
-                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo</th>
-                  <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo inc...</th>
+                  {canSeeCost ? (
+                    <>
+                      <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo méd.</th>
+                      <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Margem %</th>
+                      <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Custo inc...</th>
+                    </>
+                  ) : null}
                   <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Total</th>
                   <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">Total incl...</th>
                 </tr>
@@ -661,10 +804,10 @@ export default function InventoryManager() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-20 text-center">
+                    <td colSpan={10} className="py-20 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 size={24} className="text-blue-500 animate-spin" />
-                        <span className="text-xs text-zinc-500">Carregando estoque...</span>
+                        <span className="text-xs text-zinc-500">Carregando stock...</span>
                       </div>
                     </td>
                   </tr>
@@ -713,12 +856,30 @@ export default function InventoryManager() {
                         </div>
                       </td>
                       <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">
+                        {p.is_service
+                          ? '—'
+                          : p.warehouse_quantity != null
+                            ? p.warehouse_quantity
+                            : p.stock_quantity}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">
                         {p.is_service ? '—' : p.stock_quantity}
                       </td>
                       <td className="px-3 py-2 text-xs text-zinc-400 text-center whitespace-nowrap">{p.unit || 'un'}</td>
                       <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(p.price)}</td>
-                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
-                      <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
+                      {canSeeCost ? (
+                        <>
+                          <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(p.cost || 0)}</td>
+                          <td
+                            className={`px-3 py-2 text-xs text-right whitespace-nowrap ${
+                              calcMargin(p.price, p.cost || 0).percent < 0 ? 'text-amber-400' : 'text-zinc-400'
+                            }`}
+                          >
+                            {calcMargin(p.final_price || p.price, p.cost || 0).percent.toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
+                        </>
+                      ) : null}
                       <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>
                       <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">{formatPrice((p.final_price || p.price) * Math.abs(p.stock_quantity))}</td>
                     </tr>
@@ -729,42 +890,50 @@ export default function InventoryManager() {
           </div>
 
           {/* Footer */}
-          <div className="h-20 bg-[#141414] border-t border-zinc-800 flex items-center justify-end px-8 gap-12">
-            <div className="text-right">
-              <p className="text-[12px] font-bold text-zinc-500 capitalize">Preço de custo</p>
-              <div className="grid grid-cols-[auto_100px] items-center gap-x-4 mt-1">
-                <span className="text-xs text-zinc-400">Custo total:</span>
-                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalCost)}</span>
+          <div className="h-auto min-h-20 bg-[#141414] border-t border-zinc-800 flex items-center justify-end px-8 py-3 gap-14">
+            {canSeeCost ? (
+              <div className="min-w-[200px] text-right text-white tabular-nums">
+                <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                  Preço de custo
+                </p>
+                <div className="inline-grid grid-cols-[auto_auto] items-baseline gap-x-3 gap-y-0.5 text-right">
+                  <span className="text-sm text-zinc-300">Valor sem imposto:</span>
+                  <span className="text-sm font-semibold">{formatPrice(stats.totalCost)}</span>
+                  <span className="text-sm text-zinc-300">Imposto:</span>
+                  <span className="text-sm font-semibold">
+                    {formatPrice(Math.max(0, stats.totalCostWithTax - stats.totalCost))}
+                  </span>
+                  <span className="col-span-2 my-1 border-t border-zinc-500" />
+                  <span className="text-base font-bold">Total:</span>
+                  <span className="text-base font-bold">{formatPrice(stats.totalCostWithTax)}</span>
+                </div>
               </div>
-              <div className="grid grid-cols-[auto_100px] items-center gap-x-4">
-                <span className="text-xs text-zinc-400">Custo total incl. imposto:</span>
-                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalCostWithTax)}</span>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className="text-[12px] font-bold text-zinc-500 capitalize">Preço de venda</p>
-              <div className="grid grid-cols-[auto_100px] items-center gap-x-4 mt-1">
-                <span className="text-xs text-zinc-400">Total:</span>
-                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalSales)}</span>
-              </div>
-              <div className="grid grid-cols-[auto_100px] items-center gap-x-4">
-                <span className="text-xs text-zinc-400">Total incl. impostos:</span>
-                <span className="text-xs font-bold text-white text-right">{formatPrice(stats.totalSalesWithTax)}</span>
+            ) : null}
+            <div className="min-w-[200px] text-right text-white tabular-nums">
+              <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                Preço de venda
+              </p>
+              <div className="inline-grid grid-cols-[auto_auto] items-baseline gap-x-3 gap-y-0.5 text-right">
+                <span className="text-sm text-zinc-300">Valor sem imposto:</span>
+                <span className="text-sm font-semibold">{formatPrice(stats.totalSales)}</span>
+                <span className="text-sm text-zinc-300">Imposto:</span>
+                <span className="text-sm font-semibold">
+                  {formatPrice(Math.max(0, stats.totalSalesWithTax - stats.totalSales))}
+                </span>
+                <span className="col-span-2 my-1 border-t border-zinc-500" />
+                <span className="text-base font-bold">Total:</span>
+                <span className="text-base font-bold">{formatPrice(stats.totalSalesWithTax)}</span>
               </div>
             </div>
           </div>
         </div>
       </div>
+      )}
 
-      <PurchaseStockModal
-        isOpen={isPurchaseOpen}
-        onClose={() => setIsPurchaseOpen(false)}
-        products={products.filter(
-          (p) =>
-            !p.is_service &&
-            (p.product_kind ?? 'simple') !== 'composed'
-        )}
-        initialProductId={selectedProductId}
+      <TransferStockModal
+        isOpen={isTransferOpen}
+        onClose={() => setIsTransferOpen(false)}
+        products={stockSelectableProducts}
         onSaved={async () => {
           await fetchData();
         }}
@@ -774,20 +943,40 @@ export default function InventoryManager() {
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-[420px] overflow-hidden rounded border border-zinc-700 bg-[#1a1a1a] shadow-2xl">
             <div className="border-b border-zinc-700 px-5 py-4">
-              <h2 className="text-base font-bold text-zinc-100">Atualizar quantidade de estoque</h2>
+              <h2 className="text-base font-bold text-zinc-100">Atualizar quantidade de stock</h2>
               <p className="mt-2 text-xs leading-snug text-zinc-400">
-                Defina as quantidades em estoque para o produto selecionado. O documento de contagem de
-                estoque será criado automaticamente.
+                Defina as quantidades em stock para o produto selecionado. O documento de contagem de
+                stock será criado automaticamente.
               </p>
               <p className="mt-3 text-xs font-medium text-zinc-200">
                 {selectedProduct.name}
                 <span className="ml-2 font-normal text-zinc-500">
-                  (actual: {Number(selectedProduct.stock_quantity ?? 0).toLocaleString(undefined, {
+                  (armazém:{' '}
+                  {Number(
+                    selectedProduct.warehouse_quantity ?? selectedProduct.stock_quantity ?? 0,
+                  ).toLocaleString(undefined, { maximumFractionDigits: 3 })}{' '}
+                  {selectedProduct.unit || 'un'} · total:{' '}
+                  {Number(selectedProduct.stock_quantity ?? 0).toLocaleString(undefined, {
                     maximumFractionDigits: 3,
-                  })}{' '}
-                  {selectedProduct.unit || 'un'})
+                  })}
+                  )
                 </span>
               </p>
+            </div>
+
+            <div className="px-5 pt-3">
+              <label className="mb-1 block text-[10px] font-bold uppercase text-zinc-500">
+                Armazém
+              </label>
+              <PosSelect
+                value={quickWarehouseId || filterWarehouseId}
+                onChange={setQuickWarehouseId}
+                options={warehouses.map((w) => ({
+                  value: w.id,
+                  label: w.isDefault ? `${w.name} (principal)` : w.name,
+                }))}
+                size="md"
+              />
             </div>
 
             <div className="px-5 pt-4">
@@ -881,7 +1070,7 @@ export default function InventoryManager() {
                 </div>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-bold tracking-wide text-zinc-100">
-                    Histórico do estoque
+                    Histórico do stock
                   </h2>
                   <p className="truncate text-[11px] text-zinc-500">
                     {selectedProduct?.name ?? 'Produto'}
@@ -935,6 +1124,7 @@ export default function InventoryManager() {
                     <HistoryTh>Tipo de documento</HistoryTh>
                     <HistoryTh>Documento</HistoryTh>
                     <HistoryTh>Entidade</HistoryTh>
+                    <HistoryTh>Armazém</HistoryTh>
                     <HistoryTh>Data</HistoryTh>
                     <HistoryTh className="text-right">Quantidade</HistoryTh>
                     <HistoryTh className="text-right">Stock antes</HistoryTh>
@@ -946,7 +1136,7 @@ export default function InventoryManager() {
                 <tbody>
                   {historyLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
+                      <td colSpan={10} className="px-3 py-10 text-center text-zinc-500">
                         <span className="inline-flex items-center gap-2">
                           <Loader2 size={14} className="animate-spin text-[#0001fb]" />
                           Carregando histórico...
@@ -961,7 +1151,7 @@ export default function InventoryManager() {
                     </tr>
                   ) : historyRowsWithStock.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
+                      <td colSpan={10} className="px-3 py-10 text-center text-zinc-500">
                         Nenhum movimento encontrado para este período.
                       </td>
                     </tr>
@@ -982,6 +1172,7 @@ export default function InventoryManager() {
                               : '-'}
                         </HistoryTd>
                         <HistoryTd>{row.customer_name || 'Consumidor final'}</HistoryTd>
+                        <HistoryTd>{row.warehouse_name || '—'}</HistoryTd>
                         <HistoryTd>
                           {row.date
                             ? new Date(row.date).toLocaleString('pt-PT', {
@@ -1210,7 +1401,7 @@ function formatPeriodDate(value: string | null | undefined) {
 }
 
 function monthLabel(value: string) {
-  return new Date(`${value}T00:00:00`).toLocaleDateString('en-US', {
+  return new Date(`${value}T00:00:00`).toLocaleDateString('pt-PT', {
     month: 'long',
     year: 'numeric',
   });
@@ -1273,20 +1464,23 @@ function HistoryCalendarGrid({
   selectedValue: string;
   onSelect: (value: string) => void;
 }) {
-  const weekDays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+  const weekDays = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
   const days = buildCalendarDays(monthValue);
   const todayValue = todayInputValue();
 
   return (
     <div>
-      <div className="grid grid-cols-7 gap-2 mb-3">
+      <div className="mb-2 grid grid-cols-7 gap-1">
         {weekDays.map((day) => (
-          <div key={day} className="text-center text-sm font-bold text-white py-1">
+          <div
+            key={day}
+            className="flex h-7 min-w-0 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-zinc-400"
+          >
             {day}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-1">
         {days.map((day) => {
           const isSelected = day.value === selectedValue;
           const isToday = day.value === todayValue;
@@ -1295,7 +1489,7 @@ function HistoryCalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`w-full aspect-square rounded-xl text-sm transition-colors flex items-center justify-center ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday

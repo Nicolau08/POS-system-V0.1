@@ -119,7 +119,8 @@ export function LicenseGuardProvider({ children }: { children: ReactNode }) {
 
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
 
-  const [isCheckingLicense, setIsCheckingLicense] = useState(true);
+  // Não bloquear o arranque com ecrã «A validar…»; a verificação corre em fundo.
+  const [isCheckingLicense, setIsCheckingLicense] = useState(false);
 
   const initialCheckDoneRef = useRef(false);
 
@@ -204,7 +205,7 @@ export function LicenseGuardProvider({ children }: { children: ReactNode }) {
 
 
   useEffect(() => {
-    void refreshLicenseStatus({ syncRegistry: true });
+    void refreshLicenseStatus({ silent: true, syncRegistry: true });
 
 
 

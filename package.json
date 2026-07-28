@@ -28,7 +28,7 @@
     "electron-dist": "node scripts/electron-dist-pos.mjs",
     "electron-dist:pos": "npm run electron-dist",
     "test:e2e": "playwright test",
-    "test:unit": "node --test tests/unit/table-order-conflict.test.mjs tests/unit/db-encryption.test.mjs",
+    "test:unit": "node --test tests/unit/table-order-conflict.test.mjs tests/unit/db-encryption.test.mjs tests/unit/tenant-capabilities.test.mjs",
     "sync:revive-dead-sales": "node api/scripts/revive-dead-sale-queue.mjs",
     "sync:reset-sale-queue": "node api/scripts/reset-sale-queue.mjs",
     "stock:audit": "node api/scripts/stock-flow-audit.mjs",

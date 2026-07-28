@@ -9,6 +9,7 @@ import type {
   Product,
 } from '@/app/pos/types';
 import { clearSharedTableOrder } from '@/lib/sharedTableOrders';
+import { loadPosSettings } from '@/lib/posSettings';
 
 type TableOrderState = {
   cart: CartItem[];
@@ -116,6 +117,11 @@ export function useCartStockOps(opts: UseCartStockOpsOpts) {
 
     if (!product.is_service) {
       if (product.stock_quantity !== undefined && product.stock_quantity <= 0) {
+        if (loadPosSettings().allowNegativeStock) {
+          executeAddToCart(product);
+          setAllowStockOverrideOnCheckout(true);
+          return;
+        }
         setPendingProduct(product);
         setIsStockModalOpen(true);
         return;
@@ -171,11 +177,21 @@ export function useCartStockOps(opts: UseCartStockOpsOpts) {
 
       if (delta > 0) {
         if (currentStock < delta) {
+          if (loadPosSettings().allowNegativeStock) {
+            setProducts((prev) =>
+              prev.map((p) =>
+                p.id === id ? { ...p, stock_quantity: Number(p.stock_quantity ?? 0) - delta } : p,
+              ),
+            );
+            setAllowStockOverrideOnCheckout(true);
+            setCart((prev) => prev.map((row) => (row.id === id ? { ...row, quantity } : row)));
+            return;
+          }
           if (currentStock <= 0) {
             setPendingProduct(currentProduct ?? item);
             setIsStockModalOpen(true);
           } else {
-            showToast('Quantidade solicitada excede o estoque disponível.', 'error');
+            showToast('Quantidade solicitada excede o stock disponível.', 'error');
           }
           return;
         }

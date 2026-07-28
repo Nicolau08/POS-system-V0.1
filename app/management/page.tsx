@@ -16,6 +16,7 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   RotateCcw,
   Maximize2,
   Tag,
@@ -26,11 +27,18 @@ import {
   Loader2,
   KeyRound,
   ScrollText,
+  Truck,
 } from 'lucide-react';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
 import ReportsManager from './components/ReportsManager';
-import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders, clearPosAuthSession, isPosSessionActive } from '@/lib/apiBase';
+import {
+  getCachedDashboard,
+  getCachedPermissionRules,
+  setCachedDashboard,
+  setCachedPermissionRules,
+} from '@/lib/posSessionCache';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import SyncStatusPanel from './components/SyncStatusPanel';
 import CustomersSuppliersManager from './components/CustomersSuppliersManager';
@@ -42,6 +50,18 @@ import DocumentsManager from './components/DocumentsManager';
 import LicenseSerialManager from './components/LicenseSerialManager';
 import TaxRatesManager from './components/TaxRatesManager';
 import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
+import {
+  DOCUMENT_FILTER_BY_KIND,
+  DOCUMENTS_MENU_SECTIONS,
+  type DocumentsPartyKind,
+} from '@/app/management/documentsMenu';
+
+const DOCUMENTS_SECTION_ICONS: Record<DocumentsPartyKind, React.ReactNode> = {
+  clientes: <Users size={14} />,
+  fornecedores: <Truck size={14} />,
+  inventario: <Package size={14} />,
+  interno: <Building2 size={14} />,
+};
 
 // Dynamically import Recharts to avoid SSR issues
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -80,7 +100,7 @@ type RouteProps = {
 };
 
 export default function ManagementPage({ params, searchParams }: RouteProps) {
-  const SIDEBAR_EXPANDED_WIDTH = 240;
+  const SIDEBAR_EXPANDED_WIDTH = 260;
   const SIDEBAR_COLLAPSED_WIDTH = 56;
   use(params);
   use(searchParams);
@@ -89,11 +109,17 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarSelectedTab, setSidebarSelectedTab] = useState('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [docsSidebarExpanded, setDocsSidebarExpanded] = useState(false);
+  const [docsExpandedSection, setDocsExpandedSection] = useState<DocumentsPartyKind | null>(null);
+  const [docsSelectedKind, setDocsSelectedKind] = useState<DocumentsPartyKind | null>(null);
+  const [docsSelectedType, setDocsSelectedType] = useState<string | null>(null);
   const [isAuthRestored, setIsAuthRestored] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [permissionRules, setPermissionRules] = useState<Record<string, number> | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [permissionRules, setPermissionRules] = useState<Record<string, number> | null>(
+    () => getCachedPermissionRules()
+  );
+  const [isLoading, setIsLoading] = useState(() => !getCachedDashboard());
   const [isMounted, setIsMounted] = useState(false);
   const [currentDate, setCurrentDate] = useState('');
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
@@ -113,15 +139,32 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   };
 
   // Dashboard Data
-  const [monthlySalesData, setMonthlySalesData] = useState(initialMonthlySalesData);
-  const [totalSales, setTotalSales] = useState(0);
-  const [bestMonth, setBestMonth] = useState('---');
-  const [bestMonthValue, setBestMonthValue] = useState(0);
-  const [topProducts, setTopProducts] = useState<{name: string, sales: number, price: number}[]>([]);
-  const [topGroups, setTopGroups] = useState<{name: string, sales: number}[]>([]);
-  const [topCustomers, setTopCustomers] = useState<{name: string, total: number}[]>([]);
+  const [monthlySalesData, setMonthlySalesData] = useState(
+    () => getCachedDashboard()?.monthlySalesData ?? initialMonthlySalesData
+  );
+  const [totalSales, setTotalSales] = useState(() => getCachedDashboard()?.totalSales ?? 0);
+  const [bestMonth, setBestMonth] = useState(() => getCachedDashboard()?.bestMonth ?? '---');
+  const [bestMonthValue, setBestMonthValue] = useState(
+    () => getCachedDashboard()?.bestMonthValue ?? 0
+  );
+  const [topProducts, setTopProducts] = useState<{name: string, sales: number, price: number}[]>(
+    () => getCachedDashboard()?.topProducts ?? []
+  );
+  const [topGroups, setTopGroups] = useState<{name: string, sales: number}[]>(
+    () => getCachedDashboard()?.topGroups ?? []
+  );
+  const [topCustomers, setTopCustomers] = useState<{name: string, total: number}[]>(
+    () => getCachedDashboard()?.topCustomers ?? []
+  );
 
   const restoreAuthState = React.useCallback(() => {
+    if (!isPosSessionActive()) {
+      clearPosAuthSession();
+      setIsLoggedIn(false);
+      setCurrentUser(null);
+      return false;
+    }
+
     const savedLogin = localStorage.getItem('isLoggedIn');
     const savedUser = localStorage.getItem('currentUser');
     if (savedLogin === 'true' && savedUser) {
@@ -131,8 +174,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         return true;
       } catch (error) {
         console.error('Error restoring management session:', error);
-        localStorage.removeItem('currentUser');
-        localStorage.setItem('isLoggedIn', 'false');
+        clearPosAuthSession();
       }
     }
 
@@ -142,7 +184,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   }, []);
 
   const fetchDashboardData = React.useCallback(async (options?: { silent?: boolean }) => {
-    const silent = Boolean(options?.silent);
+    const silent = Boolean(options?.silent) || Boolean(getCachedDashboard());
     if (!silent) setIsLoading(true);
     try {
       const apiBase = getPosApiBase();
@@ -178,6 +220,16 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       setTopProducts(topProductsData);
       setTopCustomers(topCustomersData);
       setTopGroups(topGroupsData);
+      setCachedDashboard({
+        year: yearNow,
+        monthlySalesData: monthly,
+        totalSales: Number(summary?.totalSales ?? 0),
+        bestMonth: String(summary?.bestMonth ?? '---'),
+        bestMonthValue: Number(summary?.bestMonthValue ?? 0),
+        topProducts: topProductsData,
+        topGroups: topGroupsData,
+        topCustomers: topCustomersData,
+      });
 
     } catch (err: unknown) {
       const errorMessage =
@@ -194,6 +246,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       }
     } finally {
       if (!silent) setIsLoading(false);
+      else setIsLoading(false);
     }
   }, []);
 
@@ -229,9 +282,12 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           if (!row?.key) continue;
           normalized[String(row.key)] = Number(row.required_level ?? row.requiredLevel ?? 0);
         }
-        if (!cancelled) setPermissionRules(normalized);
+        if (!cancelled) {
+          setPermissionRules(normalized);
+          setCachedPermissionRules(normalized);
+        }
       } catch (e) {
-        if (!cancelled) setPermissionRules(null);
+        if (!cancelled && !getCachedPermissionRules()) setPermissionRules(null);
       }
     })();
 
@@ -290,7 +346,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
       { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
       { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
-      { id: 'inventory', icon: <History size={18} />, label: 'Estoque' },
+      { id: 'inventory', icon: <History size={18} />, label: 'Stock' },
       { id: 'reports', icon: <BarChart3 size={18} />, label: 'Relatórios' },
       { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
       { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
@@ -329,7 +385,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   );
 
   const sidebarItemsToRender = useMemo(() => {
-    if (!permissionRules) return sidebarItems;
+    // Enquanto as regras não chegam, não listar módulos — evita flash (visíveis → desaparecem).
+    if (!permissionRules) return [];
     return sidebarItems.filter((item) => {
       const permissionKey = sidebarPermissionKeyById[item.id as keyof typeof sidebarPermissionKeyById];
       if (!permissionKey) return true;
@@ -337,6 +394,15 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       return accessLevel >= requiredLevel;
     });
   }, [accessLevel, permissionRules, sidebarPermissionKeyById, sidebarItems]);
+
+  const isTabAllowed = React.useCallback(
+    (tabId: string) => {
+      if (!permissionRules) return false;
+      if (tabId === 'promos') return true;
+      return sidebarItemsToRender.some((item) => item.id === tabId);
+    },
+    [permissionRules, sidebarItemsToRender]
+  );
 
   useEffect(() => {
     if (!isPackagedDesktop) return;
@@ -346,7 +412,11 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
 
   useEffect(() => {
     if (!permissionRules) return;
-    if (!sidebarItemsToRender.some((item) => item.id === activeTab)) {
+    const allowedHiddenTabs = new Set(['promos']);
+    if (
+      !allowedHiddenTabs.has(activeTab) &&
+      !sidebarItemsToRender.some((item) => item.id === activeTab)
+    ) {
       setActiveTab(sidebarItemsToRender[0]?.id ?? 'dashboard');
     }
     if (!sidebarItemsToRender.some((item) => item.id === sidebarSelectedTab)) {
@@ -393,25 +463,11 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   };
 
   if (!isAuthRestored) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#1a1a1a] text-zinc-400">
-        <div className="flex items-center gap-3 text-sm">
-          <Loader2 size={18} className="animate-spin text-blue-500" />
-          Restaurando sessão...
-        </div>
-      </div>
-    );
+    return null;
   }
 
   if (!isLoggedIn) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#1a1a1a] text-zinc-400">
-        <div className="flex items-center gap-3 text-sm">
-          <Loader2 size={18} className="animate-spin text-blue-500" />
-          Redirecionando...
-        </div>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -435,7 +491,123 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           style={{ width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH }}
         >
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-2 custom-scrollbar">
-            {sidebarItemsToRender.map((item) => (
+            {sidebarItemsToRender.map((item) => {
+              if (item.id === 'docs') {
+                return (
+                  <div key={item.id} className="w-full">
+                    <button
+                      type="button"
+                      title={isSidebarCollapsed ? item.label : undefined}
+                      onClick={() => {
+                        if (isSidebarCollapsed) setIsSidebarCollapsed(false);
+                        const comingFromOther = sidebarSelectedTab !== 'docs';
+                        setActiveTab('docs');
+                        setSidebarSelectedTab('docs');
+                        if (comingFromOther) {
+                          setDocsSidebarExpanded(true);
+                          setDocsExpandedSection(null);
+                          setDocsSelectedType(null);
+                          setDocsSelectedKind(null);
+                        } else {
+                          setDocsSidebarExpanded((prev) => {
+                            if (prev) setDocsExpandedSection(null);
+                            return !prev;
+                          });
+                        }
+                      }}
+                      className={`w-full max-w-full flex items-center text-left text-sm transition-colors relative group overflow-hidden ${
+                        isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
+                      } ${
+                        docsSidebarExpanded || sidebarSelectedTab === 'docs'
+                          ? 'bg-[#0001fb] text-white'
+                          : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
+                      }`}
+                    >
+                      <div className="flex-shrink-0">{item.icon}</div>
+                      {!isSidebarCollapsed && (
+                        <>
+                          <span className="min-w-0 flex-1 truncate leading-none">{item.label}</span>
+                          <ChevronDown
+                            size={14}
+                            className={`shrink-0 transition-transform ${docsSidebarExpanded ? 'rotate-180' : ''}`}
+                          />
+                        </>
+                      )}
+                    </button>
+
+                    {!isSidebarCollapsed && docsSidebarExpanded && (
+                      <div>
+                        {DOCUMENTS_MENU_SECTIONS.map((section) => {
+                          const sectionOpen = docsExpandedSection === section.kind;
+                          return (
+                            <div key={section.kind} className="leading-none">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDocsExpandedSection((current) => {
+                                    if (current === section.kind) return null;
+                                    return section.kind;
+                                  });
+                                  // Ao mudar de categoria, limpa o item selecionado da anterior
+                                  if (docsSelectedKind != null && docsSelectedKind !== section.kind) {
+                                    setDocsSelectedKind(null);
+                                    setDocsSelectedType(null);
+                                  }
+                                }}
+                                className={`flex w-full items-center justify-between gap-2 px-5 py-2.5 pl-8 text-left text-[12px] font-semibold transition-colors ${
+                                  sectionOpen
+                                    ? 'bg-[#0000b8] text-white'
+                                    : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
+                                }`}
+                              >
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="shrink-0">{DOCUMENTS_SECTION_ICONS[section.kind]}</span>
+                                  <span className="truncate leading-none">{section.label}</span>
+                                </span>
+                                <ChevronDown
+                                  size={13}
+                                  className={`shrink-0 transition-transform ${sectionOpen ? 'rotate-180' : ''}`}
+                                />
+                              </button>
+                              {sectionOpen &&
+                                section.items.map((docItem) => {
+                                  const filterCode = DOCUMENT_FILTER_BY_KIND[section.kind][docItem];
+                                  const isActiveItem =
+                                    docsSelectedKind === section.kind &&
+                                    docsSelectedType === filterCode;
+                                  return (
+                                    <button
+                                      key={docItem}
+                                      type="button"
+                                      title={docItem}
+                                        onClick={() => {
+                                          setDocsSelectedKind(section.kind);
+                                          setDocsSelectedType(filterCode);
+                                          setDocsExpandedSection(section.kind);
+                                          setDocsSidebarExpanded(true);
+                                          setActiveTab('docs');
+                                          setSidebarSelectedTab('docs');
+                                        }}
+                                      className={`block w-full truncate px-5 py-2.5 pl-10 text-left text-[12px] leading-none transition-colors ${
+                                        isActiveItem
+                                          ? 'bg-[#0000b8] text-white'
+                                          : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200'
+                                      }`}
+                                    >
+                                      {docItem}
+                                    </button>
+                                  );
+                                })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
                 <button
                   key={item.id}
                   type="button"
@@ -443,6 +615,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                   onClick={() => {
                     setActiveTab(item.id);
                     setSidebarSelectedTab(item.id);
+                    setDocsSidebarExpanded(false);
                   }}
                   className={`w-full max-w-full flex items-center text-left text-sm transition-colors relative group overflow-hidden ${
                     isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
@@ -457,7 +630,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                     <span className="min-w-0 truncate leading-none">{item.label}</span>
                   )}
                 </button>
-            ))}
+              );
+            })}
           </div>
 
           <div className="border-t border-zinc-800/60 shrink-0 overflow-hidden">
@@ -494,7 +668,9 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
 
         {/* Main Content Area */}
         <main className={`flex-1 overflow-hidden bg-[#1a1a1a] flex flex-col custom-scrollbar`}>
-          {activeTab === 'dashboard' && (
+          {!permissionRules ? null : (
+            <>
+          {activeTab === 'dashboard' && isTabAllowed('dashboard') && (
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {isLoading ? (
                 <div className="h-full flex flex-col items-center justify-center gap-4">
@@ -633,19 +809,27 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
             </div>
           )}
 
-          {activeTab === 'products' && <ProductsManager />}
-          {activeTab === 'docs' && <DocumentsManager />}
-          {activeTab === 'inventory' && <InventoryManager />}
-          {activeTab === 'reports' && <ReportsManager />}
-          {activeTab === 'customers' && <CustomersSuppliersManager />}
-          {activeTab === 'payments' && <PaymentMethodsManager />}
-          {activeTab === 'security' && <UsersSecurityManager />}
-          {activeTab === 'logs' && <SystemLogsManager />}
-          {activeTab === 'license-serials' && !isPackagedDesktop && <LicenseSerialManager />}
-          {activeTab === 'company' && <MyCompanyManager />}
-          {activeTab === 'taxes' && <TaxRatesManager />}
+          {activeTab === 'products' && isTabAllowed('products') && <ProductsManager />}
+          {activeTab === 'docs' && isTabAllowed('docs') && (
+            <DocumentsManager
+              externalDocType={docsSelectedType}
+              externalPartyKind={docsSelectedKind}
+            />
+          )}
+          {activeTab === 'inventory' && isTabAllowed('inventory') && <InventoryManager />}
+          {activeTab === 'reports' && isTabAllowed('reports') && <ReportsManager />}
+          {activeTab === 'customers' && isTabAllowed('customers') && <CustomersSuppliersManager />}
+          {activeTab === 'payments' && isTabAllowed('payments') && <PaymentMethodsManager />}
+          {activeTab === 'security' && isTabAllowed('security') && <UsersSecurityManager />}
+          {activeTab === 'logs' && isTabAllowed('logs') && <SystemLogsManager />}
+          {activeTab === 'license-serials' &&
+            isTabAllowed('license-serials') &&
+            !isPackagedDesktop && <LicenseSerialManager />}
+          {activeTab === 'company' && isTabAllowed('company') && <MyCompanyManager />}
+          {activeTab === 'taxes' && isTabAllowed('taxes') && <TaxRatesManager />}
           
-          {activeTab !== 'dashboard' &&
+          {isTabAllowed(activeTab) &&
+            activeTab !== 'dashboard' &&
             activeTab !== 'products' &&
             activeTab !== 'docs' &&
             activeTab !== 'inventory' &&
@@ -661,6 +845,8 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
               <Package size={48} className="mb-4 opacity-20" />
               <p>Módulo {activeTab} em desenvolvimento</p>
             </div>
+          )}
+            </>
           )}
         </main>
       </div>
