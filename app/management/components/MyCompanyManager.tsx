@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, HelpCircle, FolderOpen, Eraser, AlertTriangle } from 'lucide-react';
+import { Check, HelpCircle, FolderOpen, Eraser, AlertTriangle, Plus, Pencil, Trash2 } from 'lucide-react';
 import type { CompanyProfile } from '@/app/pos/types';
 import { getPosApiBase } from '@/lib/apiBase';
 import {
@@ -9,13 +9,18 @@ import {
   saveCompanyProfile,
   resetDatabase,
 } from '@/lib/services/posService';
+import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
 import { ensureCompactReceiptLogo } from '@/lib/compressReceiptLogo';
-import PosSelect from '@/components/PosSelect';
 import DatabaseBackupPanel from '@/app/management/components/DatabaseBackupPanel';
-
-const COUNTRY_OPTIONS = [
-  { value: 'Moçambique', label: 'Moçambique' },
-];
+import { useCommerceProfile } from '@/lib/useCommerceProfile';
+import PosSelect from '@/components/PosSelect';
+import {
+  COMPANY_BANK_CURRENCY_OPTIONS,
+  createEmptyBankAccountDraft,
+  parseCompanyBankAccounts,
+  serializeCompanyBankAccounts,
+  type CompanyBankAccount,
+} from '@/lib/companyBankDetails';
 
 const emptyForm = (): CompanyProfile => ({
   name: '',
@@ -41,13 +46,25 @@ function FieldRow({
   label,
   children,
   required,
+  showDivider = true,
+  fixedLabelWidth = false,
 }: {
   label: string;
   children: React.ReactNode;
   required?: boolean;
+  showDivider?: boolean;
+  fixedLabelWidth?: boolean;
 }) {
+  const gridColsClass = fixedLabelWidth
+    ? 'grid grid-cols-1 sm:grid-cols-[220px_1fr]'
+    : 'grid grid-cols-1 sm:grid-cols-[minmax(160px,220px)_1fr]';
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-[minmax(160px,220px)_1fr] gap-x-4 gap-y-1 items-center border-b border-zinc-800/60 py-2.5">
+    <div
+      className={`${gridColsClass} gap-x-4 gap-y-1 items-center ${
+        showDivider ? 'border-b border-zinc-800/60 py-2.5' : 'py-2.5'
+      }`}
+    >
       <label className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
         {label}
         {required ? <span className="sr-only"> (obrigatório)</span> : null}
@@ -58,9 +75,20 @@ function FieldRow({
 }
 
 export default function MyCompanyManager() {
+  const { license } = useCommerceProfile();
   const [innerTab, setInnerTab] = useState<'dados' | 'backups' | 'reset'>('dados');
-  const [form, setForm] = useState<CompanyProfile>(emptyForm);
-  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState<CompanyProfile>(
+    () => getPosCatalogCache()?.companyProfile ?? emptyForm()
+  );
+  const [bankAccounts, setBankAccounts] = useState<CompanyBankAccount[]>(() => {
+    const cached = getPosCatalogCache()?.companyProfile;
+    return cached
+      ? parseCompanyBankAccounts(cached.bankDetails, cached.bankAccountNumber)
+      : [];
+  });
+  const [bankDraft, setBankDraft] = useState<CompanyBankAccount>(() => createEmptyBankAccountDraft());
+  const [editingBankId, setEditingBankId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(() => !getPosCatalogCache()?.companyProfile);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -73,23 +101,48 @@ export default function MyCompanyManager() {
   const [adminPassword, setAdminPassword] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const licenseName =
+    license.name && license.name !== '—' ? license.name.trim() : '';
+  const licenseNuit =
+    license.nuit && license.nuit !== '—' ? license.nuit.trim() : '';
+
   const load = useCallback(async () => {
-    setLoading(true);
+    const hasCache = Boolean(getPosCatalogCache()?.companyProfile);
+    if (!hasCache) setLoading(true);
     setMessage(null);
     try {
       const data = await fetchCompanyProfile();
-      setForm({ ...data, country: 'Moçambique' });
+      const next = {
+        ...data,
+        name: licenseName || data.name || '',
+        taxId: licenseNuit || data.taxId || '',
+        country: 'Moçambique',
+      };
+      setForm(next);
+      setBankAccounts(parseCompanyBankAccounts(next.bankDetails, next.bankAccountNumber));
+      setBankDraft(createEmptyBankAccountDraft());
+      setEditingBankId(null);
+      patchPosCatalogCache({ companyProfile: next });
     } catch (e) {
       setMessage({ type: 'err', text: e instanceof Error ? e.message : 'Falha ao carregar dados da empresa' });
-      setForm(emptyForm());
+      if (!getPosCatalogCache()?.companyProfile) setForm(emptyForm());
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [licenseName, licenseNuit]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!licenseName && !licenseNuit) return;
+    setForm((current) => ({
+      ...current,
+      name: licenseName || current.name,
+      taxId: licenseNuit || current.taxId,
+    }));
+  }, [licenseName, licenseNuit]);
 
   const broadcastRefresh = () => {
     try {
@@ -104,18 +157,70 @@ export default function MyCompanyManager() {
       invalid ? 'border-rose-500 ring-1 ring-rose-500/30' : 'border-zinc-700'
     }`;
 
+  const readOnlyCls =
+    'w-full cursor-default rounded border border-zinc-800 bg-[#0d0d0d] px-2.5 py-1.5 text-xs text-zinc-400 outline-none';
+
+  const resetBankDraft = () => {
+    setBankDraft(createEmptyBankAccountDraft());
+    setEditingBankId(null);
+  };
+
+  const handleSaveBankDraft = () => {
+    const nextAccount: CompanyBankAccount = {
+      ...bankDraft,
+      id: editingBankId || bankDraft.id || createEmptyBankAccountDraft().id,
+      bankName: bankDraft.bankName.trim(),
+      accountHolder: bankDraft.accountHolder.trim(),
+      accountNumber: bankDraft.accountNumber.trim(),
+      nib: bankDraft.nib.trim(),
+      swift: bankDraft.swift.trim(),
+      currency: (bankDraft.currency || 'MZN').trim().toUpperCase(),
+    };
+    if (!nextAccount.accountHolder && !nextAccount.accountNumber && !nextAccount.nib && !nextAccount.swift) {
+      setMessage({ type: 'err', text: 'Preencha pelo menos titular, número, NIB ou SWIFT.' });
+      return;
+    }
+    setBankAccounts((current) => {
+      if (editingBankId) {
+        return current.map((account) => (account.id === editingBankId ? nextAccount : account));
+      }
+      return [...current, nextAccount];
+    });
+    resetBankDraft();
+    setMessage({
+      type: 'ok',
+      text: editingBankId
+        ? 'Conta actualizada na lista. Clique em Salvar para gravar.'
+        : 'Conta adicionada à lista. Clique em Salvar para gravar.',
+    });
+  };
+
+  const handleEditBankAccount = (account: CompanyBankAccount) => {
+    setEditingBankId(account.id);
+    setBankDraft({ ...account });
+  };
+
+  const handleRemoveBankAccount = (accountId: string) => {
+    setBankAccounts((current) => current.filter((account) => account.id !== accountId));
+    if (editingBankId === accountId) resetBankDraft();
+    setMessage({ type: 'ok', text: 'Conta removida da lista. Clique em Salvar para gravar.' });
+  };
+
   const handleSaveDados = async () => {
-    if (!form.name.trim() || !form.country.trim()) {
-      setMessage({ type: 'err', text: 'Preencha Nome e País (obrigatórios).' });
+    const lockedName = (licenseName || form.name).trim();
+    if (!lockedName) {
+      setMessage({ type: 'err', text: 'Nome da empresa em falta na licença.' });
       return;
     }
     setSaving(true);
     setMessage(null);
     try {
       const compactLogo = await ensureCompactReceiptLogo(form.logoDataUrl);
+      const bankDetails = serializeCompanyBankAccounts(bankAccounts);
+      const bankAccountNumber = bankAccounts[0]?.accountNumber?.trim() || '';
       await saveCompanyProfile({
-        name: form.name,
-        taxId: form.taxId,
+        name: lockedName,
+        taxId: licenseNuit || form.taxId,
         street: form.street,
         buildingNumber: form.buildingNumber,
         additionalStreet: form.additionalStreet,
@@ -123,17 +228,18 @@ export default function MyCompanyManager() {
         district: form.district,
         city: form.city,
         state: form.state,
-        country: form.country,
+        country: 'Moçambique',
         phone: form.phone,
         email: form.email,
-        bankAccountNumber: form.bankAccountNumber,
-        bankDetails: form.bankDetails,
+        bankAccountNumber,
+        bankDetails,
         logoDataUrl: compactLogo,
         voidReasons: form.voidReasons,
       });
       if (compactLogo !== form.logoDataUrl) {
         setForm((f) => ({ ...f, logoDataUrl: compactLogo }));
       }
+      setForm((f) => ({ ...f, bankAccountNumber, bankDetails }));
       setMessage({ type: 'ok', text: 'Dados da empresa guardados.' });
       broadcastRefresh();
       await load();
@@ -231,12 +337,8 @@ export default function MyCompanyManager() {
     }
   };
 
-  const countryOptions = COUNTRY_OPTIONS;
-
   const tabs: { id: typeof innerTab; label: string }[] = [
     { id: 'dados', label: 'Dados da empresa' },
-    { id: 'backups', label: 'Cópias de segurança' },
-    { id: 'reset', label: 'Redefinir banco de dados' },
   ];
 
   return (
@@ -283,10 +385,13 @@ export default function MyCompanyManager() {
 
       {showHelp && (
         <div className="mx-4 mt-2 rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] text-zinc-500 leading-relaxed">
-          Os dados de <strong className="text-zinc-400">Nome</strong> e <strong className="text-zinc-400">País</strong> são
-          obrigatórios. As informações guardadas aqui aparecem automaticamente no cabeçalho do recibo no POS. Logos grandes
-          são comprimidos automaticamente (máx. ~280 px) para a impressão do recibo ser rápida. API:{' '}
-          <code className="text-zinc-400">{getPosApiBase()}/company-profile</code> (leitura via proxy; gravação usa a API direta).
+          Os dados de identificação da empresa (Nome, NUIT, morada e contactos) vêm da{' '}
+          <strong className="text-zinc-400">licença</strong> e são apenas de leitura. Pode adicionar várias contas
+          bancárias (titular, número, NIB, SWIFT e moeda) e o logo; as contas aparecem no rodapé das faturas A4. Use{' '}
+          <strong className="text-zinc-400">Salvar</strong> para gravar as alterações. Logos grandes são comprimidos
+          automaticamente (máx. ~280 px) para a impressão do recibo ser rápida. API:{' '}
+          <code className="text-zinc-400">{getPosApiBase()}/company-profile</code> (leitura via proxy; gravação usa a API
+          directa).
         </div>
       )}
 
@@ -307,80 +412,219 @@ export default function MyCompanyManager() {
           <div className="max-w-3xl pt-4 space-y-6">
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Dados da Empresa</h3>
+              <p className="mb-2 text-[10px] text-zinc-600">
+                Dados provenientes da licença — apenas leitura.
+              </p>
               <div className="rounded border border-zinc-800/80 bg-[#141414] px-3">
-                <FieldRow label="Nome" required>
+                <FieldRow label="Nome">
                   <input
-                    className={inputCls(!form.name.trim())}
-                    value={form.name}
-                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                    placeholder="Nome fantasia ou razão social"
+                    className={readOnlyCls}
+                    value={licenseName || form.name}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
                 <FieldRow label="NUIT">
                   <input
-                    className={inputCls()}
-                    value={form.taxId}
-                    onChange={(e) => setForm((f) => ({ ...f, taxId: e.target.value }))}
+                    className={readOnlyCls}
+                    value={licenseNuit || form.taxId}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
                 <FieldRow label="Cidade">
                   <input
-                    className={inputCls()}
+                    className={readOnlyCls}
                     value={form.city}
-                    onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
                 <FieldRow label="Estado / Província">
                   <input
-                    className={inputCls()}
+                    className={readOnlyCls}
                     value={form.state}
-                    onChange={(e) => setForm((f) => ({ ...f, state: e.target.value }))}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
-                <FieldRow label="País" required>
-                  <PosSelect
-                    value={form.country}
-                    onChange={(v) => setForm((f) => ({ ...f, country: v }))}
-                    size="md"
-                    options={countryOptions}
-                    triggerClassName={!form.country.trim() ? '!border-rose-500/60' : ''}
+                <FieldRow label="País">
+                  <input
+                    className={readOnlyCls}
+                    value={form.country || 'Moçambique'}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
                 <FieldRow label="Telefone">
                   <input
-                    className={inputCls()}
+                    className={readOnlyCls}
                     value={form.phone}
-                    onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
                 <FieldRow label="Email">
                   <input
                     type="email"
-                    className={inputCls()}
+                    className={readOnlyCls}
                     value={form.email}
-                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                    readOnly
+                    tabIndex={-1}
+                    title="Definido pela licença"
                   />
                 </FieldRow>
               </div>
             </section>
 
             <section>
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Conta bancária</h3>
+              <div className="mb-2">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Contas bancárias</h3>
+                <p className="mt-1 text-[10px] text-zinc-600">
+                  Pode ter várias contas. Aparecem no rodapé das faturas A4.
+                </p>
+              </div>
+
+              {bankAccounts.length > 0 ? (
+                <div className="mb-3 space-y-2">
+                  {bankAccounts.map((account) => (
+                    <div
+                      key={account.id}
+                      className={`rounded border px-3 py-2 ${
+                        editingBankId === account.id
+                          ? 'border-[#0001fb]/50 bg-[#0001fb]/5'
+                          : 'border-zinc-800/80 bg-[#141414]'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-0.5 text-[11px] text-zinc-300">
+                          <p className="truncate font-semibold text-zinc-100">
+                            {account.accountHolder || 'Sem titular'}
+                          </p>
+                          <p className="truncate text-zinc-500">
+                            Banco: {account.bankName || '—'}
+                          </p>
+                          <p className="truncate text-zinc-500">
+                            Conta: {account.accountNumber || '—'} · NIB: {account.nib || '—'}
+                          </p>
+                          <p className="truncate text-zinc-500">
+                            SWIFT: {account.swift || '—'} · Moeda: {account.currency || 'MZN'}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleEditBankAccount(account)}
+                            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-[#0001fb]"
+                            title="Editar conta"
+                          >
+                            <Pencil size={12} />
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveBankAccount(account.id)}
+                            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-rose-300"
+                            title="Remover conta"
+                          >
+                            <Trash2 size={12} />
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mb-3 rounded border border-dashed border-zinc-800 bg-[#141414] px-3 py-3 text-[11px] text-zinc-600">
+                  Ainda não há contas bancárias. Preencha o formulário abaixo e clique em Adicionar conta.
+                </p>
+              )}
+
               <div className="rounded border border-zinc-800/80 bg-[#141414] px-3">
-                <FieldRow label="Número da conta">
+                <div className="py-2.5">
+                  <p className="text-[11px] font-semibold text-zinc-400">
+                    {editingBankId ? 'Editar conta seleccionada' : 'Nova conta bancária'}
+                  </p>
+                </div>
+                <FieldRow label="Titular da conta" showDivider={false} fixedLabelWidth>
                   <input
                     className={inputCls()}
-                    value={form.bankAccountNumber}
-                    onChange={(e) => setForm((f) => ({ ...f, bankAccountNumber: e.target.value }))}
+                    value={bankDraft.accountHolder}
+                    onChange={(e) => setBankDraft((prev) => ({ ...prev, accountHolder: e.target.value }))}
+                    placeholder="Nome do titular"
                   />
                 </FieldRow>
-                <FieldRow label="Detalhes bancários">
-                  <textarea
-                    className={`${inputCls()} min-h-[88px] resize-y font-sans`}
-                    value={form.bankDetails}
-                    onChange={(e) => setForm((f) => ({ ...f, bankDetails: e.target.value }))}
+                <FieldRow label="Nome do banco" showDivider={false} fixedLabelWidth>
+                  <input
+                    className={inputCls()}
+                    value={bankDraft.bankName}
+                    onChange={(e) => setBankDraft((prev) => ({ ...prev, bankName: e.target.value }))}
+                    placeholder="Ex.: Banco de Moçambique"
                   />
                 </FieldRow>
+                <FieldRow label="Número de conta" showDivider={false} fixedLabelWidth>
+                  <input
+                    className={inputCls()}
+                    value={bankDraft.accountNumber}
+                    onChange={(e) => setBankDraft((prev) => ({ ...prev, accountNumber: e.target.value }))}
+                    placeholder="Ex.: 123456789"
+                  />
+                </FieldRow>
+                <FieldRow label="NIB" showDivider={false} fixedLabelWidth>
+                  <input
+                    className={inputCls()}
+                    value={bankDraft.nib}
+                    onChange={(e) => setBankDraft((prev) => ({ ...prev, nib: e.target.value }))}
+                    placeholder="Número de Identificação Bancária"
+                  />
+                </FieldRow>
+                <FieldRow label="SWIFT" showDivider={false} fixedLabelWidth>
+                  <input
+                    className={inputCls()}
+                    value={bankDraft.swift}
+                    onChange={(e) => setBankDraft((prev) => ({ ...prev, swift: e.target.value }))}
+                    placeholder="Código SWIFT/BIC"
+                  />
+                </FieldRow>
+                <FieldRow label="Tipo de moeda" showDivider={false} fixedLabelWidth>
+                  <PosSelect
+                    value={bankDraft.currency || 'MZN'}
+                    onChange={(value) => setBankDraft((prev) => ({ ...prev, currency: value }))}
+                    className="w-full"
+                    triggerClassName="w-full"
+                    size="md"
+                    options={COMPANY_BANK_CURRENCY_OPTIONS.map((option) => ({
+                      value: option.value,
+                      label: option.label,
+                    }))}
+                  />
+                </FieldRow>
+                <div className="flex flex-wrap items-center gap-2 py-3">
+                  <button
+                    type="button"
+                    onClick={handleSaveBankDraft}
+                    className="inline-flex items-center gap-1.5 rounded border border-zinc-600 bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-200 transition-colors hover:text-[#0001fb]"
+                  >
+                    <Plus size={14} />
+                    {editingBankId ? 'Actualizar conta' : 'Adicionar conta'}
+                  </button>
+                  {editingBankId ? (
+                    <button
+                      type="button"
+                      onClick={resetBankDraft}
+                      className="inline-flex items-center gap-1.5 rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-400 transition-colors hover:text-zinc-200"
+                    >
+                      Cancelar edição
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </section>
 

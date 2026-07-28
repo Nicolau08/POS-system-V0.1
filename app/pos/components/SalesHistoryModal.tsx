@@ -92,7 +92,7 @@ function formatDateTime(value: string | null | undefined) {
 }
 
 function monthLabel(value: string) {
-  return new Date(`${value}T00:00:00`).toLocaleDateString('en-US', {
+  return new Date(`${value}T00:00:00`).toLocaleDateString('pt-PT', {
     month: 'long',
     year: 'numeric',
   });
@@ -793,20 +793,23 @@ function CalendarGrid({
   selectedValue: string;
   onSelect: (value: string) => void;
 }) {
-  const weekDays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+  const weekDays = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
   const days = buildCalendarDays(monthValue);
   const todayValue = todayInput();
 
   return (
     <div>
-      <div className="mb-3 grid grid-cols-7 gap-2">
+      <div className="mb-2 grid grid-cols-7 gap-1">
         {weekDays.map((day) => (
-          <div key={day} className="py-1 text-center text-sm font-bold text-white">
+          <div
+            key={day}
+            className="flex h-7 min-w-0 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-zinc-400"
+          >
             {day}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-1">
         {days.map((day) => {
           const isSelected = day.value === selectedValue;
           const isToday = day.value === todayValue;
@@ -815,7 +818,7 @@ function CalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`flex aspect-square w-full items-center justify-center rounded-xl text-sm transition-colors ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday

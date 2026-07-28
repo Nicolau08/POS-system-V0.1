@@ -11,13 +11,11 @@ function familyChipStyle(family: string, selected: boolean, familyColors?: Recor
   const color = resolveCategoryColor(familyColors?.[family], family);
   if (selected) {
     return {
-      borderColor: color,
       backgroundColor: hexToRgba(color, 0.45),
       color: '#ffffff',
     };
   }
   return {
-    borderColor: hexToRgba(color, 0.55),
     backgroundColor: hexToRgba(color, 0.18),
     color: '#e8efff',
   };
@@ -94,10 +92,10 @@ export function ProductList({
           <div className="flex gap-2 w-max min-w-full pr-1">
             <button
               onClick={() => onSelectCategory(null)}
-              className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded border text-sm font-semibold tracking-tight transition-all ${
+              className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded text-sm font-semibold tracking-tight transition-all ${
                 !selectedCategory
-                  ? 'border-zinc-700 bg-zinc-800/70 text-white'
-                  : 'border-zinc-800 bg-zinc-900/50 text-zinc-300 hover:border-[#0001fb] hover:bg-zinc-800/70 hover:text-white'
+                  ? 'bg-zinc-800/70 text-white'
+                  : 'bg-zinc-900/50 text-zinc-300 hover:bg-zinc-800/70 hover:text-white'
               }`}
             >
               Todas
@@ -109,8 +107,8 @@ export function ProductList({
                 key={family}
                 onClick={() => onSelectCategory(family)}
                 style={familyChipStyle(family, selected, familyColors)}
-                className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded border text-sm font-semibold tracking-tight transition-all ${
-                  selected ? 'shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]' : 'hover:brightness-110'
+                className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded text-sm font-semibold tracking-tight transition-all ${
+                  selected ? '' : 'hover:brightness-110'
                 }`}
               >
                 {family}
@@ -133,10 +131,9 @@ export function ProductList({
                 key={product.id}
                 onClick={() => onAddToCart(product)}
                 style={{
-                  borderColor: hexToRgba(cardColor, 0.55),
                   backgroundColor: hexToRgba(cardColor, 0.2),
                 }}
-                className="relative flex flex-col items-start justify-between h-28 p-4 rounded border transition-all group text-left hover:brightness-110"
+                className="relative flex flex-col items-start justify-between h-28 p-4 rounded transition-all group text-left hover:brightness-110"
               >
                 {!product.is_service && product.stock_quantity !== undefined && (
                   <span

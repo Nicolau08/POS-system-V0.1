@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Banknote, Plus, RotateCcw, Trash2, User } from 'lucide-react';
+import { Banknote, MessageSquare, Plus, RotateCcw, Trash2, User } from 'lucide-react';
 import type { CartItem, Customer, Discount } from '@/app/pos/types';
 
 // Right sidebar cart section extracted from the POS page.
@@ -21,6 +21,7 @@ export function Cart({
   formatPrice,
   onToggleItemSelection,
   onEditItemQuantity,
+  onEditItemNotes,
   onRemoveItem,
   onClearSelection,
   originalSubtotal,
@@ -30,6 +31,7 @@ export function Cart({
   onCancelOrder,
   canCancelOrder = true,
   onOpenPayment,
+  allowItemNotes = false,
 }: {
   selectedCartItemId?: string | null;
   docType: 'VD' | 'TK' | 'FP' | 'FT';
@@ -45,6 +47,7 @@ export function Cart({
   formatPrice: (value: number) => string;
   onToggleItemSelection: (id: string) => void;
   onEditItemQuantity: (item: CartItem) => void;
+  onEditItemNotes?: (item: CartItem) => void;
   onRemoveItem: (id: string) => void;
   onClearSelection: () => void;
   originalSubtotal: number;
@@ -54,6 +57,7 @@ export function Cart({
   onCancelOrder: () => void;
   canCancelOrder?: boolean;
   onOpenPayment: () => void;
+  allowItemNotes?: boolean;
 }) {
   const docTypeButtonClass =
     docType === 'FP'
@@ -170,9 +174,9 @@ export function Cart({
                     : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/50'
                 }`}
               >
-                <div className="flex flex-col">
+                <div className="flex flex-col min-w-0 flex-1 pr-2">
                   <span className="text-sm font-medium text-zinc-200">{item.name}</span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs text-zinc-500">{item.quantity} x {formatPrice(item.price)}</span>
                     {item.discount && (
                       <span className="text-[10px] bg-[#0001fb]/20 text-[#a5b4fc] px-1 rounded-md font-bold">
@@ -185,9 +189,31 @@ export function Cart({
                       </span>
                     )}
                   </div>
+                  {item.notes ? (
+                    <span className="mt-1 text-[11px] text-amber-300/90 italic truncate" title={item.notes}>
+                      {item.notes}
+                    </span>
+                  ) : null}
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 shrink-0">
                   <span className="text-sm font-bold text-zinc-100">{formatPrice(item.price * item.quantity)}</span>
+                  {allowItemNotes && onEditItemNotes ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEditItemNotes(item);
+                      }}
+                      className={`transition-all ${
+                        item.notes
+                          ? 'text-amber-400 opacity-100'
+                          : 'text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-300'
+                      }`}
+                      title="Nota para cozinha"
+                    >
+                      <MessageSquare size={14} />
+                    </button>
+                  ) : null}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

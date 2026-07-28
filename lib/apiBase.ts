@@ -7,6 +7,7 @@ import {
   isStationClientMode,
   loadStationClientSettings,
 } from '@/lib/stationClientSettings';
+import { clearPosSessionCache } from '@/lib/posSessionCache';
 
 export function getPosApiBase(): string {
   if (typeof window !== 'undefined') {
@@ -47,6 +48,8 @@ export function getPosApiDirectBase(): string {
 }
 
 const AUTH_TOKEN_KEY = 'pos:auth-token';
+/** Marca sessão activa nesta janela; some ao fechar o app (sessionStorage). */
+const SESSION_ACTIVE_KEY = 'pos:session-active';
 
 export function getStoredAuthToken(): string {
   if (typeof window === 'undefined') return '';
@@ -62,6 +65,34 @@ export function setStoredAuthToken(token: string | null | undefined) {
   const t = String(token ?? '').trim();
   if (!t) localStorage.removeItem(AUTH_TOKEN_KEY);
   else localStorage.setItem(AUTH_TOKEN_KEY, t);
+}
+
+/** true só enquanto a janela actual mantém login (não sobrevive a fechar o app). */
+export function isPosSessionActive(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(SESSION_ACTIVE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markPosSessionActive(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(SESSION_ACTIVE_KEY, '1');
+  } catch {
+    // ignore
+  }
+}
+
+export function clearPosSessionActive(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(SESSION_ACTIVE_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 /**
@@ -107,5 +138,7 @@ export function clearPosAuthSession(): void {
   localStorage.setItem('isLoggedIn', 'false');
   localStorage.removeItem('currentUser');
   setStoredAuthToken(null);
+  clearPosSessionActive();
+  clearPosSessionCache();
   window.dispatchEvent(new Event('pos-auth-changed'));
 }

@@ -2,6 +2,7 @@ export type PosSettingsSection =
   | 'basicas'
   | 'postos'
   | 'locais'
+  | 'armazens'
   | 'pedidos'
   | 'produtos'
   | 'farmacia'

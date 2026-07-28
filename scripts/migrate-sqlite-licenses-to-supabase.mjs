@@ -36,7 +36,7 @@ const rows = await new Promise((resolve, reject) => {
     allSqlite(
       db,
       `SELECT t.id AS tenant_id, t.name,
-              tp.nuit, tp.license_type,
+              tp.nuit, tp.license_type, tp.commerce_type, tp.vertical, tp.capabilities_json,
               l.expires_at, l.active, l.machine_id, l.plan
        FROM tenants t
        LEFT JOIN tenant_profile tp ON tp.id = t.id
@@ -78,6 +78,16 @@ for (const row of rows) {
   const clientId = existingClient?.id || crypto.randomUUID();
   const plan = String(row.license_type || row.plan || 'LITE').toUpperCase().includes('PRO') ? 'PRO' : 'LITE';
   const nuit = row.nuit != null && String(row.nuit).trim() ? String(row.nuit).trim() : null;
+  const commerceType =
+    row.commerce_type != null && String(row.commerce_type).trim()
+      ? String(row.commerce_type).trim()
+      : 'retalho';
+  const vertical =
+    row.vertical != null && String(row.vertical).trim() ? String(row.vertical).trim() : null;
+  const capabilitiesJson =
+    row.capabilities_json != null && String(row.capabilities_json).trim()
+      ? String(row.capabilities_json).trim()
+      : null;
 
   if (!existingClient) {
     const { error } = await supabase.from('license_clients').insert({
@@ -86,6 +96,9 @@ for (const row of rows) {
       tenant_id: tenantId,
       nuit,
       plan,
+      commerce_type: commerceType,
+      vertical,
+      capabilities_json: capabilitiesJson,
       created_at: new Date().toISOString(),
     });
     if (error) {
@@ -109,6 +122,9 @@ for (const row of rows) {
         license_expires_at: expiresAt,
         nuit,
         plan,
+        commerce_type: commerceType,
+        vertical,
+        capabilities_json: capabilitiesJson,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'tenant_id' },

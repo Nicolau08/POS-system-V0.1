@@ -76,7 +76,8 @@ export function findOrderById(orderId, tenantId) {
 function buildDocumentoItemsSelectSql(whereSql) {
   // whereSql: "WHERE 1=1" ou com filtro em product_name (coluna do SELECT externo).
   return `
-    SELECT id, order_id, product_id, product_name, quantity, price, discount_amount, created_at
+    SELECT id, order_id, product_id, product_name, quantity, price, discount_amount,
+           unit_cost, cogs_total, created_at
     FROM (
       SELECT
         oi.id AS id,
@@ -86,6 +87,8 @@ function buildDocumentoItemsSelectSql(whereSql) {
         oi.quantity AS quantity,
         oi.price AS price,
         oi.discount_amount AS discount_amount,
+        oi.unit_cost AS unit_cost,
+        oi.cogs_total AS cogs_total,
         oi.created_at AS created_at
       FROM order_items oi
       WHERE oi.tenant_id = ?
@@ -114,6 +117,8 @@ function buildDocumentoItemsSelectSql(whereSql) {
         sm.quantity AS quantity,
         COALESCE(p.price, 0) AS price,
         0 AS discount_amount,
+        NULL AS unit_cost,
+        NULL AS cogs_total,
         sm.created_at AS created_at
       FROM stock_movements sm
       INNER JOIN products p
@@ -216,6 +221,16 @@ export function insertOrder(params) {
 }
 
 export function insertOrderItem(params) {
+  // 10 params (legacy) or 12 params (+ unit_cost, cogs_total)
+  if (Array.isArray(params) && params.length >= 12) {
+    return run(
+      `INSERT INTO order_items
+        (id, order_id, tenant_id, product_id, product_name, quantity, price, discount_amount,
+         created_at, updated_at, unit_cost, cogs_total)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params
+    );
+  }
   return run(
     `INSERT INTO order_items
       (id, order_id, tenant_id, product_id, product_name, quantity, price, discount_amount, created_at, updated_at)
@@ -250,8 +265,8 @@ export function getProductForSync(localProductId, tenantId) {
   return get(
     `SELECT
        id, cloud_id, code, name, category_id, barcode, cost, price, tax, final_price,
-       active, unit, description, age_restriction, is_service, default_quantity, tenant_id,
-       stock_quantity, min_stock, color, image, deleted
+       active, unit, description, age_restriction, is_service, product_kind, default_quantity,
+       track_lot, tenant_id, stock_quantity, min_stock, color, image, deleted
      FROM products
      WHERE CAST(id AS TEXT) = ?
        AND tenant_id = ?

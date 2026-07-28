@@ -9,7 +9,7 @@ import {
 } from '../utils/authSecret.js';
 
 const isProduction = String(process.env.NODE_ENV ?? 'development').toLowerCase() === 'production';
-const STATION_ROLES = new Set(['caixa', 'garcom', 'consulta']);
+const STATION_ROLES = new Set(['caixa', 'garcom', 'consulta', 'cozinha']);
 
 function parseAuthorizationHeader(req) {
   const raw = String(req.headers?.authorization ?? '').trim();

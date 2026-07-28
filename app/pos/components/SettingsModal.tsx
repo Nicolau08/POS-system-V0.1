@@ -14,11 +14,14 @@ import { listCustomerDisplayPorts, writeCustomerDisplay, type SerialPortOption }
 import { PrintOptionsPanel } from './PrintOptionsPanel';
 import { LocationsSettingsPanel } from './LocationsSettingsPanel';
 import { StationsSettingsPanel } from './StationsSettingsPanel';
+import { WarehousesSettingsPanel } from './WarehousesSettingsPanel';
 import PosSelect from '@/components/PosSelect';
 import { PosSwitch } from '@/components/PosSwitch';
 import { useCommerceProfile } from '@/lib/useCommerceProfile';
 import { commerceTypeLabel, type CommerceFeatures } from '@/lib/commerceProfile';
 import { formatDateTime24h } from '@/lib/formatDateTime';
+import DatabaseBackupPanel from '@/app/management/components/DatabaseBackupPanel';
+import DatabaseResetPanel from './DatabaseResetPanel';
 
 const ALL_SECTIONS: Array<{
   id: PosSettingsSection;
@@ -29,6 +32,7 @@ const ALL_SECTIONS: Array<{
   { id: 'basicas', label: 'Configurações básicas' },
   { id: 'postos', label: 'Postos' },
   { id: 'locais', label: 'Locais', requireFeature: 'locations' },
+  { id: 'armazens', label: 'Armazéns' },
   { id: 'pedidos', label: 'Pedidos & Pagamentos' },
   { id: 'produtos', label: 'Configurações de produtos' },
   // Farmácia: secção oculta até módulos (lotes/validade/receita) estarem prontos
@@ -150,12 +154,19 @@ export function SettingsModal({
   const [activeSection, setActiveSection] = useState<PosSettingsSection>(initialSection);
   const [draft, setDraft] = useState<PosSettings>(DEFAULT_POS_SETTINGS);
   const [showPortSettings, setShowPortSettings] = useState(false);
+  const [dbTab, setDbTab] = useState<'backups' | 'reset'>('backups');
   const [saveMessage, setSaveMessage] = useState('');
   const [testMessage, setTestMessage] = useState('');
   const [availablePorts, setAvailablePorts] = useState<SerialPortOption[]>([]);
   const [portsError, setPortsError] = useState('');
-  const { features, label: commerceLabel, license, loading: licenseLoading, refresh: refreshCommerceProfile } =
-    useCommerceProfile();
+  const {
+    commerceType,
+    features,
+    label: commerceLabel,
+    license,
+    loading: licenseLoading,
+    refresh: refreshCommerceProfile,
+  } = useCommerceProfile();
 
   const SECTIONS = useMemo(
     () =>
@@ -180,7 +191,14 @@ export function SettingsModal({
     setPortsError('');
     void refreshPorts();
     void refreshCommerceProfile();
-  }, [isOpen, initialSection, features, refreshCommerceProfile]);
+    // refreshCommerceProfile é estável; features muda só com commerceType
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só reabrir / secção / perfil
+  }, [isOpen, initialSection, commerceType]);
+
+  useEffect(() => {
+    if (activeSection !== 'banco') return;
+    setDbTab('backups');
+  }, [activeSection]);
 
   const refreshPorts = async () => {
     setPortsError('');
@@ -354,6 +372,8 @@ export function SettingsModal({
                 {activeSection === 'postos' ? <StationsSettingsPanel /> : null}
 
                 {activeSection === 'locais' && features.locations ? <LocationsSettingsPanel /> : null}
+
+                {activeSection === 'armazens' ? <WarehousesSettingsPanel /> : null}
 
                 {activeSection === 'pedidos' && (
                   <div className="max-w-2xl space-y-1">
@@ -620,9 +640,37 @@ export function SettingsModal({
                 )}
 
                 {activeSection === 'banco' && (
-                  <div className="max-w-2xl space-y-3 text-sm text-zinc-400">
-                    <p>Os dados do POS são guardados localmente na base SQLite do tenant.</p>
-                    <p>Use o módulo de sincronização no painel de gestão para enviar/receber dados da nuvem.</p>
+                  <div className="max-w-3xl space-y-4 pt-4">
+                    <div className="flex flex-wrap gap-1 border-b border-zinc-800/50 pb-2">
+                      <button
+                        type="button"
+                        onClick={() => setDbTab('backups')}
+                        className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-wide border-b-2 transition-colors ${
+                          dbTab === 'backups'
+                            ? 'border-[#0001fb] text-white'
+                            : 'border-transparent text-zinc-500 hover:text-[#0001fb]'
+                        }`}
+                      >
+                        Cópias de segurança
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDbTab('reset')}
+                        className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-wide border-b-2 transition-colors ${
+                          dbTab === 'reset'
+                            ? 'border-[#0001fb] text-white'
+                            : 'border-transparent text-zinc-500 hover:text-[#0001fb]'
+                        }`}
+                      >
+                        Redefinir banco de dados
+                      </button>
+                    </div>
+
+                    {dbTab === 'backups' ? (
+                      <DatabaseBackupPanel />
+                    ) : (
+                      <DatabaseResetPanel />
+                    )}
                   </div>
                 )}
 

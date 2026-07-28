@@ -17,6 +17,7 @@ import {
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
 import PosSelect from '@/components/PosSelect';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
@@ -69,11 +70,13 @@ const initialForm: CustomerForm = {
 };
 
 export default function CustomersSuppliersManager() {
-  const [rows, setRows] = useState<CustomerRow[]>([]);
+  const [rows, setRows] = useState<CustomerRow[]>(
+    () => (getPosCatalogCache()?.customers as CustomerRow[] | undefined) ?? []
+  );
   const [metaById, setMetaById] = useState<Record<string, { active: boolean; isCustomer: boolean; taxExempt: boolean }>>(
     {}
   );
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !getPosCatalogCache()?.customers?.length);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -82,15 +85,18 @@ export default function CustomersSuppliersManager() {
   const [activeTab, setActiveTab] = useState<'geral' | 'descontos' | 'fidelidade' | 'termos'>('geral');
 
   const fetchRows = async () => {
-    setLoading(true);
+    const hasCache = Boolean(getPosCatalogCache()?.customers?.length);
+    if (!hasCache) setLoading(true);
     try {
       const response = await fetch(`${getPosApiBase()}/clientes`, {
         headers: { ...getPosUserAuthHeaders() },
       });
       const data = unwrapApiSuccessPayload<any[]>(await response.json());
-      setRows(Array.isArray(data) ? data : []);
+      const next = Array.isArray(data) ? data : [];
+      setRows(next);
+      patchPosCatalogCache({ customers: next as any });
     } catch {
-      setRows([]);
+      if (!getPosCatalogCache()?.customers?.length) setRows([]);
     } finally {
       setLoading(false);
     }

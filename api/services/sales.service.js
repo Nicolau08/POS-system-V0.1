@@ -11,6 +11,12 @@ import {
   withPaginationPayload,
 } from './queryOptions.service.js';
 import { buildStockAdjustmentsFromCart } from './product.service.js';
+import {
+  applyWarehouseDelta,
+  getWarehouseQuantity,
+  resolveWarehouseId,
+} from './warehouseStock.service.js';
+import { get } from '../dbUtils.js';
 
 const POS_TAX_RATE = Math.max(0, Number(process.env.POS_TAX_RATE ?? 0.16) || 0.16);
 const TAX_DIVISOR = 1 + POS_TAX_RATE;
@@ -315,6 +321,9 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
   if (stationRole === 'consulta') {
     throw new HttpError(403, 'Posto de consulta não pode registar vendas.');
   }
+  if (stationRole === 'cozinha') {
+    throw new HttpError(403, 'Posto de cozinha não pode registar vendas.');
+  }
 
   const totalNumber = Number(payload.total);
   const idempotencyKey = sanitizeIdempotencyKey(options?.idempotencyKey ?? payload?.idempotencyKey);
@@ -483,6 +492,34 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
   const stockAdjustments = shouldDecreaseStock
     ? await buildStockAdjustmentsFromCart(payload.cart, tenantId)
     : [];
+
+  let saleWarehouseId = null;
+  if (shouldDecreaseStock && stockAdjustments.length > 0) {
+    let locationId =
+      payload.locationId != null
+        ? String(payload.locationId).trim() || null
+        : payload.location_id != null
+          ? String(payload.location_id).trim() || null
+          : null;
+
+    // Resolver local a partir da mesa seleccionada (nome da mesa → location_tables).
+    if (!locationId && payload.selectedTableId != null && String(payload.selectedTableId).trim()) {
+      const tableName = String(payload.selectedTableId).trim();
+      const tableRow = await get(
+        `SELECT location_id FROM location_tables
+         WHERE tenant_id = ? AND name = ? AND COALESCE(active, 1) = 1
+         LIMIT 1`,
+        [tenantId, tableName]
+      );
+      if (tableRow?.location_id) locationId = String(tableRow.location_id);
+    }
+
+    saleWarehouseId = await resolveWarehouseId({
+      tenantId,
+      locationId,
+      explicitWarehouseId: payload.warehouseId ?? payload.warehouse_id ?? null,
+    });
+  }
   const stockOverrideAuthorized = allowNegativeStockOverride
     ? await canOverrideZeroStock(actorUser, tenantId)
     : false;
@@ -499,7 +536,7 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
       );
     }
     return {
-      error: 'Utilizador sem permissao para venda com estoque zero.',
+      error: 'Utilizador sem permissao para venda com stock zero.',
       status: 403,
       code: 'STOCK_OVERRIDE_FORBIDDEN',
     };
@@ -552,66 +589,92 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
         const linePrice = Number(rawItem?.price ?? rawItem?.unit_price ?? 0);
         const discountAmount = Number(rawItem?.discount_amount ?? rawItem?.discountAmount ?? 0);
         const nowIso = new Date().toISOString();
+        const productId = rawItem?.id != null ? String(rawItem.id) : null;
 
         await runDb(
           `INSERT INTO order_items
-            (id, order_id, tenant_id, product_id, product_name, quantity, price, discount_amount, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, order_id, tenant_id, product_id, product_name, quantity, price, discount_amount,
+             created_at, updated_at, unit_cost, cogs_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             crypto.randomUUID(),
             String(usedSaleId),
             tenantId,
-            rawItem?.id != null ? String(rawItem.id) : null,
+            productId,
             String(rawItem?.name ?? rawItem?.product_name ?? 'Item'),
             quantity,
             Number.isFinite(linePrice) ? linePrice : 0,
             Number.isFinite(discountAmount) ? discountAmount : 0,
             nowIso,
             nowIso,
+            null,
+            null,
           ]
         );
       }
     }
 
+    const cogsByProduct = new Map();
     for (const adjustment of stockAdjustments) {
-      const updateResult = await runDb(
-        `UPDATE products
-         SET stock_quantity = stock_quantity - ?,
-             updated_at = ?
-         WHERE id = ?
-           AND tenant_id = ?
-           AND COALESCE(deleted, 0) = 0
-           AND stock_quantity >= ?`,
-        [adjustment.quantity, new Date().toISOString(), adjustment.productId, tenantId, adjustment.quantity]
-      );
+      const qty = Number(adjustment.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
 
-      if (Number(updateResult?.changes ?? 0) === 0) {
-        if (!stockOverrideAuthorized) {
+      try {
+        const whQty = await getWarehouseQuantity(saleWarehouseId, adjustment.productId, tenantId);
+        if (whQty < qty && !stockOverrideAuthorized) {
           throw new Error(
-            `Estoque insuficiente para “${adjustment.name || adjustment.productId}”`
+            `Stock insuficiente para “${adjustment.name || adjustment.productId}”`
           );
         }
-        const forceResult = await runDb(
-          `UPDATE products
-           SET stock_quantity = stock_quantity - ?,
-               updated_at = ?
-           WHERE id = ?
-             AND tenant_id = ?
-             AND COALESCE(deleted, 0) = 0`,
-          [adjustment.quantity, new Date().toISOString(), adjustment.productId, tenantId]
-        );
-        if (Number(forceResult?.changes ?? 0) === 0) {
-          throw new Error(`Produto invalido para override ${adjustment.productId}`);
-        }
-        await logAudit('STOCK_OVERRIDE_SALE', actorUser, {
-          entity: 'sale',
-          entity_id: String(usedSaleId),
-          description: 'Stock override applied during sale',
-          product_id: adjustment.productId,
-          quantity_delta: -Math.abs(adjustment.quantity),
-          reason: stockOverrideReason,
+        const deltaResult = await applyWarehouseDelta({
+          tenantId,
+          warehouseId: saleWarehouseId,
+          productId: adjustment.productId,
+          delta: -qty,
+          movementType: 'sale',
+          referenceId: `SALE:${usedSaleId}:${adjustment.productId}`,
+          allowNegative: stockOverrideAuthorized,
         });
+        cogsByProduct.set(String(adjustment.productId), {
+          unitCost: Number(deltaResult?.unitCostFifo ?? 0) || 0,
+          cogsTotal: Number(deltaResult?.cogsTotal ?? 0) || 0,
+          qty,
+        });
+        if (whQty < qty && stockOverrideAuthorized) {
+          await logAudit('STOCK_OVERRIDE_SALE', actorUser, {
+            entity: 'sale',
+            entity_id: String(usedSaleId),
+            description: 'Stock override applied during sale',
+            product_id: adjustment.productId,
+            quantity_delta: -Math.abs(qty),
+            warehouse_id: saleWarehouseId,
+            reason: stockOverrideReason,
+          });
+        }
+      } catch (stockErr) {
+        if (String(stockErr?.message || '').includes('Stock insuficiente')) {
+          throw stockErr;
+        }
+        if (!stockOverrideAuthorized && (stockErr?.status === 409 || stockErr?.statusCode === 409)) {
+          throw new Error(
+            `Stock insuficiente para “${adjustment.name || adjustment.productId}”`
+          );
+        }
+        throw stockErr;
       }
+    }
+
+    for (const [productId, cogs] of cogsByProduct.entries()) {
+      const unitCost = cogs.unitCost;
+      await runDb(
+        `UPDATE order_items
+         SET unit_cost = ?,
+             cogs_total = ROUND(COALESCE(quantity, 0) * ?, 6)
+         WHERE order_id = ?
+           AND tenant_id = ?
+           AND CAST(product_id AS TEXT) = ?`,
+        [unitCost, unitCost, String(usedSaleId), tenantId, productId]
+      );
     }
 
     await runDb('COMMIT');
@@ -619,7 +682,7 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
     try {
       await runDb('ROLLBACK');
     } catch {}
-    const statusCode = String(error?.message || '').includes('Estoque insuficiente') ? 409 : 500;
+    const statusCode = String(error?.message || '').includes('Stock insuficiente') ? 409 : 500;
     if (idempotencyKey) {
       await runDb(
         `UPDATE checkout_idempotency

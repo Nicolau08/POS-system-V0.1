@@ -13,6 +13,20 @@ import { normalizeHex, pickCategoryColor } from '../utils/categoryColors.js';
 import { ensureCategoriesColorColumn } from '../repositories/categorias.repository.js';
 import { ensureDefaultTaxRates, resolveProductTaxRate } from './tax-rates.service.js';
 import { computeTaxFromBasePrice } from '../utils/taxMath.js';
+import {
+  applyWarehouseDelta,
+  getWarehouseQuantity,
+  resolveWarehouseId,
+  setWarehouseQuantity,
+} from './warehouseStock.service.js';
+
+function resolveTrackLotFlag(payload = {}, productKind, isService) {
+  if (isService || (productKind !== 'simple' && productKind !== 'ingredient')) return 0;
+  const raw = payload.track_lot ?? payload.trackLot;
+  if (raw === true || raw === 1 || raw === '1' || raw === 'true') return 1;
+  if (raw === false || raw === 0 || raw === '0' || raw === 'false') return 0;
+  return Number(raw) === 1 ? 1 : 0;
+}
 
 const allDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -105,6 +119,7 @@ const mapProductRow = (row) => {
     is_service: Boolean(row.is_service) || productKind === 'composed' || productKind === 'service',
     product_kind: productKind,
     default_quantity: Boolean(row.default_quantity),
+    track_lot: Boolean(row.track_lot) && (productKind === 'simple' || productKind === 'ingredient'),
     tax_rate_id: row.tax_rate_id != null ? String(row.tax_rate_id) : null,
     tax_rate_name: row.tax_rate_name != null ? String(row.tax_rate_name) : null,
     tax_rate_code: row.tax_rate_code != null ? String(row.tax_rate_code) : null,
@@ -120,6 +135,10 @@ const mapProductRow = (row) => {
     color: productColor || categoryColor || null,
     category_color: categoryColor,
     categories: row.category ? { name: row.category } : undefined,
+    warehouse_quantity:
+      row.warehouse_quantity != null && Number.isFinite(Number(row.warehouse_quantity))
+        ? Number(row.warehouse_quantity)
+        : null,
   };
 };
 
@@ -131,6 +150,11 @@ export async function listProducts(filters = {}, actorUser = null) {
   const deleted = parseBooleanFilter(filters.deleted);
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
   await ensureDefaultTaxRates(tenantId);
+
+  const warehouseIdFilter =
+    filters.warehouseId != null || filters.warehouse_id != null
+      ? String(filters.warehouseId ?? filters.warehouse_id).trim() || null
+      : null;
 
   const where = [];
   const params = [];
@@ -153,12 +177,14 @@ export async function listProducts(filters = {}, actorUser = null) {
     where.push(`COALESCE(p.deleted, 0) = 0`);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const selectParams = warehouseIdFilter ? [warehouseIdFilter, ...params] : params;
   const baseSelect = `
     SELECT
       p.id, p.cloud_id, p.code, p.name, p.category_id, p.barcode, p.cost, p.price,
       p.tax_rate_id, p.tax, p.final_price,
       p.active, p.unit, p.description, p.age_restriction, p.is_service, p.product_kind, p.default_quantity,
-      p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.tenant_id, p.created_at, p.updated_at,
+      p.track_lot, p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.tenant_id, p.created_at, p.updated_at,
+      ${warehouseIdFilter ? 'COALESCE(ws.quantity, 0) AS warehouse_quantity,' : 'NULL AS warehouse_quantity,'}
       c.name AS category,
       c.color AS category_color,
       tr.name AS tax_rate_name,
@@ -167,6 +193,12 @@ export async function listProducts(filters = {}, actorUser = null) {
       tr.is_fixed AS tax_rate_is_fixed,
       tr.price_includes_tax AS tax_rate_price_includes_tax
     FROM products p
+    ${
+      warehouseIdFilter
+        ? `LEFT JOIN warehouse_stock ws
+             ON ws.product_id = p.id AND ws.tenant_id = p.tenant_id AND ws.warehouse_id = ?`
+        : ''
+    }
     LEFT JOIN categories c ON c.id = p.category_id
     LEFT JOIN tax_rates tr ON tr.id = p.tax_rate_id AND tr.tenant_id = p.tenant_id
     ${whereSql}
@@ -175,11 +207,11 @@ export async function listProducts(filters = {}, actorUser = null) {
   await ensureCategoriesColorColumn();
 
   if (!pagination.hasPagination) {
-    const rows = await allDb(baseSelect, params);
+    const rows = await allDb(baseSelect, selectParams);
     return rows.map(mapProductRow);
   }
 
-  const rows = await allDb(`${baseSelect} LIMIT ? OFFSET ?`, [...params, pagination.limit, pagination.offset]);
+  const rows = await allDb(`${baseSelect} LIMIT ? OFFSET ?`, [...selectParams, pagination.limit, pagination.offset]);
   const totalRow = await getDb(
     `SELECT COUNT(*) AS total
      FROM products p
@@ -229,11 +261,12 @@ export async function createProduct(payload = {}, actorUser = null) {
           : Boolean(taxRate.price_includes_tax),
   });
   const isService = resolveServiceFlag(productKind, Boolean(payload.is_service));
+  const trackLot = resolveTrackLotFlag(payload, productKind, Boolean(isService));
 
   const result = await runDb(
     `INSERT INTO products
-      (cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active, unit, description, age_restriction, is_service, product_kind, default_quantity, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active, unit, description, age_restriction, is_service, product_kind, default_quantity, track_lot, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       cloudId,
       payload.code ?? null,
@@ -252,6 +285,7 @@ export async function createProduct(payload = {}, actorUser = null) {
       isService,
       productKind,
       payload.default_quantity === false ? 0 : 1,
+      trackLot,
       Number(payload.stock_quantity ?? 0),
       Number(payload.min_stock ?? 0),
       inheritedColor,
@@ -264,6 +298,24 @@ export async function createProduct(payload = {}, actorUser = null) {
   );
 
   const insertedId = result.lastID;
+  if (!isService && productKind !== 'composed') {
+    try {
+      const initialStock = Number(payload.stock_quantity ?? 0) || 0;
+      const warehouseId = await resolveWarehouseId({ tenantId });
+      await setWarehouseQuantity({
+        tenantId,
+        warehouseId,
+        productId: insertedId,
+        quantity: initialStock,
+        cost: Number(payload.cost ?? 0) || 0,
+        lotCode: payload.lotCode ?? payload.lot_code ?? null,
+        referenceId: `PRODUCT-CREATE:${insertedId}`,
+        allowNegative: true,
+      });
+    } catch (whErr) {
+      console.warn('[product] falha ao inicializar stock no armazém', whErr?.message ?? whErr);
+    }
+  }
   if (Array.isArray(payload.bom_lines ?? payload.bomLines)) {
     const bomResult = await replaceProductBom(insertedId, payload.bom_lines ?? payload.bomLines, actorUser);
     if (bomResult?.error) return bomResult;
@@ -282,6 +334,7 @@ export async function createProduct(payload = {}, actorUser = null) {
       id: insertedId,
       cloud_id: cloudId,
       product_kind: productKind,
+      track_lot: Boolean(trackLot),
       is_service: Boolean(isService),
       tax_rate_id: Number(taxRate.id),
       tax: taxAmount,
@@ -345,12 +398,13 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
           : Boolean(taxRate.price_includes_tax),
   });
   const isService = resolveServiceFlag(productKind, Boolean(payload.is_service));
+  const trackLot = resolveTrackLotFlag(payload, productKind, Boolean(isService));
 
   const result = await runDb(
     `UPDATE products SET
       cloud_id = ?, code = ?, name = ?, category_id = ?, barcode = ?, cost = ?, price = ?, tax_rate_id = ?,
       tax = ?, final_price = ?, active = ?, unit = ?, description = ?, age_restriction = ?, is_service = ?,
-      product_kind = ?, default_quantity = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, updated_at = ?
+      product_kind = ?, default_quantity = ?, track_lot = ?, stock_quantity = ?, min_stock = ?, color = ?, image = ?, deleted = 0, updated_at = ?
      WHERE id = ? AND tenant_id = ? AND COALESCE(deleted, 0) = 0`,
     [
       nextCloudId,
@@ -370,6 +424,7 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
       isService,
       productKind,
       payload.default_quantity === false ? 0 : 1,
+      trackLot,
       Number(payload.stock_quantity ?? 0),
       Number(payload.min_stock ?? 0),
       inheritedColor,
@@ -381,6 +436,31 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
   );
 
   if (result.changes <= 0) return { success: true, updated: false };
+
+  if (!isService && productKind !== 'composed') {
+    try {
+      const { listWarehouseStockByProduct, refreshProductStockCache } = await import(
+        '../repositories/warehouses.repository.js'
+      );
+      const rows = await listWarehouseStockByProduct(localId, tenantId);
+      if (!rows.length) {
+        const warehouseId = await resolveWarehouseId({ tenantId });
+        await setWarehouseQuantity({
+          tenantId,
+          warehouseId,
+          productId: localId,
+          quantity: Number(payload.stock_quantity ?? 0) || 0,
+          cost: Number(payload.cost ?? 0) || 0,
+          referenceId: `PRODUCT-UPDATE:${localId}`,
+          allowNegative: true,
+        });
+      } else {
+        await refreshProductStockCache(localId, tenantId, now);
+      }
+    } catch (whErr) {
+      console.warn('[product] falha ao sincronizar stock de armazém', whErr?.message ?? whErr);
+    }
+  }
 
   if (Array.isArray(payload.bom_lines ?? payload.bomLines)) {
     const bomResult = await replaceProductBom(localId, payload.bom_lines ?? payload.bomLines, actorUser);
@@ -405,6 +485,7 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
       id: localId,
       cloud_id: nextCloudId,
       product_kind: productKind,
+      track_lot: Boolean(trackLot),
       is_service: Boolean(isService),
       tax_rate_id: Number(taxRate.id),
       tax: taxAmount,
@@ -528,67 +609,85 @@ export async function adjustStock(payload = {}, actorUser = null) {
   const kind = normalizeProductKind(product.product_kind);
   if (Number(product.is_service ?? 0) !== 0 || kind === 'composed') {
     return {
-      error: 'Produto sem controlo de estoque (serviço/composto). A quantidade não é alterada.',
+      error: 'Produto sem controlo de stock (serviço/composto). A quantidade não é alterada.',
       status: 400,
       code: 'STOCK_NOT_TRACKED',
     };
   }
 
+  let warehouseId;
+  try {
+    warehouseId = await resolveWarehouseId({
+      tenantId,
+      explicitWarehouseId: payload.warehouseId ?? payload.warehouse_id ?? null,
+    });
+  } catch (err) {
+    return { error: err?.message || 'Armazém inválido', status: err?.status || 400 };
+  }
+
+  const warehouseQtyBefore = await getWarehouseQuantity(warehouseId, productId, tenantId);
   const stockBefore = Number(product.stock_quantity ?? 0) || 0;
-  let stockAfter = stockBefore;
   let quantityDelta = 0;
+  let result;
 
-  if (mode === 'set') {
-    const counted = Number(payload.counted_quantity ?? payload.quantity);
-    if (!Number.isFinite(counted)) {
-      return { error: 'Quantidade de inventário inválida.', status: 400 };
+  try {
+    if (mode === 'set') {
+      const counted = Number(payload.counted_quantity ?? payload.quantity);
+      if (!Number.isFinite(counted)) {
+        return { error: 'Quantidade de inventário inválida.', status: 400 };
+      }
+      quantityDelta = counted - warehouseQtyBefore;
+      result = await setWarehouseQuantity({
+        tenantId,
+        warehouseId,
+        productId,
+        quantity: counted,
+        cost: Number(product.cost ?? 0) || 0,
+        lotCode: payload.lotCode ?? payload.lot_code ?? null,
+        referenceId: `INV-COUNT:${uuidv4()}`,
+        allowNegative: true,
+      });
+      if (result.unchanged) {
+        return {
+          success: true,
+          updated: false,
+          unchanged: true,
+          productId: String(productId),
+          warehouse_id: warehouseId,
+          stock_before: stockBefore,
+          stock_after: stockBefore,
+          warehouse_qty_before: warehouseQtyBefore,
+          warehouse_qty_after: warehouseQtyBefore,
+          quantity_delta: 0,
+        };
+      }
+    } else {
+      quantityDelta = Number(payload.quantity);
+      if (!Number.isFinite(quantityDelta) || quantityDelta === 0) {
+        return { error: 'quantity é obrigatório e diferente de zero', status: 400 };
+      }
+      if (warehouseQtyBefore + quantityDelta < 0) {
+        return { error: 'Stock insuficiente para ajuste', status: 409 };
+      }
+      result = await applyWarehouseDelta({
+        tenantId,
+        warehouseId,
+        productId,
+        delta: quantityDelta,
+        movementType: quantityDelta >= 0 ? 'restock' : 'adjustment',
+        referenceId: `INV-COUNT:${uuidv4()}`,
+        cost: quantityDelta > 0 ? Number(product.cost ?? 0) || 0 : null,
+        lotCode: quantityDelta > 0 ? payload.lotCode ?? payload.lot_code ?? null : null,
+        allowNegative: false,
+      });
     }
-    stockAfter = counted;
-    quantityDelta = counted - stockBefore;
-  } else {
-    quantityDelta = Number(payload.quantity);
-    if (!Number.isFinite(quantityDelta) || quantityDelta === 0) {
-      return { error: 'quantity é obrigatório e diferente de zero', status: 400 };
-    }
-    stockAfter = stockBefore + quantityDelta;
-    if (stockAfter < 0) {
-      return { error: 'Estoque insuficiente para ajuste', status: 409 };
-    }
+  } catch (err) {
+    const status = err?.status || err?.statusCode || 500;
+    return { error: err?.message || 'Falha ao actualizar stock', status };
   }
 
-  if (quantityDelta === 0 && mode === 'set') {
-    return {
-      success: true,
-      updated: false,
-      unchanged: true,
-      productId: String(productId),
-      stock_before: stockBefore,
-      stock_after: stockAfter,
-      quantity_delta: 0,
-    };
-  }
-
-  const result = await runDb(
-    `UPDATE products
-     SET stock_quantity = ?, updated_at = ?
-     WHERE id = ?
-       AND tenant_id = ?
-       AND COALESCE(deleted, 0) = 0`,
-    [stockAfter, now, productId, tenantId],
-  );
-
-  if (result.changes <= 0) {
-    return { error: 'Falha ao actualizar stock', status: 409 };
-  }
-
-  const referenceId = `INV-COUNT:${uuidv4()}`;
-  const movementType = quantityDelta >= 0 ? 'restock' : 'adjustment';
-  await runDb(
-    `INSERT INTO stock_movements
-      (cloud_id, tenant_id, product_id, movement_type, quantity, reference_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [uuidv4(), tenantId, productId, movementType, quantityDelta, referenceId, now, now],
-  );
+  const stockAfter = Number(result.stockAfter ?? result.totalAfter ?? stockBefore);
+  const referenceId = `INV-COUNT:${now}`;
 
   await logAudit('STOCK_COUNT', actorUser, {
     entity: 'product',
@@ -597,6 +696,7 @@ export async function adjustStock(payload = {}, actorUser = null) {
     quantity_delta: quantityDelta,
     stock_before: stockBefore,
     stock_after: stockAfter,
+    warehouse_id: warehouseId,
     reference_id: referenceId,
   });
 
@@ -646,13 +746,14 @@ export async function adjustStock(payload = {}, actorUser = null) {
     updated: true,
     productId: String(productId),
     product_name: String(product.name ?? ''),
+    warehouse_id: warehouseId,
     stock_before: stockBefore,
     stock_after: stockAfter,
+    warehouse_qty_before: warehouseQtyBefore,
+    warehouse_qty_after: Number(result.warehouseQtyAfter ?? warehouseQtyBefore + quantityDelta),
     quantity_delta: quantityDelta,
-    reference_id: referenceId,
-    unit: product.unit != null ? String(product.unit) : 'un',
-    syncQueued,
-    syncError,
+    sync_queued: syncQueued,
+    sync_error: syncError,
   };
 }
 
@@ -750,14 +851,22 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
       sm.created_at AS item_created_at,
       sm.reference_id AS document_id,
       sm.reference_id AS document_number,
+      sm.warehouse_id,
+      w.name AS warehouse_name,
+      sm.from_warehouse_id,
+      sm.to_warehouse_id,
       CASE
+        WHEN sm.movement_type = 'transfer_out' OR sm.movement_type = 'transfer_in' THEN 'Transferência'
         WHEN sm.reference_id LIKE 'INV-COUNT:%' THEN 'Inventário rápido'
         WHEN sm.reference_id LIKE 'WH/IN:%' OR sm.movement_type = 'restock' THEN 'Entrada de stock'
+        WHEN sm.movement_type = 'sale' THEN 'Venda'
         ELSE 'Ajuste de stock'
       END AS doc_type,
       CASE
+        WHEN sm.movement_type IN ('transfer_out', 'transfer_in') THEN 'WH/TR'
         WHEN sm.reference_id LIKE 'INV-COUNT:%' THEN 'INV'
         WHEN sm.reference_id LIKE 'WH/IN:%' OR sm.movement_type = 'restock' THEN 'WH/IN'
+        WHEN sm.movement_type = 'sale' THEN 'SALE'
         ELSE 'WH/ADJ'
       END AS doc_prefix,
       sm.created_at AS document_date,
@@ -766,6 +875,7 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
       'stock_move' AS source
     FROM stock_movements sm
     INNER JOIN products p ON p.id = sm.product_id AND p.tenant_id = sm.tenant_id
+    LEFT JOIN warehouses w ON w.id = sm.warehouse_id AND w.tenant_id = sm.tenant_id
     WHERE CAST(sm.product_id AS TEXT) = CAST(? AS TEXT)
       AND sm.tenant_id = ?
       AND (? IS NULL OR datetime(sm.created_at) >= datetime(?))
@@ -790,6 +900,7 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
     let movementType = 'venda';
     if (
       docPrefix === 'EN/ST' ||
+      docPrefix === 'FTF' ||
       docPrefix === 'PUR' ||
       docTypeNormalized === 'compra'
     ) {
@@ -801,7 +912,14 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
       docTypeNormalized === 'entrada de armazém'
     ) {
       movementType = 'entrada';
-    } else if (docPrefix === 'WH/LOSS' || docTypeNormalized === 'perdas' || docTypeNormalized.includes('quebra')) {
+    } else if (
+      docPrefix === 'WH/LOSS' ||
+      docPrefix === 'DP' ||
+      docPrefix === 'CP' ||
+      docTypeNormalized === 'perdas' ||
+      docTypeNormalized.includes('quebra') ||
+      docTypeNormalized.includes('desperd')
+    ) {
       movementType = 'quebra';
     } else if (docTypeNormalized.includes('devol')) {
       movementType = 'devolucao';
@@ -850,6 +968,8 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
       unit_price: Number(row?.price ?? 0) || 0,
       discount_amount: Number(row?.discount_amount ?? 0) || 0,
       date: movementDate,
+      warehouse_id: null,
+      warehouse_name: null,
     };
   };
 
@@ -858,19 +978,28 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
     const rawRef = String(row?.document_number ?? row?.document_id ?? '');
     const isCount = rawRef.startsWith('INV-COUNT:');
     const isWarehouseIn = rawRef.startsWith('WH/IN:');
-    const isPurchaseIn = rawRef.startsWith('EN/ST:') || rawRef.startsWith('PUR:');
+    const isPurchaseIn =
+      rawRef.startsWith('EN/ST:') ||
+      rawRef.startsWith('FTF:') ||
+      rawRef.startsWith('PUR:');
+    const isTransfer =
+      String(row?.doc_prefix ?? '') === 'WH/TR' ||
+      rawRef.includes('WH/TR:') ||
+      String(row?.doc_type ?? '').toLowerCase().includes('transfer');
     const movementId = row?.movement_id != null ? String(row.movement_id) : '';
     return {
       id: `sm-${movementId}`,
       product_id: row?.product_id != null ? String(row.product_id) : null,
       product_name: String(row?.product_name ?? ''),
-      movement_type: isCount
-        ? 'inventario'
-        : isPurchaseIn
-          ? 'compra'
-          : qty >= 0
-            ? 'entrada'
-            : 'ajuste',
+      movement_type: isTransfer
+        ? 'transferencia'
+        : isCount
+          ? 'inventario'
+          : isPurchaseIn
+            ? 'compra'
+            : qty >= 0
+              ? 'entrada'
+              : 'ajuste',
       document_type: String(
         row?.doc_type ??
           (isCount ? 'Inventário rápido' : isPurchaseIn ? 'Compra' : 'Entrada de stock'),
@@ -884,6 +1013,8 @@ export async function getProductHistory(productId, fromDateRaw, toDateRaw, actor
             : rawRef || null,
       document_id: rawRef || null,
       customer_name: isWarehouseIn ? 'Armazém' : isPurchaseIn ? 'Fornecedor' : 'Inventário',
+      warehouse_id: row?.warehouse_id != null ? String(row.warehouse_id) : null,
+      warehouse_name: row?.warehouse_name != null ? String(row.warehouse_name) : null,
       quantity: qty,
       quantity_abs: Math.abs(qty),
       unit_price: Number(row?.price ?? 0) || 0,

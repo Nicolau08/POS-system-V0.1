@@ -15,6 +15,12 @@ import {
 
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import {
+  getCachedLoginUsers,
+  getCachedPermissionRules,
+  setCachedLoginUsers,
+  setCachedPermissionRules,
+} from '@/lib/posSessionCache';
 import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
@@ -96,7 +102,7 @@ const OP_LABELS: Record<string, string> = {
   'painel.painel_controle': 'Painel de Controle',
   'painel.documentos': 'Documentos',
   'painel.produtos': 'Produtos',
-  'painel.estoque': 'Estoque',
+  'painel.estoque': 'Stock',
   'painel.relatorios': 'Relatórios',
   'painel.clientes_fornecedores': 'Clientes & Fornecedores',
   'painel.promocoes_acoes': 'Promoções & Ações',
@@ -128,7 +134,7 @@ const OP_LABELS: Record<string, string> = {
   'vendas.credit_payments': 'Credit payments',
   'vendas.abrir_caixa': 'Abertura de caixa',
   'vendas.abrir_gaveta_dinheiro': 'Abrir a gaveta do dinheiro',
-  'vendas.venda_estoque_zero': 'Venda de quantidade de estoque zero',
+  'vendas.venda_estoque_zero': 'Venda de quantidade de stock zero',
 };
 
 type SecurityGroup =
@@ -195,7 +201,7 @@ const SECURITY_GROUPS: SecurityGroup[] = [
     ],
   },
   {
-    title: 'Estoque',
+    title: 'Stock',
     layout: 'single',
     keys: ['estoque.inventario_rapido', 'estoque.ver_preco_custo'],
   },
@@ -207,8 +213,20 @@ export default function UsersSecurityManager() {
   const isPackagedDesktop = useIsPackagedDesktop();
   const [subTab, setSubTab] = useState<'users' | 'security'>('users');
 
-  const [users, setUsers] = useState<ManagedUser[]>([]);
-  const [usersLoading, setUsersLoading] = useState(true);
+  const [users, setUsers] = useState<ManagedUser[]>(() => {
+    const cached = getCachedLoginUsers();
+    if (!cached?.length) return [];
+    return cached.map((u) => ({
+      id: String(u.id),
+      name: String(u.name ?? ''),
+      surname: u.surname == null ? null : String(u.surname),
+      email: u.email == null ? null : String(u.email),
+      role: String(u.role ?? 'cashier'),
+      accessLevel: clampLevel(Number(u.accessLevel ?? 0)),
+      active: u.active === false ? false : Boolean(u.active ?? true),
+    }));
+  });
+  const [usersLoading, setUsersLoading] = useState(() => !getCachedLoginUsers()?.length);
   const [showInactive, setShowInactive] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
@@ -224,8 +242,16 @@ export default function UsersSecurityManager() {
     active: true,
   });
 
-  const [permissionRules, setPermissionRules] = useState<Record<string, PermissionRule>>({});
-  const [rulesLoading, setRulesLoading] = useState(true);
+  const [permissionRules, setPermissionRules] = useState<Record<string, PermissionRule>>(() => {
+    const cached = getCachedPermissionRules();
+    if (!cached) return {};
+    const normalized: Record<string, PermissionRule> = {};
+    for (const [key, requiredLevel] of Object.entries(cached)) {
+      normalized[key] = { key, requiredLevel: clampLevel(requiredLevel) };
+    }
+    return normalized;
+  });
+  const [rulesLoading, setRulesLoading] = useState(() => !getCachedPermissionRules());
   const [rulesSaving, setRulesSaving] = useState(false);
 
   const selectedUser = useMemo(
@@ -245,7 +271,8 @@ export default function UsersSecurityManager() {
   }, [usersFiltered, selectedUserId]);
 
   const fetchUsers = async () => {
-    setUsersLoading(true);
+    const hasCache = Boolean(getCachedLoginUsers()?.length);
+    if (!hasCache) setUsersLoading(true);
     try {
       const res = await fetch(`${getPosApiBase()}/users`);
       if (!res.ok) throw new Error('Falha ao carregar usuários');
@@ -260,6 +287,17 @@ export default function UsersSecurityManager() {
         active: u.active === false ? false : Boolean(u.active ?? true),
       }));
       setUsers(normalized);
+      setCachedLoginUsers(
+        normalized.map((u) => ({
+          id: u.id,
+          name: u.name,
+          surname: u.surname,
+          email: u.email,
+          role: u.role === 'admin' ? 'admin' : 'user',
+          accessLevel: u.accessLevel,
+          active: u.active,
+        }))
+      );
 
       setSelectedUserId((prev) => {
         if (prev && normalized.some((u) => u.id === prev)) return prev;
@@ -271,7 +309,8 @@ export default function UsersSecurityManager() {
   };
 
   const fetchRules = async () => {
-    setRulesLoading(true);
+    const hasCache = Boolean(getCachedPermissionRules());
+    if (!hasCache) setRulesLoading(true);
     try {
       const res = await fetch(`${getPosApiBase()}/permission-rules`, {
         headers: { ...getPosUserAuthHeaders() },
@@ -294,6 +333,11 @@ export default function UsersSecurityManager() {
       }
 
       setPermissionRules(normalized);
+      const map: Record<string, number> = {};
+      for (const [key, rule] of Object.entries(normalized)) {
+        map[key] = rule.requiredLevel;
+      }
+      setCachedPermissionRules(map);
     } finally {
       setRulesLoading(false);
     }

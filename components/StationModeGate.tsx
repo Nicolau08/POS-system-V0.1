@@ -12,6 +12,7 @@ import {
  * Ecrã de 1.º arranque: Servidor da loja vs Posto remoto.
  */
 export function StationModeGate({ children }: { children: React.ReactNode }) {
+  // null até montar no cliente — mesmo HTML no SSR e no 1.º paint (evita hydration mismatch).
   const [mode, setMode] = useState<StationMode | null>(null);
 
   useEffect(() => {
@@ -20,11 +21,7 @@ export function StationModeGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   if (mode === null) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#121212] text-zinc-400">
-        A carregar…
-      </div>
-    );
+    return null;
   }
 
   if (mode !== 'unset') {

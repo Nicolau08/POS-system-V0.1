@@ -16,6 +16,10 @@ import {
   resolveLicenseHmacSecret,
   validateMachineBoundLicense,
 } from './setup.service.js';
+import {
+  normalizeCapabilities,
+  normalizeVertical,
+} from '../utils/tenantCapabilities.js';
 
 const runDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -27,6 +31,18 @@ const runDb = (sql, params = []) =>
 
 function normalizeText(value) {
   return String(value ?? '').trim();
+}
+
+function normalizeOptionalVertical(value, fallbackCommerceType = null) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+  return normalizeVertical(raw, fallbackCommerceType);
+}
+
+function normalizeOptionalCapabilitiesJson(value, vertical = null, fallbackCommerceType = null) {
+  if (value == null) return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  return JSON.stringify(normalizeCapabilities(value, vertical, fallbackCommerceType));
 }
 
 function resolveIssuerBaseUrl() {
@@ -238,10 +254,16 @@ export async function syncLicenseRegistry() {
     const nuit = normalizeText(store?.nuit);
     const plan = normalizeText(store?.plan);
     const commerceType = normalizeText(store?.commerce_type) || null;
+    const vertical = normalizeOptionalVertical(store?.vertical, commerceType);
+    const capabilitiesJson = normalizeOptionalCapabilitiesJson(
+      store?.capabilities_json ?? store?.capabilities,
+      vertical,
+      commerceType,
+    );
     const remoteExpires = normalizeText(store?.expires_at) || expiresAt;
     const now = new Date().toISOString();
 
-    if (displayName || nuit || plan || commerceType) {
+    if (displayName || nuit || plan || commerceType || vertical || capabilitiesJson) {
       await runDb(
         `INSERT INTO tenants (id, name, created_at)
          VALUES (?, ?, ?)
@@ -249,13 +271,15 @@ export async function syncLicenseRegistry() {
         [tenantId, displayName || tenantId, now, displayName || null],
       );
       await runDb(
-        `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, vertical, capabilities_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = COALESCE(?, name),
            nuit = COALESCE(?, nuit),
            license_type = COALESCE(?, license_type),
            commerce_type = COALESCE(?, commerce_type),
+           vertical = COALESCE(?, vertical),
+           capabilities_json = COALESCE(?, capabilities_json),
            updated_at = excluded.updated_at`,
         [
           tenantId,
@@ -263,12 +287,16 @@ export async function syncLicenseRegistry() {
           nuit || null,
           plan || 'LITE',
           commerceType || 'retalho',
+          vertical,
+          capabilitiesJson,
           now,
           now,
           displayName || null,
           nuit || null,
           plan || null,
           commerceType,
+          vertical,
+          capabilitiesJson,
         ],
       );
       if (plan) {
@@ -363,7 +391,13 @@ export async function syncLicenseRegistry() {
   const nuit = normalizeText(status.data?.nuit);
   const displayName = normalizeText(status.data?.display_name);
   const commerceType = normalizeText(status.data?.commerce_type) || null;
-  if (plan || nuit || displayName || commerceType) {
+  const vertical = normalizeOptionalVertical(status.data?.vertical, commerceType);
+  const capabilitiesJson = normalizeOptionalCapabilitiesJson(
+    status.data?.capabilities_json ?? status.data?.capabilities,
+    vertical,
+    commerceType,
+  );
+  if (plan || nuit || displayName || commerceType || vertical || capabilitiesJson) {
     const tenantId = verified.license.tenant_id;
     const now = new Date().toISOString();
 
@@ -376,13 +410,15 @@ export async function syncLicenseRegistry() {
     );
 
     await runDb(
-      `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO tenant_profile (id, name, nuit, license_type, commerce_type, vertical, capabilities_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = COALESCE(?, name),
          nuit = COALESCE(?, nuit),
          license_type = COALESCE(?, license_type),
          commerce_type = COALESCE(?, commerce_type),
+         vertical = COALESCE(?, vertical),
+         capabilities_json = COALESCE(?, capabilities_json),
          updated_at = excluded.updated_at`,
       [
         tenantId,
@@ -390,12 +426,16 @@ export async function syncLicenseRegistry() {
         nuit || null,
         plan || 'LITE',
         commerceType || 'retalho',
+        vertical,
+        capabilitiesJson,
         now,
         now,
         displayName || null,
         nuit || null,
         plan || null,
         commerceType,
+        vertical,
+        capabilitiesJson,
       ],
     );
 

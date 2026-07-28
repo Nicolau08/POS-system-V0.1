@@ -9,8 +9,16 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-import { getPosApiBase, getPosApiDirectBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosApiDirectBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import {
+  getCachedCategories,
+  getCachedTaxRates,
+  getPosCatalogCache,
+  patchPosCatalogCache,
+  setCachedCategories,
+  setCachedTaxRates,
+} from '@/lib/posSessionCache';
 import { formatMoneyMt, moneyFieldLabel, POS_MONEY_PLACEHOLDER } from '@/lib/currency';
 import {
   CATEGORY_COLOR_PALETTE,
@@ -18,9 +26,33 @@ import {
   randomCategoryColor,
   resolveCategoryColor,
 } from '@/lib/categoryColors';
+import { calcMargin } from '@/lib/margin';
 import PosSelect from '@/components/PosSelect';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
+
+/** Mostra margem € e % a partir do preço de venda e custo. */
+function ProductMarginReadout({ sellingPrice, unitCost }: { sellingPrice: number; unitCost: number }) {
+  const { amount, percent } = calcMargin(sellingPrice, unitCost);
+  const negative = percent < 0;
+  const tone = negative ? 'text-amber-400' : 'text-zinc-200';
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      <div className="space-y-1">
+        <label className="text-xs text-zinc-400">{moneyFieldLabel('Margem')}</label>
+        <p className={`rounded border border-zinc-800 bg-[#141414] px-3 py-1.5 text-sm ${tone}`}>
+          {formatMoneyMt(amount)}
+        </p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-zinc-400">Margem %</label>
+        <p className={`rounded border border-zinc-800 bg-[#141414] px-3 py-1.5 text-sm ${tone}`}>
+          {percent.toFixed(1)}%
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function parseMoneyInput(raw: string): number {
   const n = Number(String(raw).replace(',', '.'));
@@ -84,6 +116,7 @@ interface Product {
   is_service?: boolean;
   product_kind?: 'simple' | 'composed' | 'ingredient' | 'service';
   default_quantity?: boolean;
+  track_lot?: boolean;
   stock_quantity: number;
   min_stock?: number;
   color?: string;
@@ -184,10 +217,18 @@ function flattenCategoryTree(categories: Category[]): Array<Category & { depth: 
 }
 
 export default function ProductsManager() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [taxRates, setTaxRates] = useState<TaxRate[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [products, setProducts] = useState<Product[]>(
+    () => (getPosCatalogCache()?.products as Product[] | undefined) ?? []
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => (getCachedCategories() as Category[] | null) ?? []
+  );
+  const [taxRates, setTaxRates] = useState<TaxRate[]>(
+    () => (getCachedTaxRates() as TaxRate[] | null) ?? []
+  );
+  const [loading, setLoading] = useState(
+    () => !getPosCatalogCache()?.products?.length && !getCachedCategories()?.length
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
@@ -322,6 +363,7 @@ export default function ProductsManager() {
     is_service: false,
     product_kind: 'simple' as ProductKind,
     default_quantity: true,
+    track_lot: false,
     stock_quantity: 0,
     min_stock: 0,
     image: '',
@@ -340,7 +382,7 @@ export default function ProductsManager() {
     [products]
   );
 
-  const applyProductKind = <T extends { product_kind?: ProductKind; is_service?: boolean }>(
+  const applyProductKind = <T extends { product_kind?: ProductKind; is_service?: boolean; track_lot?: boolean }>(
     prev: T,
     product_kind: ProductKind
   ): T => ({
@@ -352,6 +394,8 @@ export default function ProductsManager() {
         : product_kind === 'ingredient'
           ? false
           : false,
+    track_lot:
+      product_kind === 'simple' || product_kind === 'ingredient' ? Boolean(prev.track_lot) : false,
   });
 
   const openNewProductModal = () => {
@@ -376,6 +420,7 @@ export default function ProductsManager() {
       is_service: false,
       product_kind: 'simple',
       default_quantity: true,
+      track_lot: false,
       stock_quantity: 0,
       min_stock: 0,
       image: '',
@@ -388,13 +433,16 @@ export default function ProductsManager() {
   };
 
   const fetchData = async () => {
-    setLoading(true);
+    const hasCache =
+      Boolean(getPosCatalogCache()?.products?.length) || Boolean(getCachedCategories()?.length);
+    if (!hasCache) setLoading(true);
     try {
       const directApiBase = getPosApiDirectBase();
+      const authHeaders = getPosUserAuthHeaders();
       const [catRes, prodRes, taxRes] = await Promise.all([
-        fetch(`${directApiBase}/categorias`),
-        fetch(`${directApiBase}/produtos`),
-        fetch(`${directApiBase}/tax-rates`)
+        fetch(`${directApiBase}/categorias`, { headers: { ...authHeaders } }),
+        fetch(`${directApiBase}/produtos`, { headers: { ...authHeaders } }),
+        fetch(`${directApiBase}/tax-rates`, { headers: { ...authHeaders } }),
       ]);
       if (!catRes.ok) throw new Error(`Falha ao carregar categorias (${catRes.status})`);
       if (!prodRes.ok) throw new Error(`Falha ao carregar produtos (${prodRes.status})`);
@@ -402,18 +450,22 @@ export default function ProductsManager() {
       const catData = unwrapApiSuccessPayload<any[]>(await catRes.json());
       const prodData = unwrapApiSuccessPayload<any[]>(await prodRes.json());
       const taxData = unwrapApiSuccessPayload<TaxRate[]>(await taxRes.json());
-      setCategories(catData || []);
-      setProducts(prodData || []);
-      setTaxRates(
-        Array.isArray(taxData)
-          ? taxData.map((row) => ({
-              ...row,
-              priceIncludesTax:
-                Number(row.rate) === 0 ? false : row.priceIncludesTax !== false,
-              isDefault: Boolean(row.isDefault),
-            }))
-          : [],
-      );
+      const nextCategories = catData || [];
+      const nextProducts = prodData || [];
+      const nextTaxRates = Array.isArray(taxData)
+        ? taxData.map((row) => ({
+            ...row,
+            priceIncludesTax:
+              Number(row.rate) === 0 ? false : row.priceIncludesTax !== false,
+            isDefault: Boolean(row.isDefault),
+          }))
+        : [];
+      setCategories(nextCategories);
+      setProducts(nextProducts);
+      setTaxRates(nextTaxRates);
+      setCachedCategories(nextCategories);
+      setCachedTaxRates(nextTaxRates);
+      patchPosCatalogCache({ products: nextProducts as any });
     } catch (error) {
       console.error('Error fetching products/categories:', error);
     } finally {
@@ -452,7 +504,7 @@ export default function ProductsManager() {
       const directApiBase = getPosApiDirectBase();
       const response = await fetch(`${directApiBase}/produtos`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({
           code: finalCode,
           name: newProduct.name,
@@ -469,6 +521,7 @@ export default function ProductsManager() {
             newProduct.product_kind === 'composed' || newProduct.product_kind === 'service',
           product_kind: newProduct.product_kind || 'simple',
           default_quantity: newProduct.default_quantity,
+          track_lot: Boolean(newProduct.track_lot),
           stock_quantity: Number(newProduct.stock_quantity) || 0,
           min_stock: Number(newProduct.min_stock) || 0,
           image: newProduct.image || null,
@@ -508,6 +561,7 @@ export default function ProductsManager() {
         is_service: false,
         product_kind: 'simple',
         default_quantity: true,
+        track_lot: false,
         stock_quantity: 0,
         min_stock: 0,
         image: ''
@@ -536,7 +590,10 @@ export default function ProductsManager() {
     if (!productToDelete) return;
 
     try {
-      const response = await fetch(`${getPosApiBase()}/produtos/${productToDelete}`, { method: 'DELETE' });
+      const response = await fetch(`${getPosApiBase()}/produtos/${productToDelete}`, {
+        method: 'DELETE',
+        headers: { ...getPosUserAuthHeaders() },
+      });
       if (!response.ok) throw new Error('Falha ao remover produto');
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
@@ -566,7 +623,7 @@ export default function ProductsManager() {
       const directApiBase = getPosApiDirectBase();
       const response = await fetch(`${directApiBase}/produtos/${editingProduct.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({
           code: Number(editingProduct.code),
           name: editingProduct.name,
@@ -584,6 +641,7 @@ export default function ProductsManager() {
             (editingProduct.product_kind ?? 'simple') === 'service',
           product_kind: editingProduct.product_kind || 'simple',
           default_quantity: editingProduct.default_quantity,
+          track_lot: Boolean(editingProduct.track_lot),
           stock_quantity: Number(editingProduct.stock_quantity) || 0,
           min_stock: Number(editingProduct.min_stock) || 0,
           image: editingProduct.image || null,
@@ -662,7 +720,7 @@ export default function ProductsManager() {
     ...(currentFormKind === 'composed' ? [{ key: 'ficha', label: 'Ficha técnica' }] : []),
     ...(currentFormKind === 'composed' || currentFormKind === 'service'
       ? []
-      : [{ key: 'estoque', label: 'Controle de estoque' }]),
+      : [{ key: 'estoque', label: 'Controle de stock' }]),
   ];
   const secondaryTabs = [
     { key: 'comentarios', label: 'Comentários' },
@@ -674,7 +732,9 @@ export default function ProductsManager() {
 
   const loadBomForProduct = async (productId: string) => {
     try {
-      const res = await fetch(`${getPosApiDirectBase()}/produtos/${productId}/bom`);
+      const res = await fetch(`${getPosApiDirectBase()}/produtos/${productId}/bom`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
       if (!res.ok) {
         setEditBomLines([]);
         return;
@@ -1414,6 +1474,14 @@ export default function ProductsManager() {
                       checked={Boolean(newProduct.active)}
                       onChange={(active) => setNewProduct({ ...newProduct, active })}
                     />
+                    {newProduct.product_kind === 'simple' || newProduct.product_kind === 'ingredient' ? (
+                      <PosSwitch
+                        label="Lote"
+                        title="Quando activo, compras e entradas pedem o código do lote. O custo FIFO e a margem actualizam sempre."
+                        checked={Boolean(newProduct.track_lot)}
+                        onChange={(track_lot) => setNewProduct({ ...newProduct, track_lot })}
+                      />
+                    ) : null}
                     <PosSwitch
                       label="Quantidade padrão"
                       checked={Boolean(newProduct.default_quantity)}
@@ -1473,6 +1541,7 @@ export default function ProductsManager() {
                           className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                         />
                       </div>
+                      <ProductMarginReadout sellingPrice={Number(newProduct.price) || 0} unitCost={Number(newProduct.cost) || 0} />
                     </>
                   ) : (
                     <>
@@ -1512,6 +1581,8 @@ export default function ProductsManager() {
                           />
                         </div>
                       </div>
+
+                      <ProductMarginReadout sellingPrice={Number(newProduct.price) || 0} unitCost={Number(newProduct.cost) || 0} />
 
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
@@ -1639,7 +1710,7 @@ export default function ProductsManager() {
               {activeTab === 'estoque' && (
                 <div className="space-y-4">
                   <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Quantidade em estoque</label>
+                    <label className="text-xs text-zinc-400">Quantidade em stock</label>
                     <input 
                       type="number" 
                       step="0.01"
@@ -1649,7 +1720,7 @@ export default function ProductsManager() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Estoque mínimo</label>
+                    <label className="text-xs text-zinc-400">Stock mínimo</label>
                     <input 
                       type="number" 
                       step="0.01"
@@ -1882,6 +1953,15 @@ export default function ProductsManager() {
                       checked={Boolean(editingProduct.active)}
                       onChange={(active) => setEditingProduct({ ...editingProduct, active })}
                     />
+                    {(editingProduct.product_kind || 'simple') === 'simple' ||
+                    (editingProduct.product_kind || 'simple') === 'ingredient' ? (
+                      <PosSwitch
+                        label="Lote"
+                        title="Quando activo, compras e entradas pedem o código do lote. O custo FIFO e a margem actualizam sempre."
+                        checked={Boolean(editingProduct.track_lot)}
+                        onChange={(track_lot) => setEditingProduct({ ...editingProduct, track_lot })}
+                      />
+                    ) : null}
                     <PosSwitch
                       label="Quantidade padrão"
                       checked={Boolean(editingProduct.default_quantity)}
@@ -1943,6 +2023,10 @@ export default function ProductsManager() {
                           className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors placeholder:text-zinc-600"
                         />
                       </div>
+                      <ProductMarginReadout
+                        sellingPrice={Number(editingProduct.price) || 0}
+                        unitCost={Number(editingProduct.cost) || 0}
+                      />
                     </>
                   ) : (
                     <>
@@ -1982,6 +2066,11 @@ export default function ProductsManager() {
                           />
                         </div>
                       </div>
+
+                      <ProductMarginReadout
+                        sellingPrice={Number(editingProduct.price) || 0}
+                        unitCost={Number(editingProduct.cost) || 0}
+                      />
 
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
@@ -2111,7 +2200,7 @@ export default function ProductsManager() {
               {activeTab === 'estoque' && (
                 <div className="space-y-4">
                   <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Quantidade em estoque</label>
+                    <label className="text-xs text-zinc-400">Quantidade em stock</label>
                     <input 
                       type="number" 
                       step="0.01"
@@ -2121,7 +2210,7 @@ export default function ProductsManager() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs text-zinc-400">Estoque mínimo</label>
+                    <label className="text-xs text-zinc-400">Stock mínimo</label>
                     <input 
                       type="number" 
                       step="0.01"

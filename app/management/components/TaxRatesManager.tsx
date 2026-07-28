@@ -7,6 +7,7 @@ import PosSelect from '@/components/PosSelect';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { getCachedTaxRates, setCachedTaxRates } from '@/lib/posSessionCache';
 
 type TaxRate = {
   id: string;
@@ -68,9 +69,11 @@ function buildCode(name: string, rate: number) {
 }
 
 export default function TaxRatesManager() {
-  const [rows, setRows] = useState<TaxRate[]>([]);
+  const [rows, setRows] = useState<TaxRate[]>(
+    () => (getCachedTaxRates() as TaxRate[] | null) ?? []
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !getCachedTaxRates()?.length);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<TaxForm>(EMPTY_FORM);
@@ -79,7 +82,8 @@ export default function TaxRatesManager() {
   const [swapTo, setSwapTo] = useState('');
 
   const fetchRows = useCallback(async () => {
-    setLoading(true);
+    const hasCache = Boolean(getCachedTaxRates()?.length);
+    if (!hasCache) setLoading(true);
     try {
       const response = await fetch(`${getPosApiBase()}/tax-rates?_=${Date.now()}`, {
         cache: 'no-store',
@@ -88,18 +92,18 @@ export default function TaxRatesManager() {
       const json = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(errorMessage(json, 'Falha ao carregar impostos.'));
       const data = unwrapApiSuccessPayload<TaxRate[]>(json);
-      setRows(
-        Array.isArray(data)
-          ? data.map((row) => ({
-              ...row,
-              priceIncludesTax: resolveFormPriceIncludesTax(Number(row.rate), row.priceIncludesTax !== false),
-              isDefault: Boolean(row.isDefault),
-            }))
-          : [],
-      );
+      const next = Array.isArray(data)
+        ? data.map((row) => ({
+            ...row,
+            priceIncludesTax: resolveFormPriceIncludesTax(Number(row.rate), row.priceIncludesTax !== false),
+            isDefault: Boolean(row.isDefault),
+          }))
+        : [];
+      setRows(next);
+      setCachedTaxRates(next);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Falha ao carregar impostos.');
-      setRows([]);
+      if (!getCachedTaxRates()?.length) setRows([]);
     } finally {
       setLoading(false);
     }

@@ -411,7 +411,11 @@ export const updateStock = async (productId: string, quantity: number) => {
 };
 
 /** Inventário rápido: define a quantidade contada (absoluta) e grava movimento. */
-export const setStockCountedQuantity = async (productId: string, countedQuantity: number) => {
+export const setStockCountedQuantity = async (
+  productId: string,
+  countedQuantity: number,
+  warehouseId?: string | null,
+) => {
   return fetchJSON('/stock', {
     method: 'POST',
     headers: {
@@ -421,6 +425,7 @@ export const setStockCountedQuantity = async (productId: string, countedQuantity
       productId,
       counted_quantity: countedQuantity,
       mode: 'set',
+      ...(warehouseId ? { warehouseId } : {}),
     }),
   });
 };
@@ -679,22 +684,20 @@ export type PosLocation = {
   active: boolean;
   sortOrder: number;
   allowCustomNames: boolean;
+  /** null = usar armazém principal (default) do tenant */
+  warehouseId: string | null;
   tables: PosLocationTable[];
   tablesSummary?: string;
 };
 
-export type PrintCenter = {
+export type PosWarehouse = {
   id: string;
   name: string;
-  connectionType: 'windows' | 'network' | string;
-  windowsPrinterName: string | null;
-  host: string | null;
-  port: number;
-  paperWidth: number;
-  enabled: boolean;
-  sortOrder: number;
-  categoryIds: string[];
-  categories: Array<{ id: string; name: string; parentId: string | null }>;
+  code: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export const fetchLocations = async (): Promise<PosLocation[]> => {
@@ -702,6 +705,12 @@ export const fetchLocations = async (): Promise<PosLocation[]> => {
   return (Array.isArray(rows) ? rows : []).map((row: any) => ({
     ...row,
     allowCustomNames: Boolean(row?.allowCustomNames ?? row?.allow_custom_names),
+    warehouseId:
+      row?.warehouseId != null
+        ? String(row.warehouseId)
+        : row?.warehouse_id != null
+          ? String(row.warehouse_id)
+          : null,
     tables: Array.isArray(row?.tables) ? row.tables : [],
     tablesSummary: row?.tablesSummary != null ? String(row.tablesSummary) : undefined,
   }));
@@ -715,6 +724,7 @@ export const createLocationApi = async (payload: {
   sortOrder?: number;
   tablesSpec?: string;
   allowCustomNames?: boolean;
+  warehouseId?: string | null;
 }) => fetchJSON('/locations', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -730,6 +740,7 @@ export const updateLocationApi = async (
     active: boolean;
     sortOrder: number;
     allowCustomNames: boolean;
+    warehouseId: string | null;
   }>,
 ) =>
   fetchJSON(`/locations/${id}`, {
@@ -737,6 +748,78 @@ export const updateLocationApi = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+
+export const fetchWarehouses = async (): Promise<PosWarehouse[]> => {
+  const rows = await fetchJSON(`/warehouses?_=${Date.now()}`, { cache: 'no-store' });
+  return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    code: row.code != null ? String(row.code) : null,
+    isDefault: Boolean(row.isDefault ?? row.is_default),
+    isActive: Boolean(row.isActive ?? row.is_active ?? true),
+    createdAt: row.createdAt ?? row.created_at ?? null,
+    updatedAt: row.updatedAt ?? row.updated_at ?? null,
+  }));
+};
+
+export const createWarehouseApi = async (payload: {
+  name: string;
+  code?: string;
+  isActive?: boolean;
+  isDefault?: boolean;
+}) =>
+  fetchJSON('/warehouses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const updateWarehouseApi = async (
+  id: string,
+  payload: Partial<{
+    name: string;
+    code: string;
+    isActive: boolean;
+  }>,
+) =>
+  fetchJSON(`/warehouses/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const setDefaultWarehouseApi = async (id: string) =>
+  fetchJSON(`/warehouses/${id}/set-default`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+
+export const transferWarehouseStockApi = async (payload: {
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  items: Array<{ productId: string | number; quantity: number; name?: string }>;
+  documentDate?: string;
+}) =>
+  fetchJSON('/warehouses/transfer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export type PrintCenter = {
+  id: string;
+  name: string;
+  connectionType: 'windows' | 'network' | string;
+  windowsPrinterName: string | null;
+  host: string | null;
+  port: number;
+  paperWidth: number;
+  enabled: boolean;
+  sortOrder: number;
+  categoryIds: string[];
+  categories: Array<{ id: string; name: string; parentId: string | null }>;
+};
 
 export const deleteLocationApi = async (id: string) =>
   fetchJSON(`/locations/${id}`, { method: 'DELETE' });

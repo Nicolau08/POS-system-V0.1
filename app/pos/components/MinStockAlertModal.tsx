@@ -35,9 +35,9 @@ export function MinStockAlertModal({
                 <AlertTriangle size={32} />
               </div>
               <div>
-                <h2 className="text-xl font-bold text-white tracking-tight">Aviso de estoque</h2>
+                <h2 className="text-xl font-bold text-white tracking-tight">Aviso de stock</h2>
                 <p className="text-sm text-zinc-400 mt-2">
-                  O estoque de{' '}
+                  O stock de{' '}
                   <span className="text-white font-bold">&quot;{alert.name}&quot;</span> está no
                   nível mínimo ({alert.quantity}). Reabastecimento necessário.
                 </p>

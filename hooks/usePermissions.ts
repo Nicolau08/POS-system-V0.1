@@ -9,6 +9,10 @@ import {
   type PermissionRulesMap,
   clampAccessLevel,
 } from '@/lib/permissions';
+import {
+  getCachedPermissionRules,
+  setCachedPermissionRules,
+} from '@/lib/posSessionCache';
 
 function unwrapRulesPayload(payload: unknown): PermissionRulesMap {
   const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
@@ -47,8 +51,10 @@ function readAccessLevelFromSession(): number {
  * Carrega permission_rules e expõe can(key) com o accessLevel da sessão.
  */
 export function usePermissions(accessLevelOverride?: number | null) {
-  const [rules, setRules] = useState<PermissionRulesMap | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [rules, setRules] = useState<PermissionRulesMap | null>(
+    () => getCachedPermissionRules()
+  );
+  const [loading, setLoading] = useState(() => !getCachedPermissionRules());
   const [sessionLevel, setSessionLevel] = useState(0);
 
   useEffect(() => {
@@ -65,7 +71,8 @@ export function usePermissions(accessLevelOverride?: number | null) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      setLoading(true);
+      const hadCache = Boolean(getCachedPermissionRules());
+      if (!hadCache) setLoading(true);
       try {
         const res = await fetch(`${getPosApiBase()}/permission-rules`, {
           headers: { ...getPosUserAuthHeaders() },
@@ -73,9 +80,13 @@ export function usePermissions(accessLevelOverride?: number | null) {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-        if (!cancelled) setRules(unwrapRulesPayload(json));
+        if (!cancelled) {
+          const next = unwrapRulesPayload(json);
+          setRules(next);
+          setCachedPermissionRules(next);
+        }
       } catch {
-        if (!cancelled) setRules({});
+        if (!cancelled && !getCachedPermissionRules()) setRules({});
       } finally {
         if (!cancelled) setLoading(false);
       }

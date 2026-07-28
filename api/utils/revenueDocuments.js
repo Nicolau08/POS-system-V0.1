@@ -5,16 +5,20 @@ export function resolveDocCode(doc) {
   if (docType === 'VD' || docType === 'VENDA') return 'VD';
   if (docType === 'FT' || docType === 'FATURA') return 'FT';
   if (docType === 'FP' || docType.includes('PROFORMA') || docType.includes('COTAC')) return 'FP';
+  if (docType === 'RCA' || docType === 'AD') return 'RCA';
   if (docType === 'RC' || docType === 'RECIBO') return 'RC';
   if (docType === 'NC') return 'NC';
   if (docType === 'TK' || docType === 'TICKET') return 'TK';
+  if (docType === 'PAAD') return 'PAAD';
 
   if (docNumber.startsWith('VD/')) return 'VD';
   if (docNumber.startsWith('FT/')) return 'FT';
   if (docNumber.startsWith('FP/')) return 'FP';
+  if (docNumber.startsWith('RCA/') || docNumber.startsWith('AD/')) return 'RCA';
   if (docNumber.startsWith('RC/') || docNumber.startsWith('PBNK')) return 'RC';
   if (docNumber.startsWith('NC/')) return 'NC';
   if (docNumber.startsWith('TK/')) return 'TK';
+  if (docNumber.startsWith('PAAD/')) return 'PAAD';
 
   return docType || 'VD';
 }
@@ -44,7 +48,7 @@ export function isPendingContaCorrenteFt(doc) {
  */
 export function isCashInflowDocument(doc) {
   const code = resolveDocCode(doc);
-  if (code === 'FP' || code === 'NC' || code === 'INV') return false;
+  if (code === 'FP' || code === 'NC' || code === 'INV' || code === 'RCA' || code === 'AD' || code === 'PAAD') return false;
   const docType = String(doc?.doc_type ?? '').toLowerCase();
   if (docType.includes('invent')) return false;
 

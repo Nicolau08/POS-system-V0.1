@@ -21,9 +21,10 @@ export type ReportKey =
   | 'stock_movement'
   | 'low_stock'
   | 'inventory_valuation'
-  | 'product_margin';
+  | 'product_margin'
+  | 'realized_margin';
 
-export type ReportSection = 'Vendas' | 'Documentos Fiscais' | 'Financeiro' | 'Cadastros' | 'Estoque';
+export type ReportSection = 'Vendas' | 'Documentos Fiscais' | 'Financeiro' | 'Cadastros' | 'Stock';
 
 export type ReportRow = Record<string, string | number | null>;
 
@@ -80,10 +81,11 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   { key: 'products', title: 'Produtos', section: 'Cadastros', description: 'Lista geral de produtos, preços, categoria e stock.' },
   { key: 'customers', title: 'Clientes', section: 'Cadastros', description: 'Relação de clientes com contactos.' },
 
-  { key: 'stock_movement', title: 'Movimento de estoque', section: 'Estoque', description: 'Stock atual, mínimo e valor do inventário.' },
-  { key: 'low_stock', title: 'Stock mínimo / ruptura', section: 'Estoque', description: 'Produtos abaixo do stock mínimo ou sem stock.' },
-  { key: 'inventory_valuation', title: 'Valorização de inventário', section: 'Estoque', description: 'Valor total do stock ao custo e à venda.' },
-  { key: 'product_margin', title: 'Margem por produto', section: 'Estoque', description: 'Diferença entre preço de venda e custo por produto.' },
+  { key: 'stock_movement', title: 'Movimento de stock', section: 'Stock', description: 'Stock atual, mínimo e valor do inventário.' },
+  { key: 'low_stock', title: 'Stock mínimo / ruptura', section: 'Stock', description: 'Produtos abaixo do stock mínimo ou sem stock.' },
+  { key: 'inventory_valuation', title: 'Valorização de inventário', section: 'Stock', description: 'Valor total do stock ao custo e à venda.' },
+  { key: 'product_margin', title: 'Margem por produto', section: 'Stock', description: 'Diferença entre preço de venda e custo por produto.' },
+  { key: 'realized_margin', title: 'Margem realizada', section: 'Stock', description: 'Receita menos COGS FIFO (cogs_total) nas vendas do período.' },
 ];
 
 const mtCurrencyFormatter = new Intl.NumberFormat('pt-PT', {
@@ -166,6 +168,8 @@ type ItemRow = {
   quantity?: number | null;
   price?: number | null;
   discount_amount?: number | null;
+  unit_cost?: number | null;
+  cogs_total?: number | null;
   created_at?: string | null;
 };
 
@@ -517,7 +521,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
     };
   }
 
-  if (reportKey === 'sales_by_product' || reportKey === 'sales_by_category') {
+  if (reportKey === 'sales_by_product' || reportKey === 'sales_by_category' || reportKey === 'realized_margin') {
     const revenueDocs = await fetchRevenueDocuments(ctx);
     const revenueOrderIds = collectRevenueOrderIds(revenueDocs);
     const items = toArray<ItemRow>(await ctx.fetchJson('/documentos-itens'));
@@ -525,6 +529,10 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
     const productMap = new Map(products.map((product) => [String(product.id), product]));
     const categoryTotals = new Map<string, { qty: number; total: number; count: number }>();
     const productTotals = new Map<string, { qty: number; total: number; name: string }>();
+    const marginTotals = new Map<
+      string,
+      { name: string; qty: number; revenue: number; cogs: number }
+    >();
 
     items.forEach((item) => {
       const orderId = String(item.order_id ?? '').trim();
@@ -538,6 +546,12 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
       const product = productMap.get(String(item.product_id ?? ''));
       const productName = String(item.product_name ?? product?.name ?? 'Item');
       const categoryName = product?.categories?.name || 'Sem grupo';
+      const cogs =
+        item.cogs_total != null && Number.isFinite(Number(item.cogs_total))
+          ? Number(item.cogs_total)
+          : item.unit_cost != null && Number.isFinite(Number(item.unit_cost))
+            ? Number(item.unit_cost) * qty
+            : Number(product?.cost ?? 0) * qty;
 
       const productCurrent = productTotals.get(productName) || { qty: 0, total: 0, name: productName };
       productCurrent.qty += qty;
@@ -549,7 +563,52 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
       categoryCurrent.total += lineTotal;
       categoryCurrent.count += 1;
       categoryTotals.set(categoryName, categoryCurrent);
+
+      const marginCurrent = marginTotals.get(productName) || {
+        name: productName,
+        qty: 0,
+        revenue: 0,
+        cogs: 0,
+      };
+      marginCurrent.qty += qty;
+      marginCurrent.revenue += lineTotal;
+      marginCurrent.cogs += cogs;
+      marginTotals.set(productName, marginCurrent);
     });
+
+    if (reportKey === 'realized_margin') {
+      const rows = Array.from(marginTotals.values())
+        .sort((a, b) => b.revenue - b.cogs - (a.revenue - a.cogs))
+        .map((item) => {
+          const margin = item.revenue - item.cogs;
+          const pct = item.revenue > 0 ? (margin / item.revenue) * 100 : 0;
+          return {
+            Produto: item.name,
+            Quantidade: Number(item.qty.toFixed(2)),
+            Receita: formatCurrency(item.revenue),
+            COGS: formatCurrency(item.cogs),
+            Margem: formatCurrency(margin),
+            '% Margem': `${pct.toFixed(1)}%`,
+          };
+        });
+      const revenueSum = Array.from(marginTotals.values()).reduce((s, i) => s + i.revenue, 0);
+      const cogsSum = Array.from(marginTotals.values()).reduce((s, i) => s + i.cogs, 0);
+      const marginSum = revenueSum - cogsSum;
+      const metaBlock = ctx.buildMeta('Margem realizada');
+      return {
+        key: reportKey,
+        title: metaBlock.title,
+        subtitle: 'Receita − COGS FIFO nas vendas do período',
+        columns: ['Produto', 'Quantidade', 'Receita', 'COGS', 'Margem', '% Margem'],
+        rows,
+        summaries: [
+          { label: 'Receita', value: formatCurrency(revenueSum) },
+          { label: 'COGS', value: formatCurrency(cogsSum) },
+          { label: 'Margem', value: formatCurrency(marginSum) },
+        ],
+        meta: metaBlock.meta,
+      };
+    }
 
     if (reportKey === 'sales_by_product') {
       const rows = Array.from(productTotals.values())
@@ -893,7 +952,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
     });
     const inventoryCost = data.reduce((sum, item) => sum + Number(item.stock_quantity || 0) * Number(item.cost || 0), 0);
     const lowStockCount = data.filter((item) => Number(item.stock_quantity || 0) <= Number(item.min_stock || 0)).length;
-    const metaBlock = ctx.buildMeta('Movimento de estoque');
+    const metaBlock = ctx.buildMeta('Movimento de stock');
     return {
       key: reportKey,
       title: metaBlock.title,

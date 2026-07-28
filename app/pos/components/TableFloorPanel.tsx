@@ -11,7 +11,6 @@ type TableOrderLite = {
 /** Grelha de mesas no lugar dos produtos (restauração). */
 export function TableFloorPanel({
   tableIds,
-  tablesSummary,
   allowCustomNames,
   selectedTableId,
   salesMode,
@@ -69,16 +68,12 @@ export function TableFloorPanel({
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col bg-[#121212]">
-      <div className="flex h-14 items-center gap-3 border-b border-zinc-800 bg-[#1a1a1a] px-3">
-        <Utensils size={20} className="shrink-0 text-zinc-500" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-white">Mesas</p>
-          {tablesSummary && tablesSummary !== '—' ? (
-            <p className="truncate text-[10px] text-zinc-500">
-              {tablesSummary}
-              {allowCustomNames ? ' · nome só na 1ª abertura' : ''}
-            </p>
-          ) : null}
+      <div className="flex h-14 items-center gap-2 border-b border-zinc-800 bg-[#1a1a1a] p-2">
+        <div className="flex items-center gap-3 border-r border-zinc-800 px-3 text-zinc-500">
+          <Utensils size={18} />
+        </div>
+        <div className="min-w-0 flex-1 px-2">
+          <p className="truncate text-sm text-zinc-600">Mesa: Escolha uma mesa</p>
         </div>
         <button
           type="button"
@@ -87,7 +82,7 @@ export function TableFloorPanel({
           title="Voltar aos produtos"
           aria-label="Voltar aos produtos"
         >
-          <X size={20} />
+          <X size={18} />
         </button>
       </div>
 
@@ -96,10 +91,10 @@ export function TableFloorPanel({
           <button
             type="button"
             onClick={() => requestSelect(null)}
-            className={`flex min-h-[88px] flex-col items-center justify-center rounded border p-4 transition-all ${
+            className={`flex min-h-[88px] flex-col items-center justify-center rounded p-4 transition-all ${
               salesMode === 'customer'
-                ? 'border-[#0001fb]/60 bg-[#0001fb]/10 text-[#a5b4fc]'
-                : 'border-zinc-700/70 bg-zinc-800 text-zinc-500 hover:border-zinc-500'
+                ? 'bg-[#0001fb]/10 text-[#a5b4fc]'
+                : 'bg-zinc-800 text-zinc-500 hover:brightness-110'
             }`}
           >
             <User size={28} className="mb-1.5" />
@@ -117,12 +112,12 @@ export function TableFloorPanel({
                 key={tableId}
                 type="button"
                 onClick={() => requestSelect(tableId)}
-                className={`relative flex min-h-[88px] flex-col items-center justify-center rounded border p-4 transition-all ${
+                className={`relative flex min-h-[88px] flex-col items-center justify-center rounded p-4 transition-all ${
                   isActive
-                    ? 'border-[#0001fb]/60 bg-[#0001fb]/10 text-[#a5b4fc]'
+                    ? 'bg-[#0001fb]/10 text-[#a5b4fc]'
                     : isOccupied
-                      ? 'border-amber-500/50 bg-amber-500/10 text-amber-400'
-                      : 'border-zinc-700/70 bg-zinc-800 text-zinc-500 hover:border-zinc-500'
+                      ? 'bg-amber-500/10 text-amber-400'
+                      : 'bg-zinc-800 text-zinc-500 hover:brightness-110'
                 }`}
               >
                 <span className="text-2xl font-bold">{tableId}</span>

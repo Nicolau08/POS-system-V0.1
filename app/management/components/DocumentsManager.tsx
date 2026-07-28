@@ -1,18 +1,27 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileSpreadsheet, Package, Printer, RefreshCcw, Users, Truck, X } from 'lucide-react';
+import { Banknote, Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileMinus2, FileSpreadsheet, Printer, RefreshCcw, X } from 'lucide-react';
 import { getPosApiBase } from '@/lib/apiBase';
-import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { extractApiErrorMessage, unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { formatDocumentReferenceDisplay } from '@/lib/documents/documentReference';
 import { saveSalesDocumentAsPdf } from '@/lib/documents/salesDocumentPrint';
 import { printSalesDocumentThermalSecondCopy } from '@/lib/documents/thermalReceiptPrint';
-import { fetchCompanyProfile } from '@/lib/services/posService';
+import { fetchCompanyProfile, fetchPaymentMethods } from '@/lib/services/posService';
 import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
-import type { CompanyProfile } from '@/app/pos/types';
+import type {
+  CartItem,
+  CompanyProfile,
+  PaymentEntry,
+  PaymentMethod,
+  PaymentMethodOption,
+} from '@/app/pos/types';
 import PosSelect from '@/components/PosSelect';
-import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
+import { ManagementToolbarButton, ManagementToolbarDivider } from '@/components/ManagementToolbarButton';
+import type { DocumentsPartyKind } from '@/app/management/documentsMenu';
+import { PaymentModal } from '@/app/pos/components/PaymentModal';
+import { SupplierDebitNoteModal } from '@/app/management/components/SupplierDebitNoteModal';
 
 type OrderRow = {
   id: number | string;
@@ -36,6 +45,7 @@ type OrderRow = {
 type OrderItemRow = {
   id: number | string;
   order_id: number | string;
+  product_id?: string | number | null;
   product_name?: string | null;
   quantity?: number | null;
   unit?: string | null;
@@ -44,26 +54,7 @@ type OrderItemRow = {
   total?: number | null;
 };
 
-const REGISTERED_DOCUMENT_TYPES = ['VD', 'TK', 'FP', 'FT', 'NC', 'RC', 'INV', 'WH/LOSS'] as const;
-const EDIT_DRAFT_STORAGE_KEY = 'management:edit-document-draft';
 const DOCS_VIEW_STATE_STORAGE_KEY = 'management:documents-view-state';
-
-const CLIENT_DOCUMENT_FILTER: Record<string, string> = {
-  'Venda a dinheiro': 'VD',
-  Fatura: 'FT',
-  'Notas de crédito': 'NC',
-  Recibo: 'RC',
-  Cotações: 'FP',
-};
-
-const INVENTORY_DOCUMENT_FILTER: Record<string, string> = {
-  'Inventário Físico': 'INV',
-  Desperdícios: 'WH/LOSS',
-};
-
-type PartyMenuKind = 'clientes' | 'fornecedores' | 'inventario';
-
-const SUPPLIER_MENU_ITEMS = ['Despesas do funcionário', 'Produtos', 'Fornecedores'] as const;
 
 type DocumentsViewState = {
   selectedOrderId: string | null;
@@ -85,7 +76,7 @@ function loadDocumentsViewState(): DocumentsViewState {
     selectedProduct: 'all',
     selectedClient: 'all',
     selectedUser: 'all',
-    selectedDocType: 'all',
+    selectedDocType: '',
     selectedStatus: 'all',
     periodFilterActive: false,
     dateFrom: '',
@@ -96,13 +87,14 @@ function loadDocumentsViewState(): DocumentsViewState {
     const raw = window.localStorage.getItem(DOCS_VIEW_STATE_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<DocumentsViewState>;
+    const restoredDocType = String(parsed.selectedDocType ?? '').trim();
     return {
       selectedOrderId: parsed.selectedOrderId == null ? null : String(parsed.selectedOrderId),
       query: String(parsed.query ?? ''),
       selectedProduct: String(parsed.selectedProduct ?? 'all'),
       selectedClient: String(parsed.selectedClient ?? 'all'),
       selectedUser: String(parsed.selectedUser ?? 'all'),
-      selectedDocType: String(parsed.selectedDocType ?? 'all'),
+      selectedDocType: !restoredDocType || restoredDocType === 'all' ? '' : restoredDocType,
       selectedStatus: String(parsed.selectedStatus ?? 'all'),
       periodFilterActive: Boolean(parsed.periodFilterActive),
       dateFrom: String(parsed.dateFrom ?? ''),
@@ -111,37 +103,6 @@ function loadDocumentsViewState(): DocumentsViewState {
   } catch {
     return fallback;
   }
-}
-
-function resolveManagementDocumentTitle(order: OrderRow) {
-  const rawDocType = String(order.doc_type ?? '').trim();
-  const rawDocTypeUpper = rawDocType.toUpperCase();
-  const number = String(order.document_number ?? '').trim().toUpperCase();
-
-  if (rawDocType) {
-    if (rawDocTypeUpper === 'VD' || rawDocTypeUpper === 'VENDA') return 'Venda a dinheiro';
-    if (rawDocTypeUpper === 'FP') return 'Fatura proforma';
-    if (rawDocTypeUpper === 'FR') return 'Fatura-recibo';
-    if (rawDocTypeUpper === 'FT' || rawDocTypeUpper === 'FATURA') return 'Fatura';
-    if (rawDocTypeUpper === 'RC' || rawDocTypeUpper === 'RECIBO') return 'Recibo';
-    if (rawDocTypeUpper === 'NC') return 'Nota de crédito';
-    if (rawDocTypeUpper === 'ND') return 'Nota de debito';
-    if (rawDocTypeUpper === 'GT') return 'Guia de transporte';
-    if (rawDocTypeUpper === 'GR') return 'Guia de remessa';
-    if (rawDocType.toLowerCase().includes('entrada de stock')) return 'Entrada de stock';
-    if (rawDocType.toLowerCase().includes('compra') || rawDocTypeUpper === 'PUR' || rawDocTypeUpper === 'EN/ST') return 'Compra';
-    if (rawDocTypeUpper === 'INV' || rawDocType.toLowerCase().includes('invent')) return 'Inventário Físico';
-    if (rawDocTypeUpper === 'PERDAS' || rawDocType.toLowerCase().includes('desperd') || rawDocType.toLowerCase().includes('quebra')) {
-      return 'Desperdícios';
-    }
-    return rawDocType;
-  }
-
-  if (number.startsWith('WH/IN/')) return 'Entrada de stock';
-  if (number.startsWith('EN/ST/') || number.startsWith('PUR/')) return 'Compra';
-  if (number.startsWith('INV/') || String(order.id ?? '').toLowerCase().startsWith('inv:')) return 'Inventário Físico';
-  if (number.startsWith('WH/LOSS/')) return 'Desperdícios';
-  return 'Fatura';
 }
 
 function isQuotationOrProformaDocType(value: string | null | undefined) {
@@ -163,27 +124,59 @@ function resolveOrderDocTypeFilterCode(order: OrderRow) {
     return 'INV';
   }
   if (
+    docType === 'DP' ||
     docType === 'PERDAS' ||
+    docType === 'WH/LOSS' ||
     docType.includes('DESPERD') ||
     docType.includes('QUEBRA') ||
+    docNumber.startsWith('DP/') ||
     docNumber.startsWith('WH/LOSS/')
   ) {
-    return 'WH/LOSS';
+    return 'DP';
   }
 
   if (docType === 'VD' || docType === 'VENDA') return 'VD';
   if (docType === 'FT' || docType === 'FATURA') return 'FT';
   if (docType === 'FP' || docType.includes('PROFORMA') || docType.includes('COTAC')) return 'FP';
   if (docType === 'NC' || docType.includes('CREDITO') || docType.includes('CRÉDITO')) return 'NC';
+  if (docType === 'RCA' || docType === 'AD' || (docType.includes('ADIANT') && !docType.includes('PAG'))) return 'RCA';
+  if (
+    docType === 'PAAD' ||
+    docType === 'PA' ||
+    docType.includes('PAGAMENTO ADIANT') ||
+    docNumber.startsWith('PAAD/') ||
+    docNumber.startsWith('PA/')
+  ) {
+    return 'PAAD';
+  }
   if (docType === 'RC' || docType === 'RECIBO') return 'RC';
-  if (docType === 'TK' || docType === 'TALAO') return 'TK';
+  if (docType === 'TK' || docType === 'TALAO' || docType === 'TICKET') return 'TK';
+  if (docType === 'GR' || docType.includes('REMESSA')) return 'GR';
+  if (docType === 'ND' || docType.includes('DEBITO') || docType.includes('DÉBITO')) return 'ND';
+  if (docType === 'PAG' || docType.includes('PAGAMENTO')) return 'PAG';
+  if (docType === 'CP' || docType.includes('CONSUMO')) return 'CP';
+  if (
+    docType === 'FTF' ||
+    docType === 'EN/ST' ||
+    docType === 'PUR' ||
+    docType.includes('COMPRA') ||
+    docType.includes('FORNECEDOR')
+  ) {
+    return 'FTF';
+  }
 
   if (docNumber.startsWith('VD/')) return 'VD';
   if (docNumber.startsWith('FT/')) return 'FT';
   if (docNumber.startsWith('FP/')) return 'FP';
   if (docNumber.startsWith('NC/')) return 'NC';
+  if (docNumber.startsWith('RCA/') || docNumber.startsWith('AD/')) return 'RCA';
   if (docNumber.startsWith('RC/') || docNumber.startsWith('PBNK')) return 'RC';
   if (docNumber.startsWith('TK/')) return 'TK';
+  if (docNumber.startsWith('GR/')) return 'GR';
+  if (docNumber.startsWith('ND/')) return 'ND';
+  if (docNumber.startsWith('PAG/')) return 'PAG';
+  if (docNumber.startsWith('CP/')) return 'CP';
+  if (docNumber.startsWith('FTF/') || docNumber.startsWith('EN/ST/') || docNumber.startsWith('PUR/')) return 'FTF';
 
   return docType || 'VD';
 }
@@ -262,7 +255,7 @@ function todayInput() {
 }
 
 function monthLabel(value: string) {
-  return new Date(`${value}T00:00:00`).toLocaleDateString('en-US', {
+  return new Date(`${value}T00:00:00`).toLocaleDateString('pt-PT', {
     month: 'long',
     year: 'numeric',
   });
@@ -299,7 +292,13 @@ function formatInputDateLabel(value: string) {
   return new Intl.DateTimeFormat('pt-PT').format(date);
 }
 
-export default function DocumentsManager() {
+export default function DocumentsManager({
+  externalDocType,
+  externalPartyKind,
+}: {
+  externalDocType?: string | null;
+  externalPartyKind?: DocumentsPartyKind | null;
+} = {}) {
   const initialViewState = useMemo(() => loadDocumentsViewState(), []);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, OrderItemRow[]>>({});
@@ -314,7 +313,9 @@ export default function DocumentsManager() {
   const [selectedProduct, setSelectedProduct] = useState(initialViewState.selectedProduct);
   const [selectedClient, setSelectedClient] = useState(initialViewState.selectedClient);
   const [selectedUser, setSelectedUser] = useState(initialViewState.selectedUser);
-  const [selectedDocType, setSelectedDocType] = useState(initialViewState.selectedDocType);
+  const [selectedDocType, setSelectedDocType] = useState(() =>
+    externalDocType && externalDocType !== 'all' ? externalDocType : ''
+  );
   const [selectedStatus, setSelectedStatus] = useState(initialViewState.selectedStatus);
   const [periodFilterActive, setPeriodFilterActive] = useState(initialViewState.periodFilterActive);
   const [dateFrom, setDateFrom] = useState(initialViewState.dateFrom);
@@ -324,11 +325,30 @@ export default function DocumentsManager() {
   const [calendarStartMonth, setCalendarStartMonth] = useState(`${(initialViewState.dateFrom || firstDayOfCurrentMonth()).slice(0, 7)}-01`);
   const [calendarEndMonth, setCalendarEndMonth] = useState(`${(initialViewState.dateTo || todayInput()).slice(0, 7)}-01`);
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
-  const [partyView, setPartyView] = useState<PartyMenuKind | null>(null);
-  const [openPartyMenu, setOpenPartyMenu] = useState<PartyMenuKind | null>(null);
-  const [partyMenuPosition, setPartyMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [actionMessage, setActionMessage] = useState('');
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isDebitNoteModalOpen, setIsDebitNoteModalOpen] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
+  const [receivedAmount, setReceivedAmount] = useState('');
+  const [isMultiplePayment, setIsMultiplePayment] = useState(false);
+  const [payments, setPayments] = useState<PaymentEntry[]>([]);
+  const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('cash');
+  const [multiplePaymentAmount, setMultiplePaymentAmount] = useState('');
+  const [isFinalizingPayment, setIsFinalizingPayment] = useState(false);
+  const [paymentFinalizeError, setPaymentFinalizeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Sem tipo escolhido no menu lateral → não mostrar documentos
+    if (externalDocType == null || externalDocType === '' || externalDocType === 'all') {
+      setSelectedDocType('');
+      setSelectedOrderId(null);
+      return;
+    }
+    setSelectedDocType(externalDocType);
+    setSelectedOrderId(null);
+  }, [externalDocType, externalPartyKind]);
 
   const getCustomerName = (order: OrderRow) => String(order.client_name || 'Consumidor final');
   const getUserName = (order: OrderRow) => String(order.user_name || '-');
@@ -492,29 +512,16 @@ export default function DocumentsManager() {
     window.localStorage.setItem(DOCS_VIEW_STATE_STORAGE_KEY, JSON.stringify(viewState));
   }, [selectedOrderId, query, selectedProduct, selectedClient, selectedUser, selectedDocType, selectedStatus, periodFilterActive, dateFrom, dateTo]);
 
-  const productOptions = useMemo(() => {
-    return registeredProductNames;
-  }, [registeredProductNames]);
-
   const clientOptions = useMemo(() => {
     return registeredClientNames;
   }, [registeredClientNames]);
 
-  const userOptions = useMemo(() => {
-    return registeredUserNames;
-  }, [registeredUserNames]);
-
-  const docTypeOptions = useMemo(() => {
-    const set = new Set<string>();
-    REGISTERED_DOCUMENT_TYPES.forEach((doc) => set.add(doc));
-    orders.forEach((order) => {
-      const doc = String(order.doc_type || '').trim();
-      if (doc) set.add(doc);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [orders]);
-
   const filteredOrders = useMemo(() => {
+    // Só lista documentos depois de escolher o tipo no menu lateral
+    if (!selectedDocType || selectedDocType === 'all') {
+      return [];
+    }
+
     const normalizedQuery = query.toLowerCase().trim();
     return orders.filter((order) => {
       const orderId = String(order.id);
@@ -534,14 +541,14 @@ export default function DocumentsManager() {
 
       if (selectedClient !== 'all' && customerName !== selectedClient) return false;
       if (selectedUser !== 'all' && userName !== selectedUser) return false;
-      if (selectedDocType !== 'all') {
-        const orderDocCode = resolveOrderDocTypeFilterCode(order);
-        if (selectedDocType === 'FP') {
-          if (!isQuotationOrProformaDocType(docType) && orderDocCode !== 'FP') return false;
-        } else if (orderDocCode !== selectedDocType) {
-          return false;
-        }
+
+      const orderDocCode = resolveOrderDocTypeFilterCode(order);
+      if (selectedDocType === 'FP') {
+        if (!isQuotationOrProformaDocType(docType) && orderDocCode !== 'FP') return false;
+      } else if (orderDocCode !== selectedDocType) {
+        return false;
       }
+
       if (selectedStatus !== 'all' && status !== selectedStatus) return false;
 
       if (selectedProduct !== 'all') {
@@ -589,27 +596,6 @@ export default function DocumentsManager() {
     return () => window.removeEventListener('keydown', handleEscape);
   }, [isPeriodModalOpen]);
 
-  useEffect(() => {
-    const handleOutsideClick = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest('[data-party-trigger]') || target.closest('[data-party-dropdown]')) return;
-      setOpenPartyMenu(null);
-    };
-    window.addEventListener('mousedown', handleOutsideClick);
-    return () => window.removeEventListener('mousedown', handleOutsideClick);
-  }, []);
-
-  useEffect(() => {
-    const closeMenu = () => setOpenPartyMenu(null);
-    window.addEventListener('resize', closeMenu);
-    window.addEventListener('scroll', closeMenu, true);
-    return () => {
-      window.removeEventListener('resize', closeMenu);
-      window.removeEventListener('scroll', closeMenu, true);
-    };
-  }, []);
-
   const selectedItems = useMemo(() => {
     if (!selectedOrderId) return [];
     return itemsByOrderId[selectedOrderId] ?? [];
@@ -620,9 +606,153 @@ export default function DocumentsManager() {
     return orders.find((order) => String(order.id) === selectedOrderId) ?? null;
   }, [orders, selectedOrderId]);
 
+  const showPayToolbarAction = selectedDocType === 'FTF' || selectedDocType === 'FT';
+  const showCreateDebitNoteAction = selectedDocType === 'FTF';
+  const selectedOrderIsPayable = useMemo(() => {
+    if (!selectedOrder || !showPayToolbarAction) return false;
+    const status = String(selectedOrder.status ?? '').toLowerCase();
+    if (status === 'completed' || status === 'approved' || status === 'pago') return false;
+    if (String(selectedOrder.approved_document_number ?? '').trim()) return false;
+    const code = resolveOrderDocTypeFilterCode(selectedOrder);
+    return code === selectedDocType;
+  }, [selectedOrder, selectedDocType, showPayToolbarAction]);
+
+  const paymentCart = useMemo<CartItem[]>(() => {
+    if (!selectedOrder) return [];
+    if (selectedItems.length === 0) {
+      return [
+        {
+          id: `doc-${selectedOrder.id}`,
+          name: String(selectedOrder.document_number ?? 'Documento'),
+          price: Number(selectedOrder.total ?? 0),
+          category: 'Documento',
+          quantity: 1,
+        },
+      ];
+    }
+    return selectedItems.map((item, index) => {
+      const qty = Math.max(0, Number(item.quantity ?? 0));
+      const unitPrice = Number(item.price ?? 0);
+      return {
+        id: String(item.id ?? `item-${index}`),
+        name: String(item.product_name ?? `Item ${index + 1}`),
+        price: unitPrice,
+        category: 'Documento',
+        quantity: qty > 0 ? qty : 1,
+      };
+    });
+  }, [selectedOrder, selectedItems]);
+
+  const paymentTotals = useMemo(() => {
+    const total = Number(selectedOrder?.total ?? 0);
+    const subtotal = Number(
+      selectedOrder?.subtotal ?? total - Number(selectedOrder?.tax ?? 0),
+    );
+    const tax = Number(selectedOrder?.tax ?? Math.max(0, total - subtotal));
+    return {
+      total,
+      subtotal: Math.max(0, subtotal),
+      tax: Math.max(0, tax),
+    };
+  }, [selectedOrder]);
+
+  const resetPaymentState = () => {
+    setPaymentMethod(null);
+    setReceivedAmount('');
+    setPayments([]);
+    setIsMultiplePayment(false);
+    setMultiplePaymentAmount('');
+    setPaymentFinalizeError(null);
+  };
+
   const handleRefresh = () => {
     setActionMessage('');
     void fetchData();
+  };
+
+  const handleOpenPayment = () => {
+    if (!selectedOrderIsPayable || !selectedOrder) {
+      setActionMessage(
+        selectedOrder
+          ? 'Este documento já está pago ou não pode ser pago aqui.'
+          : 'Selecione uma fatura para pagar.',
+      );
+      return;
+    }
+    setActionMessage('');
+    resetPaymentState();
+    setIsPaymentModalOpen(true);
+    void fetchPaymentMethods()
+      .then((methods) => {
+        const enabled = methods.filter((m) => m.enabled && m.markAsPaid !== false);
+        setPaymentMethods(enabled);
+        if (enabled[0]) {
+          setPaymentMethod(enabled[0].code);
+          setMultiplePaymentMethod(enabled[0].code);
+        }
+      })
+      .catch(() => {
+        setPaymentMethods([
+          {
+            id: 'cash',
+            name: 'Dinheiro',
+            code: 'cash',
+            position: 1,
+            enabled: true,
+            quickPayment: true,
+            requiredCustomer: false,
+            allowChange: true,
+            markAsPaid: true,
+            printReceipt: true,
+            openCashDrawer: true,
+          },
+        ]);
+        setPaymentMethod('cash');
+        setMultiplePaymentMethod('cash');
+      });
+  };
+
+  const handleFinalizeDocumentPayment = async () => {
+    if (!selectedOrder?.document_number || isFinalizingPayment) return;
+    const method = isMultiplePayment
+      ? payments.map((p) => p.method).filter(Boolean).join('+') || multiplePaymentMethod
+      : paymentMethod;
+    if (!method) {
+      setPaymentFinalizeError('Seleccione o método de pagamento.');
+      return;
+    }
+    setIsFinalizingPayment(true);
+    setPaymentFinalizeError(null);
+    try {
+      const res = await fetch(`${getPosApiBase()}/documentos/registar-pagamento`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentNumber: String(selectedOrder.document_number).trim(),
+          paymentMethod: method,
+          payableKind: selectedDocType === 'FTF' ? 'FTF' : selectedDocType === 'FT' ? 'FT' : undefined,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(extractApiErrorMessage(payload, `Falha ao registar pagamento (${res.status})`));
+      }
+      const data = unwrapApiSuccessPayload<{
+        generatedDocumentType?: string;
+        generatedDocumentNumber?: string;
+        sourceDocumentNumber?: string;
+      }>(payload);
+      setIsPaymentModalOpen(false);
+      resetPaymentState();
+      setActionMessage(
+        `${String(data?.generatedDocumentType ?? 'DOC')} ${String(data?.generatedDocumentNumber ?? '')} gerado para ${String(data?.sourceDocumentNumber ?? selectedOrder.document_number)}.`,
+      );
+      await fetchData();
+    } catch (error) {
+      setPaymentFinalizeError(error instanceof Error ? error.message : 'Falha ao registar pagamento');
+    } finally {
+      setIsFinalizingPayment(false);
+    }
   };
 
   const handlePrint = () => {
@@ -657,7 +787,7 @@ export default function DocumentsManager() {
     setSelectedProduct('all');
     setSelectedClient('all');
     setSelectedUser('all');
-    setSelectedDocType('all');
+    setSelectedDocType('');
     setSelectedStatus('all');
     setPeriodFilterActive(false);
     setDateFrom('');
@@ -742,79 +872,6 @@ export default function DocumentsManager() {
     if (!target) return;
     if (target.closest('button, input, select, option, table, tr, td, th, a, label')) return;
     setSelectedOrderId(null);
-    setPartyView(null);
-    setOpenPartyMenu(null);
-  };
-
-  const handleEditOrderById = (orderId: string | null) => {
-    if (!orderId) return;
-    const selectedOrder = filteredOrders.find((order) => String(order.id) === orderId);
-    if (!selectedOrder) return;
-    const selectedOrderItems = itemsByOrderId[String(selectedOrder.id)] ?? [];
-    const createdAt = String(selectedOrder.created_at ?? '').slice(0, 10);
-    const normalizedDate = createdAt || todayInput();
-    const payload = {
-      source: String(selectedOrder.id).startsWith('venda:') ? 'sale' : 'order',
-      sourceId: String(selectedOrder.id).replace(/^venda:/, ''),
-      returnTabId: 'docs',
-      title: resolveManagementDocumentTitle(selectedOrder),
-      documentNumber: String(selectedOrder.document_number ?? ''),
-      documentDate: normalizedDate,
-      dueDate: normalizedDate,
-      paid: String(selectedOrder.status ?? '').toLowerCase() === 'completed',
-      customerId: selectedOrder.customer_id == null ? '' : String(selectedOrder.customer_id),
-      items: selectedOrderItems.map((item, index) => ({
-        rowId: `${String(item.id ?? index)}-${index}`,
-        productId: String(item.id ?? index),
-        code: String(index + 1),
-        name: String(item.product_name ?? '-'),
-        unit: String(item.unit ?? 'UN').toUpperCase(),
-        quantity: Number(item.quantity ?? 0) || 0,
-        unitPrice: Number(item.price ?? 0) || 0,
-        tax: 0,
-        taxCode: 'IVA',
-        taxRate: Number(item.tax_rate ?? 0) || 0,
-        taxUiEnabled: false,
-        discountType: 'percent',
-        discountValue: 0,
-        expirationDate: '',
-      })),
-    };
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(EDIT_DRAFT_STORAGE_KEY, JSON.stringify(payload));
-      window.dispatchEvent(
-        new CustomEvent('management:navigate-tab', {
-          detail: { tabId: 'gerenciamento', preserveSidebarSelection: true },
-        })
-      );
-    }
-  };
-
-  const handleClientDocumentMenuSelect = (item: string) => {
-    const filter = CLIENT_DOCUMENT_FILTER[item];
-    if (!filter) {
-      setOpenPartyMenu(null);
-      return;
-    }
-
-    setPartyView('clientes');
-    setSelectedDocType(filter);
-    setSelectedOrderId(null);
-    setOpenPartyMenu(null);
-  };
-
-  const handleInventoryDocumentMenuSelect = (item: string) => {
-    const filter = INVENTORY_DOCUMENT_FILTER[item];
-    if (!filter) {
-      setOpenPartyMenu(null);
-      return;
-    }
-
-    setPartyView('inventario');
-    setSelectedDocType(filter);
-    setSelectedOrderId(null);
-    setOpenPartyMenu(null);
   };
 
   return (
@@ -824,114 +881,69 @@ export default function DocumentsManager() {
     >
       <div className="relative z-40 h-16 bg-[#1a1a1a] border-b border-zinc-800 px-2 overflow-visible">
         <div className="h-full flex items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
+          <ManagementToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
           <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
           <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
-          <ManagementToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
-
-          <ToolbarDivider />
-
-          <div data-party-trigger>
-            <ManagementToolbarButton
-              icon={<Users size={20} />}
-              label="Clientes"
-              active={partyView === 'clientes'}
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                setPartyView('clientes');
-                setPartyMenuPosition({ left: rect.left, top: rect.bottom + 2 });
-                setOpenPartyMenu((current) => (current === 'clientes' ? null : 'clientes'));
-              }}
-            />
-          </div>
-          <div data-party-trigger>
-            <ManagementToolbarButton
-              icon={<Truck size={20} />}
-              label="Fornecedores"
-              active={partyView === 'fornecedores'}
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                setPartyView('fornecedores');
-                setPartyMenuPosition({ left: rect.left, top: rect.bottom + 2 });
-                setOpenPartyMenu((current) => (current === 'fornecedores' ? null : 'fornecedores'));
-              }}
-            />
-          </div>
-          <div data-party-trigger>
-            <ManagementToolbarButton
-              icon={<Package size={20} />}
-              label="Inventário"
-              active={partyView === 'inventario'}
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                setPartyView('inventario');
-                setPartyMenuPosition({ left: rect.left, top: rect.bottom + 2 });
-                setOpenPartyMenu((current) => (current === 'inventario' ? null : 'inventario'));
-              }}
-            />
-          </div>
-
+          {showPayToolbarAction ? (
+            <>
+              <ManagementToolbarDivider />
+              <ManagementToolbarButton
+                icon={<Banknote size={20} />}
+                label="Pagar"
+                disabled={!selectedOrderIsPayable}
+                onClick={handleOpenPayment}
+                title={
+                  !selectedOrder
+                    ? 'Selecione uma fatura para pagar'
+                    : selectedOrderIsPayable
+                      ? 'Registar pagamento'
+                      : 'Documento já pago'
+                }
+              />
+            </>
+          ) : null}
+          {showCreateDebitNoteAction ? (
+            <>
+              <ManagementToolbarDivider />
+              <ManagementToolbarButton
+                icon={<FileMinus2 size={20} />}
+                label="Criar"
+                onClick={() => {
+                  setActionMessage('');
+                  setIsDebitNoteModalOpen(true);
+                }}
+                title="Criar nota de débito contra uma FTF"
+              />
+            </>
+          ) : null}
         </div>
       </div>
 
-      {openPartyMenu && partyMenuPosition && (
-        <PartyDropdownMenu
-          left={partyMenuPosition.left}
-          top={partyMenuPosition.top}
-          items={
-            openPartyMenu === 'clientes'
-              ? ['Venda a dinheiro', 'Fatura', 'Notas de crédito', 'Recibo', 'Cotações']
-              : openPartyMenu === 'inventario'
-                ? ['Inventário Físico', 'Desperdícios']
-                : [...SUPPLIER_MENU_ITEMS]
-          }
-          onSelect={(item) => {
-            if (openPartyMenu === 'clientes') {
-              handleClientDocumentMenuSelect(item);
-              return;
-            }
-            if (openPartyMenu === 'inventario') {
-              handleInventoryDocumentMenuSelect(item);
-              return;
-            }
-            setOpenPartyMenu(null);
-          }}
-        />
-      )}
-
       <div className="relative z-30 border-b border-zinc-800 bg-[#181818] px-3 py-2 overflow-visible">
-        <div className="space-y-2">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
-            <FilterSelect label="Produto" value={selectedProduct} onChange={setSelectedProduct} options={['all', ...productOptions]} />
-            <FilterSelect label="Usuário" value={selectedUser} onChange={setSelectedUser} options={['all', ...userOptions]} />
-            <FilterSelect label="Cliente" value={selectedClient} onChange={setSelectedClient} options={['all', ...clientOptions]} />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
-            <FilterSelect label="Tipo de documento" value={selectedDocType} onChange={setSelectedDocType} options={['all', ...docTypeOptions]} />
-            <FilterSelect
-              label="Status de pgto"
-              value={selectedStatus}
-              onChange={setSelectedStatus}
-              options={['all', 'completed', 'pending', 'approved', 'cancelled']}
-            />
-            <div>
-              <label className="block text-[11px] text-zinc-400 mb-1">Período</label>
-              <button
-                type="button"
-                onClick={openPeriodModal}
-                className="pos-select-trigger h-8 w-full gap-2 px-3"
-              >
-                <CalendarDays size={14} className="shrink-0 text-zinc-400" />
-                <span className="flex-1 whitespace-nowrap text-center text-xs font-medium text-zinc-200">
-                  {periodFilterActive
-                    ? `${formatInputDateLabel(dateFrom)} - ${formatInputDateLabel(dateTo)}`
-                    : 'Todos os períodos'}
-                </span>
-              </button>
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
+          <FilterSelect label="Cliente" value={selectedClient} onChange={setSelectedClient} options={['all', ...clientOptions]} />
+          <FilterSelect
+            label="Estado"
+            value={selectedStatus}
+            onChange={setSelectedStatus}
+            options={['all', 'completed', 'pending', 'approved', 'cancelled']}
+          />
+          <div>
+            <label className="block text-[11px] text-zinc-400 mb-1">Período</label>
+            <button
+              type="button"
+              onClick={openPeriodModal}
+              className="pos-select-trigger h-8 w-full gap-2 px-3"
+            >
+              <CalendarDays size={14} className="shrink-0 text-zinc-400" />
+              <span className="flex-1 whitespace-nowrap text-center text-xs font-medium text-zinc-200">
+                {periodFilterActive
+                  ? `${formatInputDateLabel(dateFrom)} - ${formatInputDateLabel(dateTo)}`
+                  : 'Todos os períodos'}
+              </span>
+            </button>
           </div>
         </div>
-
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col">
@@ -964,7 +976,9 @@ export default function DocumentsManager() {
                 ) : filteredOrders.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-3 py-8 text-center text-zinc-500">
-                      {'Sem documentos para os filtros selecionados.'}
+                      {!selectedDocType || selectedDocType === 'all'
+                        ? 'Selecione um tipo de documento no menu lateral para ver a lista.'
+                        : 'Sem documentos deste tipo para os filtros selecionados.'}
                     </td>
                   </tr>
                 ) : (
@@ -1016,10 +1030,6 @@ export default function DocumentsManager() {
                         onClick={(event) => {
                           event.stopPropagation();
                           setSelectedOrderId(rowId);
-                        }}
-                        onDoubleClick={(event) => {
-                          event.stopPropagation();
-                          handleEditOrderById(rowId);
                         }}
                         className={`cursor-pointer transition-colors ${
                           selected
@@ -1212,12 +1222,78 @@ export default function DocumentsManager() {
         </div>
       )}
 
+      <PaymentModal
+        isOpen={isPaymentModalOpen}
+        onClose={() => {
+          if (isFinalizingPayment) return;
+          setIsPaymentModalOpen(false);
+          resetPaymentState();
+        }}
+        selectedCustomer={
+          selectedOrder?.customer_id
+            ? {
+                id: String(selectedOrder.customer_id),
+                name: getCustomerName(selectedOrder),
+                phone: '',
+              }
+            : null
+        }
+        customerName={selectedOrder ? getCustomerName(selectedOrder) : ''}
+        tableNumber=""
+        cart={paymentCart}
+        globalDiscount={null}
+        originalTotal={paymentTotals.total}
+        subtotal={paymentTotals.subtotal}
+        tax={paymentTotals.tax}
+        totalDiscount={0}
+        total={paymentTotals.total}
+        paymentMethods={paymentMethods}
+        isMultiplePayment={isMultiplePayment}
+        onToggleMultiplePayment={() => {
+          setIsMultiplePayment((prev) => !prev);
+          setPayments([]);
+          setPaymentMethod(null);
+          setReceivedAmount('');
+        }}
+        paymentMethod={paymentMethod}
+        setPaymentMethod={setPaymentMethod}
+        receivedAmount={receivedAmount}
+        setReceivedAmount={setReceivedAmount}
+        payments={payments}
+        setPayments={setPayments}
+        multiplePaymentMethod={multiplePaymentMethod}
+        setMultiplePaymentMethod={setMultiplePaymentMethod}
+        multiplePaymentAmount={multiplePaymentAmount}
+        setMultiplePaymentAmount={setMultiplePaymentAmount}
+        onFinalize={() => void handleFinalizeDocumentPayment()}
+        isFinalizing={isFinalizingPayment}
+        finalizeError={paymentFinalizeError}
+        isReceiptPrintEnabled={false}
+        onToggleReceiptPrint={() => undefined}
+        formatPrice={formatMoney}
+        docType={selectedDocType === 'FTF' ? 'FTF' : 'FT'}
+        title="Finalizar Pagamento"
+        contextLabel={selectedOrder?.document_number ? `Doc: ${selectedOrder.document_number}` : 'Documento'}
+        hideReceiptPrint
+      />
+
+      <SupplierDebitNoteModal
+        isOpen={isDebitNoteModalOpen}
+        onClose={() => setIsDebitNoteModalOpen(false)}
+        sourceOrders={orders}
+        itemsByOrderId={itemsByOrderId}
+        onSaved={(result) => {
+          setActionMessage(
+            result.documentNumber
+              ? `Nota de débito ${result.documentNumber} criada.`
+              : 'Nota de débito criada.',
+          );
+          void fetchData();
+        }}
+      />
+
     </div>
   );
-}
-
-function ToolbarDivider() {
-  return <div className="mx-1 h-10 w-px shrink-0 self-center bg-zinc-700" aria-hidden="true" />;
 }
 
 function DocumentStatusBadge({
@@ -1240,37 +1316,6 @@ function DocumentStatusBadge({
         {hint}
       </span>
     </span>
-  );
-}
-
-function PartyDropdownMenu({
-  left,
-  top,
-  items,
-  onSelect,
-}: {
-  left: number;
-  top: number;
-  items: string[];
-  onSelect: (item: string) => void;
-}) {
-  return (
-    <div
-      data-party-dropdown
-      className="pos-dropdown fixed z-[9999]"
-      style={{ left, top }}
-    >
-      {items.map((item) => (
-        <button
-          key={item}
-          type="button"
-          onClick={() => onSelect(item)}
-          className="pos-dropdown-item"
-        >
-          {item}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -1360,20 +1405,23 @@ function CalendarGrid({
   selectedValue: string;
   onSelect: (value: string) => void;
 }) {
-  const weekDays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+  const weekDays = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
   const days = buildCalendarDays(monthValue);
   const todayValue = todayInput();
 
   return (
     <div>
-      <div className="grid grid-cols-7 gap-2 mb-3">
+      <div className="mb-2 grid grid-cols-7 gap-1">
         {weekDays.map((day) => (
-          <div key={day} className="text-center text-sm font-bold text-white py-1">
+          <div
+            key={day}
+            className="flex h-7 min-w-0 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-zinc-400"
+          >
             {day}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-1">
         {days.map((day) => {
           const isSelected = day.value === selectedValue;
           const isToday = day.value === todayValue;
@@ -1381,7 +1429,7 @@ function CalendarGrid({
             <button
               key={day.value}
               onClick={() => onSelect(day.value)}
-              className={`w-full aspect-square rounded-xl text-sm transition-colors flex items-center justify-center ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
                 isSelected
                   ? 'bg-[#0001fb] text-white scale-110'
                   : isToday

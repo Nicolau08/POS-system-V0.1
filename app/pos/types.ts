@@ -13,7 +13,7 @@ export interface Product {
   stock_quantity?: number;
   min_stock?: number;
   active?: boolean;
-  /** Supabase `products.id` (UUID); obrigatorio para sync de vendas/estoque */
+  /** Supabase `products.id` (UUID); obrigatorio para sync de vendas/stock */
   cloud_id?: string;
   is_service?: boolean;
   /** simple | composed | ingredient | service — ingredientes não vendem no POS */
@@ -33,6 +33,8 @@ export interface CartItem extends Product {
     type: 'value' | 'percentage';
     amount: number;
   };
+  /** Nota do item para cozinha (ex.: «sem cebola»). */
+  notes?: string | null;
 }
 
 export interface Customer {
