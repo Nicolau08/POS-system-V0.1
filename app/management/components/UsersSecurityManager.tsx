@@ -274,7 +274,9 @@ export default function UsersSecurityManager() {
     const hasCache = Boolean(getCachedLoginUsers()?.length);
     if (!hasCache) setUsersLoading(true);
     try {
-      const res = await fetch(`${getPosApiBase()}/users`);
+      const res = await fetch(`${getPosApiBase()}/users`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
       if (!res.ok) throw new Error('Falha ao carregar usuários');
       const data = (unwrapApiSuccessPayload<unknown[]>(await res.json()) ?? []);
       const normalized: ManagedUser[] = data.map((u: any) => ({
@@ -403,7 +405,7 @@ export default function UsersSecurityManager() {
       if (!draftUser.pin.trim()) throw new Error('Informe o novo PIN');
       const res = await fetch(`${getPosApiBase()}/users/${draftUser.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({ pin: draftUser.pin.trim() }),
       });
       if (!res.ok) throw new Error('Falha ao redefinir PIN');
@@ -429,7 +431,7 @@ export default function UsersSecurityManager() {
 
       const res = await fetch(`${getPosApiBase()}/users`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('Falha ao adicionar usuário');
@@ -445,7 +447,7 @@ export default function UsersSecurityManager() {
 
       const res = await fetch(`${getPosApiBase()}/users/${draftUser.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('Falha ao atualizar usuário');
@@ -457,7 +459,10 @@ export default function UsersSecurityManager() {
 
   const deactivateSelectedUser = async () => {
     if (!selectedUser) return;
-    const res = await fetch(`${getPosApiBase()}/users/${selectedUser.id}`, { method: 'DELETE' });
+    const res = await fetch(`${getPosApiBase()}/users/${selectedUser.id}`, {
+      method: 'DELETE',
+      headers: { ...getPosUserAuthHeaders() },
+    });
     if (!res.ok) throw new Error('Falha ao desativar usuário');
     await fetchUsers();
   };

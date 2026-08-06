@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { useSyncStatus } from '@/hooks/useSyncStatus';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 
 function formatSyncDate(value: string | null) {
   if (!value) return 'Nunca';
@@ -35,6 +35,7 @@ export default function SyncStatusPanel() {
     try {
       const response = await fetch(`${getPosApiBase()}/sync/run`, {
         method: 'POST',
+        headers: { ...getPosUserAuthHeaders() },
       });
       if (!response.ok) {
         setRetryMessage('Falha ao iniciar retry');

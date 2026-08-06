@@ -372,13 +372,28 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
 
   const localId = Number(localIdRaw);
   const existing = await getDb(
-    `SELECT cloud_id
+    `SELECT cloud_id, name
      FROM products
      WHERE id = ?
        AND tenant_id = ?
        AND COALESCE(deleted, 0) = 0`,
     [localId, tenantId]
   );
+  if (!existing) return { success: true, updated: false };
+
+  const existingName = String(existing.name ?? '').trim();
+  const nextName = String(payload.name ?? '').trim();
+  if (existingName !== nextName) {
+    const accessLevel = Number(actorUser?.access_level ?? actorUser?.accessLevel ?? 0);
+    if (!Number.isFinite(accessLevel) || accessLevel < 9) {
+      return {
+        error: 'Apenas utilizadores de nível 9 podem alterar o nome do produto.',
+        status: 403,
+        code: 'PRODUCT_NAME_LOCKED',
+      };
+    }
+  }
+
   let nextCloudId = existing?.cloud_id && isUuidString(String(existing.cloud_id)) ? String(existing.cloud_id).trim() : null;
   if (!nextCloudId) nextCloudId = uuidv4();
   const now = new Date().toISOString();
@@ -521,6 +536,24 @@ export async function deleteProduct(localIdRaw, actorUser = null) {
        AND COALESCE(deleted, 0) = 0`,
     [localId, tenantId]
   );
+  if (!row) return { success: true, deleted: false };
+
+  const linked = await getDb(
+    `SELECT COUNT(*) AS total
+     FROM order_items
+     WHERE tenant_id = ?
+       AND CAST(product_id AS TEXT) = CAST(? AS TEXT)`,
+    [tenantId, localId]
+  );
+  const linkedCount = Number(linked?.total ?? 0) || 0;
+  if (linkedCount > 0) {
+    return {
+      error: `Não é possível apagar este produto porque tem ${linkedCount} linha(s) em documentos associados.`,
+      status: 409,
+      code: 'PRODUCT_HAS_LINKED_DOCUMENTS',
+    };
+  }
+
   const cloudId = row?.cloud_id && isUuidString(String(row.cloud_id)) ? String(row.cloud_id).trim() : null;
   const result = await runDb(
     `UPDATE products

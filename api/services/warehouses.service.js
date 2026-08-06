@@ -9,6 +9,7 @@ import {
   getWarehouseStockSum,
   insertWarehouse,
   listWarehouses,
+  listWarehouseStockForWarehouse,
   setWarehouseDefault,
   updateWarehouse,
 } from '../repositories/warehouses.repository.js';
@@ -52,6 +53,19 @@ function normalizeWarehouse(row) {
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
   };
+}
+
+export async function listWarehouseStock(warehouseId, actorUser = null) {
+  const tenantId = resolveTenantId(actorUser);
+  const id = String(warehouseId ?? '').trim();
+  if (!id) throw new HttpError(400, 'warehouse_id obrigatório');
+  const existing = await getWarehouseById(id, tenantId);
+  if (!existing) throw new HttpError(404, 'Armazém não encontrado');
+  const rows = await listWarehouseStockForWarehouse(id, tenantId);
+  return (rows ?? []).map((row) => ({
+    productId: String(row.product_id),
+    quantity: Number(row.quantity ?? 0) || 0,
+  }));
 }
 
 export async function listAllWarehouses(actorUser = null) {

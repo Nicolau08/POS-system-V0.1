@@ -90,6 +90,19 @@ export async function getSetupStatus(req, res) {
       }
     }
 
+    // Pedidos não-locais (LAN / proxy) só recebem booleanos — sem paths, tenantId ou nomes.
+    if (!isLocalRequest(req)) {
+      return sendSuccess(res, {
+        isSetupComplete: Boolean(payload.isSetupComplete),
+        requiresWizard: Boolean(payload.requiresWizard),
+        licenseExpired: Boolean(expiry.licenseExpired),
+        licenseActivated: Boolean(payload.licenseActivated),
+        adminPasswordSet: Boolean(payload.adminPasswordSet),
+        dbExists: Boolean(payload.dbExists),
+        tenantExists: Boolean(payload.tenantExists),
+      });
+    }
+
     return sendSuccess(res, {
       ...payload,
       licenseExpiresAt: expiry.licenseExpiresAt,

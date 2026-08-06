@@ -232,7 +232,8 @@ export default function LicenseSerialManager() {
               NUIT (opcional)
               <input
                 value={newNuit}
-                onChange={(ev) => setNewNuit(ev.target.value)}
+                onChange={(ev) => setNewNuit(ev.target.value.slice(0, 9))}
+                maxLength={9}
                 className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="Ex.: 400123456"
               />

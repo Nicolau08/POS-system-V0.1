@@ -18,10 +18,54 @@ async function resolveTenantId(actorUser) {
   });
 }
 
+const SUPPLIER_DOC_PREFIXES = new Set(['FTF', 'PUR', 'EN/ST', 'PAG', 'ND', 'PAAD']);
+const CUSTOMER_DOC_PREFIXES = new Set(['FT', 'VD', 'TK', 'RC', 'NC', 'FP', 'AD', 'RCA']);
+
+/**
+ * Agrupa as entidades pelos identificadores realmente usados nos documentos
+ * (orders.customer_id guarda o id local, vendas.customer_id guarda o cloud_id).
+ */
+function collectParties(rows, roleResolver) {
+  const byKey = new Map();
+
+  for (const row of rows ?? []) {
+    const role = roleResolver(row);
+    if (!role) continue;
+
+    const docCustomerId = String(row?.doc_customer_id ?? '').trim();
+    const localId = String(row?.local_id ?? '').trim();
+    const cloudId = String(row?.cloud_id ?? '').trim();
+    const name = String(row?.name ?? '').trim();
+    if (!docCustomerId && !localId) continue;
+
+    const key = `${role}:${localId || docCustomerId}`;
+    const existing = byKey.get(key) ?? {
+      id: localId || docCustomerId,
+      name: name || 'Sem nome',
+      role,
+      ids: new Set(),
+    };
+    if (name && existing.name === 'Sem nome') existing.name = name;
+    if (docCustomerId) existing.ids.add(docCustomerId);
+    if (localId) existing.ids.add(localId);
+    if (cloudId) existing.ids.add(cloudId);
+    byKey.set(key, existing);
+  }
+
+  return Array.from(byKey.values())
+    .map((party) => ({
+      id: party.id,
+      name: party.name,
+      role: party.role,
+      ids: Array.from(party.ids),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt'));
+}
+
 export async function getReportFilters(actorUser = null) {
   const tenantId = await resolveTenantId(actorUser);
 
-  const [customers, paymentRows] = await Promise.all([
+  const [customers, paymentRows, orderPartyRows, salePartyRows] = await Promise.all([
     allDb(
       `SELECT
          COALESCE(NULLIF(TRIM(cloud_id), ''), CAST(id AS TEXT)) AS id,
@@ -39,13 +83,63 @@ export async function getReportFilters(actorUser = null) {
        ORDER BY payment_method ASC`,
       [tenantId]
     ),
+    allDb(
+      `SELECT
+         UPPER(TRIM(COALESCE(o.doc_prefix, ''))) AS prefix,
+         CAST(o.customer_id AS TEXT) AS doc_customer_id,
+         CAST(c.id AS TEXT) AS local_id,
+         TRIM(COALESCE(c.cloud_id, '')) AS cloud_id,
+         COALESCE(c.name, '') AS name
+       FROM orders o
+       LEFT JOIN clientes c
+         ON c.tenant_id = o.tenant_id
+        AND (
+          CAST(c.id AS TEXT) = CAST(o.customer_id AS TEXT)
+          OR CAST(COALESCE(c.cloud_id, '') AS TEXT) = CAST(o.customer_id AS TEXT)
+        )
+       WHERE o.tenant_id = ?
+         AND o.customer_id IS NOT NULL
+         AND TRIM(CAST(o.customer_id AS TEXT)) <> ''`,
+      [tenantId]
+    ),
+    allDb(
+      `SELECT
+         CAST(v.customer_id AS TEXT) AS doc_customer_id,
+         CAST(c.id AS TEXT) AS local_id,
+         TRIM(COALESCE(c.cloud_id, '')) AS cloud_id,
+         COALESCE(c.name, v.customer_name, '') AS name
+       FROM vendas v
+       LEFT JOIN clientes c
+         ON c.tenant_id = v.tenant_id
+        AND (
+          CAST(COALESCE(c.cloud_id, '') AS TEXT) = CAST(v.customer_id AS TEXT)
+          OR CAST(c.id AS TEXT) = CAST(v.customer_id AS TEXT)
+        )
+       WHERE v.tenant_id = ?
+         AND v.customer_id IS NOT NULL
+         AND TRIM(CAST(v.customer_id AS TEXT)) <> ''`,
+      [tenantId]
+    ),
   ]);
+
+  const suppliers = collectParties(orderPartyRows, (row) =>
+    SUPPLIER_DOC_PREFIXES.has(String(row?.prefix ?? '')) ? 'supplier' : null
+  );
+  const statementCustomers = collectParties(
+    [
+      ...(orderPartyRows ?? []).filter((row) => CUSTOMER_DOC_PREFIXES.has(String(row?.prefix ?? ''))),
+      ...(salePartyRows ?? []).map((row) => ({ ...row, prefix: 'VD' })),
+    ],
+    () => 'customer'
+  );
 
   return {
     customers: (customers ?? []).map((row) => ({
       id: String(row?.id ?? ''),
       name: String(row?.name ?? ''),
     })),
+    statementCustomers,
+    suppliers,
     paymentMethods: (paymentRows ?? [])
       .map((row) => String(row?.payment_method ?? '').trim())
       .filter(Boolean),

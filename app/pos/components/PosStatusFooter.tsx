@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type TenantFooterInfo = {
@@ -90,18 +90,24 @@ export function PosStatusFooter() {
     const loadTenantInfo = async () => {
       try {
         const apiBase = getPosApiBase().replace(/\/$/, '');
+        const authHeaders = getPosUserAuthHeaders();
         // Mostra dados já guardados; /tenant/info é rápido — sync-registry em background.
-        const response = await fetch(`${apiBase}/tenant/info`);
+        const response = await fetch(`${apiBase}/tenant/info`, { headers: { ...authHeaders } });
         if (response.ok) {
           const raw = await response.json();
           const data = unwrapApiSuccessPayload<Record<string, unknown>>(raw);
           if (!cancelled && data && typeof data === 'object') applyTenant(data);
         }
         // Actualização da consola sem bloquear o rodapé
-        void fetch(`${apiBase}/setup/license/sync-registry`, { method: 'POST' })
+        void fetch(`${apiBase}/setup/license/sync-registry`, {
+          method: 'POST',
+          headers: { ...authHeaders },
+        })
           .then(async () => {
             if (cancelled) return;
-            const refreshed = await fetch(`${apiBase}/tenant/info`);
+            const refreshed = await fetch(`${apiBase}/tenant/info`, {
+              headers: { ...getPosUserAuthHeaders() },
+            });
             if (!refreshed.ok) return;
             const raw = await refreshed.json();
             const data = unwrapApiSuccessPayload<Record<string, unknown>>(raw);

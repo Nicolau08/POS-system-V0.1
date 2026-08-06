@@ -61,6 +61,7 @@ export function buildThermalReceiptMarkup(
   const originalSubtotal = subtotal + discount;
   const hasDiscount = discount > 0.0001;
   const sourceReference = formatDocumentSourceReferenceLabel(sale);
+  const notes = String(sale.notes ?? '').trim();
 
   const receiptHead = buildReceiptHeader(profile);
   const logoSrc = safeReceiptLogoSrc(receiptHead.logoDataUrl);
@@ -122,6 +123,7 @@ export function buildThermalReceiptMarkup(
         </div>
         <div class="print-doc">${escapeHtml(docType)} No.: ${escapeHtml(docNumber)}</div>
         ${sourceReference ? `<div class="print-ref">${escapeHtml(sourceReference)}</div>` : ''}
+        ${notes ? `<div class="print-ref"><strong>${sale.is_waste ? 'DESPERDÍCIO: ' : 'OBS.: '}</strong>${escapeHtml(notes.replace(/^Desperdício:\s*/i, ''))}</div>` : ''}
       </div>
 
       <div class="print-block">

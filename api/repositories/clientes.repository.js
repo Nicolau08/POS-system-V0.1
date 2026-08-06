@@ -1,7 +1,22 @@
 import { all, get, run } from '../dbUtils.js';
 
+/** Recibos já emitidos contra a fatura (pagamentos totais ou parciais). */
+const SALE_RECEIPTS_SQL = `COALESCE((
+  SELECT SUM(COALESCE(rc.total, 0))
+  FROM orders rc
+  WHERE rc.tenant_id = v.tenant_id
+    AND UPPER(COALESCE(rc.doc_prefix, '')) = 'RC'
+    AND UPPER(TRIM(COALESCE(rc.approved_document_type, ''))) = 'FT'
+    AND UPPER(TRIM(COALESCE(rc.approved_document_number, ''))) = (
+      'FT/' ||
+      CAST(strftime('%Y', v.data) AS TEXT) ||
+      '/' ||
+      printf('%04d', COALESCE(v.doc_sequence, v.id))
+    )
+), 0)`;
+
 const DEBT_BALANCE_SQL = `COALESCE((
-  SELECT ROUND(SUM(COALESCE(v.total, 0)), 2)
+  SELECT ROUND(SUM(MAX(COALESCE(v.total, 0) - ${SALE_RECEIPTS_SQL}, 0)), 2)
   FROM vendas v
   WHERE v.tenant_id = c.tenant_id
     AND (
@@ -15,6 +30,20 @@ const DEBT_BALANCE_SQL = `COALESCE((
     )
 ), 0)`;
 
+/**
+ * Fornecedor = parte que aparece em documentos de compra (FTF/PUR/EN-ST/PAG/ND/PAAD).
+ * Não há coluna de papel na tabela `clientes`, por isso deriva-se dos documentos.
+ */
+const IS_SUPPLIER_SQL = `CASE WHEN EXISTS (
+  SELECT 1 FROM orders o
+  WHERE o.tenant_id = c.tenant_id
+    AND UPPER(COALESCE(o.doc_prefix, '')) IN ('FTF', 'PUR', 'EN/ST', 'PAG', 'ND', 'PAAD')
+    AND (
+      CAST(o.customer_id AS TEXT) = CAST(c.id AS TEXT)
+      OR CAST(o.customer_id AS TEXT) = CAST(c.cloud_id AS TEXT)
+    )
+) THEN 1 ELSE 0 END`;
+
 export function listClientes(whereSql, params) {
   return all(
     `SELECT
@@ -24,7 +53,8 @@ export function listClientes(whereSql, params) {
        c.phone,
        c.email,
        c.address,
-       ${DEBT_BALANCE_SQL} AS debt_balance
+       ${DEBT_BALANCE_SQL} AS debt_balance,
+       ${IS_SUPPLIER_SQL} AS is_supplier
      FROM clientes c
      ${whereSql}
      ORDER BY c.name ASC`,
@@ -41,7 +71,8 @@ export function listClientesPaginated(whereSql, params, limit, offset) {
        c.phone,
        c.email,
        c.address,
-       ${DEBT_BALANCE_SQL} AS debt_balance
+       ${DEBT_BALANCE_SQL} AS debt_balance,
+       ${IS_SUPPLIER_SQL} AS is_supplier
      FROM clientes c
      ${whereSql}
      ORDER BY c.name ASC

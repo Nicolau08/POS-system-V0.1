@@ -44,8 +44,19 @@ export async function login(req, res) {
       await logAudit('USER_LOGIN_FAILED', { id: userId }, {
         entity: 'auth',
         entity_id: userId,
-        description: 'Failed login attempt',
+        description:
+          result?.reason === 'locked'
+            ? `Failed login attempt — conta temporariamente bloqueada (${result.retryAfterSeconds ?? '?'}s)`
+            : 'Failed login attempt',
       });
+      if (result?.reason === 'locked') {
+        return res.status(429).json({
+          error: 'conta temporariamente bloqueada',
+          code: 'LOGIN_LOCKED',
+          retryAfterSeconds: result.retryAfterSeconds ?? null,
+          lockedUntil: result.lockedUntil ?? null,
+        });
+      }
       return res.status(401).json({ error: 'credenciais invalidas' });
     }
     return res.json({ success: true, user: result.user, token: result.token || null });

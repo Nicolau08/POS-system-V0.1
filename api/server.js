@@ -71,7 +71,28 @@ dotenv.config({
 resolveAuthHmacSecret();
 
 const app = express();
-app.use(cors());
+const allowedCorsOrigins = String(process.env.POS_CORS_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const defaultCorsOrigins = [
+  'http://127.0.0.1:3000',
+  'http://localhost:3000',
+  'http://127.0.0.1:3730',
+  'http://localhost:3730',
+];
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Pedidos same-origin / Electron / curl sem Origin.
+      if (!origin) return callback(null, true);
+      const allowlist = allowedCorsOrigins.length ? allowedCorsOrigins : defaultCorsOrigins;
+      if (allowlist.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS origin blocked: ${origin}`));
+    },
+    credentials: true,
+  }),
+);
 /** Logos em base64 no PUT /company-profile excedem o default (~100kb). */
 app.use(express.json({ limit: process.env.API_JSON_BODY_LIMIT || '6mb' }));
 app.use(attachRequestContext);
@@ -111,6 +132,11 @@ app.get('/station/discover', async (_req, res) => {
 /** Login screen: sem sessão ainda — antes do middleware de auth. */
 app.get('/auth/login-users', rejectNonLocalAuthRoute, getLoginUsers);
 app.post('/auth/login', rejectNonLocalAuthRoute, login);
+
+/** Readiness (wait-on / Electron) — público; sem dados sensíveis. */
+app.get(['/health', '/'], (_req, res) => {
+  return sendSuccess(res, { ok: true, message: 'API OK' });
+});
 
 const LICENSE_GRACE_PERIOD_MS = Math.max(
   0,
@@ -209,11 +235,6 @@ console.log('[SERVER] Tenant routes registered');
 
 logInfo('env_check', {
   supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-});
-
-// 🔹 TESTE
-app.get('/', (req, res) => {
-  return sendSuccess(res, { message: 'API OK 🚀' });
 });
 
 app.use(notFoundHandler);

@@ -4,6 +4,7 @@ import db from '../database.js';
 import { validateAdminPassword } from '../services/user.service.js';
 import { requireTenantId } from '../utils/tenant.js';
 import { logAudit, logError } from '../utils/logger.js';
+import { sendSuccess } from '../utils/response.js';
 import {
   createBackup,
   getActiveCriticalOperations,
@@ -247,6 +248,170 @@ export async function restoreDatabaseBackup(req, res) {
     const statusCode = errorMessage.toLowerCase().includes('no such file') ? 404 : 500;
     if (statusCode !== 500) {
       return res.status(statusCode).json({ error: errorMessage });
+    }
+    return controllerError(res, err);
+  }
+}
+
+export async function getDbEncryptionStatus(req, res) {
+  try {
+    const { getDbEncryptionRuntimeStatus } = await import('../utils/dbRecoveryKey.js');
+    const status = getDbEncryptionRuntimeStatus();
+    return sendSuccess(res, status);
+  } catch (err) {
+    return controllerError(res, err);
+  }
+}
+
+/**
+ * Exporta a chave SQLCipher desta instalação num ficheiro cifrado (senha escolhida).
+ * Sem master global. Só loopback + admin nível 9 + PIN do utilizador actual.
+ */
+export async function exportDbRecoveryKey(req, res) {
+  try {
+    const { isLocalRequest } = await import('../middlewares/auth.js');
+    if (!isLocalRequest(req)) {
+      return res.status(403).json({
+        error: 'Exportação da chave só é permitida no próprio PC do servidor (loopback).',
+        code: 'LOCAL_ONLY_OPERATION',
+      });
+    }
+
+    const level = Number(req.user?.access_level ?? req.user?.accessLevel ?? 0);
+    if (!Number.isFinite(level) || level < 9) {
+      return res.status(403).json({
+        error: 'Apenas administrador de nível 9 pode exportar a chave de recuperação.',
+        code: 'FORBIDDEN',
+      });
+    }
+
+    const enteredPin = String(req.body?.enteredPin ?? '').trim();
+    const wrapPassword = String(req.body?.wrapPassword ?? '');
+    const wrapPasswordConfirm = String(req.body?.wrapPasswordConfirm ?? '');
+    if (wrapPassword !== wrapPasswordConfirm) {
+      return res.status(400).json({ error: 'As senhas do ficheiro de recuperação não coincidem.' });
+    }
+
+    const { verifyCurrentUserPin } = await import('../services/user.service.js');
+    const pinCheck = await verifyCurrentUserPin(req.user?.id, enteredPin);
+    if (!pinCheck.ok) {
+      return res.status(403).json({ error: 'PIN incorrecto.', code: 'INVALID_PIN' });
+    }
+
+    const { getDbEncryptionKey } = await import('../utils/dbEncryption.js');
+    const {
+      wrapRecoveryKeyPackage,
+      getDbEncryptionRuntimeStatus,
+    } = await import('../utils/dbRecoveryKey.js');
+
+    const status = getDbEncryptionRuntimeStatus();
+    const keyHex = getDbEncryptionKey();
+    if (!keyHex) {
+      return res.status(409).json({
+        error:
+          'Esta instalação não tem chave SQLCipher no processo (BD em modo desenvolvimento sem encriptação, ou API sem Electron).',
+        code: 'DB_KEY_UNAVAILABLE',
+        ...status,
+      });
+    }
+
+    const tenantId = String(req.tenantId ?? req.user?.tenant_id ?? '');
+    const recoveryPackage = wrapRecoveryKeyPackage(
+      {
+        keyHex,
+        tenantId,
+        exportedBy: String(req.user?.id ?? ''),
+      },
+      wrapPassword,
+    );
+
+    await logAudit('DB_RECOVERY_KEY_EXPORTED', req.user, {
+      entity: 'database',
+      entity_id: 'encryption-key',
+      description: 'Database recovery key exported (wrapped; key material not logged)',
+      tenant_id: tenantId,
+      encryptionConfigured: status.encryptionConfigured,
+      databaseMarkedEncrypted: status.databaseMarkedEncrypted,
+    });
+
+    return sendSuccess(res, {
+      recoveryPackage,
+      fileName: `posly-db-recovery-${tenantId || 'tenant'}-${new Date()
+        .toISOString()
+        .slice(0, 10)}.json`,
+      warning:
+        'Guarde o ficheiro offline. Quem tiver o ficheiro e a senha pode ler a base desta loja. Não existe senha master global.',
+    });
+  } catch (err) {
+    const status = Number(err?.status) || 500;
+    const message = err instanceof Error ? err.message : String(err);
+    await logAudit('DB_RECOVERY_KEY_EXPORT_FAILED', req.user, {
+      entity: 'database',
+      entity_id: 'encryption-key',
+      description: 'Database recovery key export failed',
+      error: message,
+    });
+    if (status !== 500) {
+      return res.status(status).json({ error: message, code: err?.code ?? null });
+    }
+    return controllerError(res, err);
+  }
+}
+
+/**
+ * Revela a chave a partir do ficheiro de recuperação (suporte / migração).
+ * Só loopback + admin 9 + PIN. A chave nunca é persistida de novo automaticamente.
+ */
+export async function unwrapDbRecoveryKey(req, res) {
+  try {
+    const { isLocalRequest } = await import('../middlewares/auth.js');
+    if (!isLocalRequest(req)) {
+      return res.status(403).json({
+        error: 'Desbloquear chave só é permitido no próprio PC do servidor (loopback).',
+        code: 'LOCAL_ONLY_OPERATION',
+      });
+    }
+
+    const level = Number(req.user?.access_level ?? req.user?.accessLevel ?? 0);
+    if (!Number.isFinite(level) || level < 9) {
+      return res.status(403).json({
+        error: 'Apenas administrador de nível 9 pode desbloquear a chave de recuperação.',
+        code: 'FORBIDDEN',
+      });
+    }
+
+    const enteredPin = String(req.body?.enteredPin ?? '').trim();
+    const wrapPassword = String(req.body?.wrapPassword ?? '');
+    const recoveryPackage = req.body?.recoveryPackage;
+
+    const { verifyCurrentUserPin } = await import('../services/user.service.js');
+    const pinCheck = await verifyCurrentUserPin(req.user?.id, enteredPin);
+    if (!pinCheck.ok) {
+      return res.status(403).json({ error: 'PIN incorrecto.', code: 'INVALID_PIN' });
+    }
+
+    const { unwrapRecoveryKeyPackage } = await import('../utils/dbRecoveryKey.js');
+    const unlocked = unwrapRecoveryKeyPackage(recoveryPackage, wrapPassword);
+
+    await logAudit('DB_RECOVERY_KEY_UNWRAPPED', req.user, {
+      entity: 'database',
+      entity_id: 'encryption-key',
+      description: 'Database recovery key unwrapped for support (key material not logged)',
+      package_tenant_id: unlocked.tenantId || null,
+    });
+
+    return sendSuccess(res, {
+      keyHex: unlocked.keyHex,
+      tenantId: unlocked.tenantId,
+      exportedAt: unlocked.exportedAt,
+      warning:
+        'Use a chave só para abrir esta BD (SQLCipher) ou migrar esta instalação. Não a partilhe nem a grave em chat/email.',
+    });
+  } catch (err) {
+    const status = Number(err?.status) || 500;
+    const message = err instanceof Error ? err.message : String(err);
+    if (status !== 500) {
+      return res.status(status).json({ error: message, code: err?.code ?? null });
     }
     return controllerError(res, err);
   }

@@ -2673,7 +2673,9 @@ async function processQueueItem(row) {
     console.log('[QUEUE] processing:', {
       id: row.id,
       type: row.type,
-      payload,
+      tenant_id: tenantId,
+      cloud_id: payload?.cloud_id ?? null,
+      entity_id: payload?.id ?? null,
     });
     if (row.type === 'stock') {
       await run(
