@@ -97,11 +97,15 @@ export function isLocalRequest(req) {
 }
 
 async function getFallbackLegacyUser(req) {
-  const allowLegacy =
-    String(process.env.AUTH_ALLOW_LEGACY_LOCAL ?? (isProduction ? 'false' : 'true')).toLowerCase() !==
-    'false';
+  // Opt-in explícito apenas. Em produção empacotada isto deve ficar desligado:
+  // pedidos via proxy Next chegam como loopback e, com legacy activo, leem
+  // /clientes sem Bearer.
+  const allowLegacy = String(process.env.AUTH_ALLOW_LEGACY_LOCAL ?? 'false').toLowerCase() === 'true';
   if (!allowLegacy) return null;
   if (!isLocalRequest(req)) return null;
+  // Pedidos proxied (rewrite /pos-backend) não devem herdar admin local.
+  if (String(req.headers?.['x-forwarded-for'] ?? '').trim()) return null;
+  if (String(req.headers?.via ?? '').trim()) return null;
   const defaultTenantId = await getOrCreateDefaultTenantId();
 
   return {
@@ -236,6 +240,24 @@ export function requireRole(role) {
 }
 
 export const requireAdmin = requireRole('admin');
+
+/** Exige access_level mínimo (independente das regras em BD). */
+export function requireMinLevel(minLevel) {
+  const required = Number(minLevel) || 0;
+  return (req, res, next) => {
+    if (!req.user) return sendError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
+    const level = Number(req.user.access_level ?? req.user.accessLevel ?? 0);
+    if (!Number.isFinite(level) || level < required) {
+      return sendError(
+        res,
+        403,
+        `Sem permissão. Nível necessário: ${required}.`,
+        'FORBIDDEN',
+      );
+    }
+    return next();
+  };
+}
 
 /**
  * Exige access_level >= required_level da regra em permission_rules.

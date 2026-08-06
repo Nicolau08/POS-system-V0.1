@@ -46,6 +46,8 @@ export interface Customer {
   address?: string;
   /** Saldo em dívida (FT / Conta Corrente pendente), em MT. */
   debt_balance?: number;
+  /** Fornecedor (aparece em documentos de compra); derivado no backend. */
+  is_supplier?: boolean;
 }
 
 export interface User {

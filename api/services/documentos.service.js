@@ -30,8 +30,12 @@ import {
   listDocumentos,
   listDocumentosPaginated,
   rollbackTransaction,
+  sumDebitNotesForSource,
+  sumDebitNoteQuantitiesByProductForSource,
+  sumReceiptsForSource,
   updateOrderApproval,
   updateOrderDocumentPayment,
+  updateOrderNotes,
   updateOrderPaymentStatus,
   updateVendaApproval,
   updateVendaDocumentPayment,
@@ -48,6 +52,7 @@ import {
 import { filterCashInflowDocuments } from '../utils/revenueDocuments.js';
 import {
   applyWarehouseDelta,
+  getWarehouseQuantity,
   resolveWarehouseId,
 } from './warehouseStock.service.js';
 import {
@@ -111,6 +116,33 @@ function buildDocumentosBaseSql() {
         o.status AS status,
         o.approved_document_type AS approved_document_type,
         o.approved_document_number AS approved_document_number,
+        o.external_document AS external_document,
+        o.notes AS notes,
+        o.is_waste AS is_waste,
+        CASE
+          WHEN UPPER(COALESCE(o.doc_prefix, '')) = 'FTF' THEN COALESCE((
+            SELECT SUM(COALESCE(nd.total, 0))
+            FROM orders nd
+            WHERE nd.tenant_id = o.tenant_id
+              AND UPPER(COALESCE(nd.doc_prefix, '')) = 'ND'
+              AND UPPER(TRIM(COALESCE(nd.approved_document_type, ''))) = 'FTF'
+              AND UPPER(TRIM(COALESCE(nd.approved_document_number, ''))) =
+                  UPPER(TRIM(COALESCE(o.document_number, '')))
+          ), 0)
+          ELSE 0
+        END AS credit_note_total,
+        CASE
+          WHEN UPPER(COALESCE(o.doc_prefix, '')) = 'FT' THEN COALESCE((
+            SELECT SUM(COALESCE(rc.total, 0))
+            FROM orders rc
+            WHERE rc.tenant_id = o.tenant_id
+              AND UPPER(COALESCE(rc.doc_prefix, '')) = 'RC'
+              AND UPPER(TRIM(COALESCE(rc.approved_document_type, ''))) = 'FT'
+              AND UPPER(TRIM(COALESCE(rc.approved_document_number, ''))) =
+                  UPPER(TRIM(COALESCE(o.document_number, '')))
+          ), 0)
+          ELSE 0
+        END AS receipt_total,
         o.discount AS discount,
         o.subtotal AS subtotal,
         o.tax AS tax,
@@ -161,6 +193,31 @@ function buildDocumentosBaseSql() {
         END AS status,
         v.approved_document_type AS approved_document_type,
         v.approved_document_number AS approved_document_number,
+        NULL AS external_document,
+        NULL AS notes,
+        0 AS is_waste,
+        0 AS credit_note_total,
+        CASE
+          WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT'
+            OR (
+              UPPER(COALESCE(v.doc_type, '')) NOT IN ('FP', 'TK', 'VD')
+              AND LOWER(REPLACE(COALESCE(v.payment_method, ''), '-', ' ')) LIKE '%conta corrente%'
+            )
+          THEN COALESCE((
+            SELECT SUM(COALESCE(rc.total, 0))
+            FROM orders rc
+            WHERE rc.tenant_id = v.tenant_id
+              AND UPPER(COALESCE(rc.doc_prefix, '')) = 'RC'
+              AND UPPER(TRIM(COALESCE(rc.approved_document_type, ''))) = 'FT'
+              AND UPPER(TRIM(COALESCE(rc.approved_document_number, ''))) = (
+                'FT/' ||
+                CAST(strftime('%Y', v.data) AS TEXT) ||
+                '/' ||
+                printf('%04d', COALESCE(v.doc_sequence, v.id))
+              )
+          ), 0)
+          ELSE 0
+        END AS receipt_total,
         0 AS discount,
         v.total AS subtotal,
         0 AS tax,
@@ -191,6 +248,11 @@ function buildDocumentosBaseSql() {
         'completed' AS status,
         NULL AS approved_document_type,
         NULL AS approved_document_number,
+        NULL AS external_document,
+        NULL AS notes,
+        0 AS is_waste,
+        0 AS credit_note_total,
+        0 AS receipt_total,
         0 AS discount,
         0 AS subtotal,
         0 AS tax,
@@ -235,7 +297,7 @@ export async function getDocumentos(query = {}, user = null) {
     params.push(dateToRaw);
   }
   const whereSql = ` WHERE ${where.join(' AND ')}`;
-  const orderedSql = `SELECT id, doc_type, document_number, payment_method, status, approved_document_type, approved_document_number, discount, subtotal, tax, total, created_at, customer_id, local_sale_id, user_name, client_name ${docsBaseSql}${whereSql} ORDER BY datetime(created_at) DESC, id DESC`;
+  const orderedSql = `SELECT id, doc_type, document_number, payment_method, status, approved_document_type, approved_document_number, external_document, notes, is_waste, credit_note_total, receipt_total, discount, subtotal, tax, total, created_at, customer_id, local_sale_id, user_name, client_name ${docsBaseSql}${whereSql} ORDER BY datetime(created_at) DESC, id DESC`;
 
   if (!pagination.hasPagination) {
     const rows = await listDocumentos(orderedSql, params);
@@ -458,8 +520,27 @@ export async function postDocumento(payload = {}, user = null) {
   if (prefix === 'FTF' || prefix === 'PUR' || prefix === 'EN/ST') {
     paid = false;
   }
-  if ((prefix === 'FT') && payload.paid == null) {
+  if (prefix === 'FT' && payload.paid == null) {
     paid = false;
+  }
+
+  const linkedDocNumber = String(
+    payload.sourceDocumentNumber ?? payload.externalDocument ?? payload.external_document ?? ''
+  ).trim();
+
+  if (prefix === 'ND' && linkedDocNumber) {
+    const sourceOrder = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+    if (!sourceOrder?.id || String(sourceOrder.doc_prefix ?? '').toUpperCase() !== 'FTF') {
+      throw new HttpError(404, 'Fatura de fornecedor de origem não encontrada');
+    }
+    const alreadyCredited = await sumDebitNotesForSource(linkedDocNumber, tenantId);
+    const remaining = Math.max(0, roundMoney(Number(sourceOrder.total ?? 0) - alreadyCredited));
+    if (total > remaining + 0.009) {
+      throw new HttpError(
+        409,
+        `Valor da nota de débito excede o saldo da fatura (${remaining.toFixed(2)} MT)`
+      );
+    }
   }
 
   const status = paid ? 'completed' : 'pending';
@@ -477,6 +558,63 @@ export async function postDocumento(payload = {}, user = null) {
         })
       : null;
 
+  // ND com devolução física: só permite se houver stock no armazém (ex.: ainda não vendido).
+  if (prefix === 'ND' && physicalReturn && stockSign < 0 && warehouseId) {
+    const alreadyReturnedByProduct = linkedDocNumber
+      ? await sumDebitNoteQuantitiesByProductForSource(linkedDocNumber, tenantId)
+      : {};
+    let purchasedByProduct = {};
+    if (linkedDocNumber) {
+      const sourceOrder = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+      if (sourceOrder?.id) {
+        const sourceItems = await listOrderItemsByDocumentId(String(sourceOrder.id), tenantId);
+        for (const row of sourceItems ?? []) {
+          const pid = row.product_id != null ? String(row.product_id) : '';
+          if (!pid) continue;
+          purchasedByProduct[pid] = (purchasedByProduct[pid] || 0) + (Number(row.quantity ?? 0) || 0);
+        }
+      }
+    }
+
+    const requestedByProduct = new Map();
+    for (const rawItem of items) {
+      const quantity = Number(rawItem?.quantity ?? 0);
+      if (!Number.isFinite(quantity) || quantity <= 0) continue;
+      const productId = rawItem?.productId != null ? String(rawItem.productId) : null;
+      if (!productId) {
+        throw new HttpError(400, 'Há linhas sem produto — não é possível baixar stock na ND');
+      }
+      requestedByProduct.set(productId, (requestedByProduct.get(productId) || 0) + quantity);
+    }
+
+    for (const [productId, qtyNeeded] of requestedByProduct.entries()) {
+      const productRow = await getProductForSync(productId, tenantId);
+      if (Number(productRow?.is_service ?? 0) !== 0) continue;
+
+      const alreadyReturned = Number(alreadyReturnedByProduct[productId] ?? 0) || 0;
+      if (linkedDocNumber) {
+        const purchased = Number(purchasedByProduct[productId] ?? 0) || 0;
+        const remainingQty = Math.max(0, purchased - alreadyReturned);
+        if (qtyNeeded > remainingQty + 1e-6) {
+          const name = String(productRow?.name ?? productId);
+          throw new HttpError(
+            409,
+            `Quantidade a devolver de «${name}» excede o restante da FTF (${remainingQty}).`
+          );
+        }
+      }
+
+      const available = await getWarehouseQuantity(warehouseId, productId, tenantId);
+      if (qtyNeeded > available + 1e-6) {
+        const name = String(productRow?.name ?? productId);
+        throw new HttpError(
+          409,
+          `Não é possível emitir ND com devolução física: «${name}» sem stock suficiente no armazém (disponível: ${available}). O stock já foi vendido ou não há existências para devolver.`
+        );
+      }
+    }
+  }
+
   const dateObj = new Date(documentDate);
   const year = Number.isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
 
@@ -487,6 +625,27 @@ export async function postDocumento(payload = {}, user = null) {
 
   try {
     await beginImmediateTransaction();
+
+    // Revalidar crédito ND sob lock exclusivo (evita duas ND concorrentes a
+    // ultrapassar o saldo da FTF).
+    if (prefix === 'ND' && linkedDocNumber) {
+      const sourceOrderLocked = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+      if (!sourceOrderLocked?.id || String(sourceOrderLocked.doc_prefix ?? '').toUpperCase() !== 'FTF') {
+        throw new HttpError(404, 'Fatura de fornecedor de origem não encontrada');
+      }
+      const alreadyCreditedLocked = await sumDebitNotesForSource(linkedDocNumber, tenantId);
+      const remainingLocked = Math.max(
+        0,
+        roundMoney(Number(sourceOrderLocked.total ?? 0) - alreadyCreditedLocked),
+      );
+      if (total > remainingLocked + 0.009) {
+        throw new HttpError(
+          409,
+          `Valor da nota de débito excede o saldo da fatura (${remainingLocked.toFixed(2)} MT)`,
+        );
+      }
+    }
+
     const nextSequenceRow = await getNextOrderSequence(prefix, year, tenantId);
     usedSequence = Number(nextSequenceRow?.next ?? 1);
     const padSize = prefix === 'FP' || prefix === 'VD' || prefix === 'TK' ? 4 : 5;
@@ -522,7 +681,15 @@ export async function postDocumento(payload = {}, user = null) {
       documentDate,
       now,
       tenantId,
+      // Doc. externo (ex.: nº da fatura do fornecedor na compra)
+      String(payload.externalDocument ?? payload.external_document ?? '').trim() || null,
     ]);
+
+    const notes = String(payload.notes ?? '').trim() || null;
+    const isWaste = Boolean(payload.isWaste ?? payload.is_waste);
+    if (notes || isWaste) {
+      await updateOrderNotes(orderId, notes, isWaste, now, tenantId);
+    }
 
     for (const rawItem of items) {
       const quantity = Number(rawItem?.quantity ?? 0);
@@ -611,7 +778,6 @@ export async function postDocumento(payload = {}, user = null) {
     }
 
     // Ligar/liquidar documento origem via «Documento externo»
-    const linkedDocNumber = String(payload.sourceDocumentNumber ?? payload.externalDocument ?? '').trim();
     if (linkedDocNumber && (prefix === 'PAG' || prefix === 'RC' || prefix === 'NC' || prefix === 'ND')) {
       await updateOrderSourceReference(
         orderId,
@@ -883,7 +1049,14 @@ function resolvePayableDocumentKind(row, sourceType) {
   return null;
 }
 
-function isDocumentAlreadyPaid(row) {
+function roundMoney(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function isDocumentAlreadyPaid(row, { remainingTotal = null } = {}) {
+  if (remainingTotal != null && Number.isFinite(Number(remainingTotal))) {
+    return Number(remainingTotal) <= 0.009;
+  }
   const status = String(row?.status ?? '').trim().toLowerCase();
   if (status === 'completed' || status === 'approved' || status === 'pago') return true;
   if (String(row?.approved_document_number ?? '').trim()) return true;
@@ -926,7 +1099,26 @@ export async function previewDocumentPayment(query = {}, user = null) {
     );
   }
 
-  const alreadyPaid = isDocumentAlreadyPaid(loaded.sourceRow);
+  let creditedTotal = 0;
+  let receiptTotal = 0;
+  const originalTotal = Number(loaded.sourceRow.total ?? 0);
+  const sourceNumber = String(loaded.sourceRow.document_number ?? documentNumber).trim();
+
+  if (loaded.payableKind === 'FTF') {
+    creditedTotal = await sumDebitNotesForSource(sourceNumber, tenantId);
+  }
+  if (loaded.payableKind === 'FT') {
+    receiptTotal = await sumReceiptsForSource(sourceNumber, tenantId);
+  }
+
+  const payableTotal = Math.max(
+    0,
+    roundMoney(originalTotal - (loaded.payableKind === 'FTF' ? creditedTotal : receiptTotal)),
+  );
+  const alreadyPaid =
+    loaded.payableKind === 'FT'
+      ? isDocumentAlreadyPaid(loaded.sourceRow, { remainingTotal: payableTotal })
+      : isDocumentAlreadyPaid(loaded.sourceRow) || payableTotal <= 0.009;
   const generatedDocumentType =
     loaded.payableKind === 'FP' ? 'VD' : loaded.payableKind === 'FTF' ? 'PAG' : 'RC';
   const generatedDocumentLabel =
@@ -935,7 +1127,7 @@ export async function previewDocumentPayment(query = {}, user = null) {
       : generatedDocumentType === 'PAG'
         ? 'Pagamento a fornecedor (PAG)'
         : 'Recibo (RC)';
-  const resolvedDocumentNumber = String(loaded.sourceRow.document_number ?? documentNumber).trim();
+  const resolvedDocumentNumber = sourceNumber;
   const partyLabel =
     loaded.payableKind === 'FTF'
       ? String(loaded.sourceRow.client_name ?? 'Fornecedor')
@@ -944,12 +1136,16 @@ export async function previewDocumentPayment(query = {}, user = null) {
   return {
     documentNumber: resolvedDocumentNumber,
     clientName: partyLabel,
-    total: Number(loaded.sourceRow.total ?? 0),
+    total: payableTotal,
+    originalTotal,
+    creditNoteTotal: creditedTotal,
+    receiptTotal,
     payableKind: loaded.payableKind,
     generatedDocumentType,
     generatedDocumentLabel,
     alreadyPaid,
-    canPay: !alreadyPaid,
+    canPay: !alreadyPaid && payableTotal > 0.009,
+    allowPartialPayment: loaded.payableKind === 'FT',
   };
 }
 
@@ -958,15 +1154,30 @@ async function loadPayableDocumentDetails(sourceType, sourceRow, tenantId) {
     const order = await getOrderPaymentContext(sourceRow.id, tenantId);
     if (!order?.id) throw new HttpError(404, 'documento nao encontrado');
     const items = await listOrderItemsByDocumentId(order.id, tenantId);
+    const originalTotal = Number(order.total ?? 0);
+    const docNumber = String(order.document_number ?? '').trim();
+    const isSupplierInvoice = docNumber.toUpperCase().startsWith('FTF/');
+    const isCustomerInvoice =
+      docNumber.toUpperCase().startsWith('FT/') && !docNumber.toUpperCase().startsWith('FTF/');
+    const creditedTotal = isSupplierInvoice ? await sumDebitNotesForSource(docNumber, tenantId) : 0;
+    const receiptTotal = isCustomerInvoice ? await sumReceiptsForSource(docNumber, tenantId) : 0;
+    const remainingTotal = Math.max(
+      0,
+      roundMoney(originalTotal - (isSupplierInvoice ? creditedTotal : receiptTotal)),
+    );
+    const remainingRatio = originalTotal > 0 ? remainingTotal / originalTotal : 0;
     return {
       sourceDocumentNumber: String(order.document_number ?? sourceRow.document_number ?? '').trim(),
       customerId: order.customer_id == null ? null : String(order.customer_id),
       customerName: String(order.client_name ?? 'Consumidor final'),
       userId: order.user_id == null ? null : String(order.user_id),
       userName: order.user_name == null ? null : String(order.user_name),
-      total: Number(order.total ?? 0),
-      subtotal: Number(order.subtotal ?? order.total ?? 0),
-      tax: Number(order.tax ?? 0),
+      total: remainingTotal,
+      originalTotal,
+      receiptTotal,
+      creditNoteTotal: creditedTotal,
+      subtotal: Number(order.subtotal ?? originalTotal) * remainingRatio,
+      tax: Number(order.tax ?? 0) * remainingRatio,
       discount: Number(order.discount ?? 0),
       items: items ?? [],
     };
@@ -975,14 +1186,23 @@ async function loadPayableDocumentDetails(sourceType, sourceRow, tenantId) {
   const sale = await getVendaPaymentContext(sourceRow.id, tenantId);
   if (!sale?.id) throw new HttpError(404, 'documento nao encontrado');
   const items = await listOrderItemsByDocumentId(String(sale.id), tenantId);
+  const saleDocNumber = String(sale.document_number ?? sourceRow.document_number ?? '').trim();
+  const isCustomerInvoice =
+    saleDocNumber.toUpperCase().startsWith('FT/') && !saleDocNumber.toUpperCase().startsWith('FTF/');
+  const originalTotal = Number(sale.total ?? 0);
+  const receiptTotal = isCustomerInvoice ? await sumReceiptsForSource(saleDocNumber, tenantId) : 0;
+  const remainingTotal = Math.max(0, roundMoney(originalTotal - receiptTotal));
   return {
-    sourceDocumentNumber: String(sale.document_number ?? sourceRow.document_number ?? '').trim(),
+    sourceDocumentNumber: saleDocNumber,
     customerId: sale.customer_id == null ? null : String(sale.customer_id),
     customerName: String(sale.client_name ?? sale.customer_name ?? 'Consumidor final'),
     userId: sale.user_id == null ? null : String(sale.user_id),
     userName: sale.user_name == null ? null : String(sale.user_name),
-    total: Number(sale.total ?? 0),
-    subtotal: Number(sale.total ?? 0),
+    total: remainingTotal,
+    originalTotal,
+    receiptTotal,
+    creditNoteTotal: 0,
+    subtotal: remainingTotal,
     tax: 0,
     discount: 0,
     items: items ?? [],
@@ -1193,9 +1413,6 @@ export async function registerDocumentPayment(payload = {}, user = null) {
       'apenas faturas (FT), faturas de fornecedor (FTF) ou cotacoes (FP) podem ser pagas por este ecran',
     );
   }
-  if (isDocumentAlreadyPaid(sourceRow)) {
-    throw new HttpError(409, 'documento ja se encontra pago');
-  }
 
   const now = new Date().toISOString();
   const year = new Date().getFullYear();
@@ -1207,8 +1424,81 @@ export async function registerDocumentPayment(payload = {}, user = null) {
   const sourceDocType =
     payableKind === 'FP' ? 'FP' : payableKind === 'FTF' ? 'FTF' : 'FT';
 
+  const remainingTotal = Math.max(0, roundMoney(Number(details.total ?? 0)));
+  if (payableKind === 'FT') {
+    if (isDocumentAlreadyPaid(sourceRow, { remainingTotal })) {
+      throw new HttpError(409, 'documento ja se encontra pago');
+    }
+  } else if (isDocumentAlreadyPaid(sourceRow) || remainingTotal <= 0.009) {
+    throw new HttpError(409, 'documento ja se encontra pago');
+  }
+
+  const requestedAmountRaw = payload.amount ?? payload.paymentAmount ?? payload.valor;
+  let paymentAmount = remainingTotal;
+  if (requestedAmountRaw != null && String(requestedAmountRaw).trim() !== '') {
+    paymentAmount = roundMoney(Number(requestedAmountRaw));
+  }
+  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    throw new HttpError(400, 'valor do pagamento invalido');
+  }
+  // Pré-validação rápida (fora da TX). A validação autoritativa corre dentro do BEGIN IMMEDIATE.
+  if (paymentAmount > remainingTotal + 0.009) {
+    throw new HttpError(
+      409,
+      `valor do pagamento excede o saldo em divida (${remainingTotal.toFixed(2)} MT)`,
+    );
+  }
+  // FTF e FP continuam a liquidar o valor restante de uma vez.
+  if (payableKind !== 'FT' && paymentAmount < remainingTotal - 0.009) {
+    throw new HttpError(400, 'pagamento parcial so e permitido em faturas de cliente (FT)');
+  }
+
+  let settledRemainingTotal = remainingTotal;
+  let paymentDetails = null;
+
   try {
     await beginImmediateTransaction();
+
+    // Re-ler saldo sob lock exclusivo (BEGIN IMMEDIATE) para impedir dois RC
+    // parciais concorrentes a ultrapassar o total da FT.
+    const freshDetails = await loadPayableDocumentDetails(sourceType, sourceRow, tenantId);
+    settledRemainingTotal = Math.max(0, roundMoney(Number(freshDetails.total ?? 0)));
+    if (payableKind === 'FT') {
+      if (isDocumentAlreadyPaid(sourceRow, { remainingTotal: settledRemainingTotal })) {
+        throw new HttpError(409, 'documento ja se encontra pago');
+      }
+    } else if (isDocumentAlreadyPaid(sourceRow) || settledRemainingTotal <= 0.009) {
+      throw new HttpError(409, 'documento ja se encontra pago');
+    }
+    if (paymentAmount > settledRemainingTotal + 0.009) {
+      throw new HttpError(
+        409,
+        `valor do pagamento excede o saldo em divida (${settledRemainingTotal.toFixed(2)} MT)`,
+      );
+    }
+    if (payableKind !== 'FT' && paymentAmount < settledRemainingTotal - 0.009) {
+      throw new HttpError(400, 'pagamento parcial so e permitido em faturas de cliente (FT)');
+    }
+
+    const paymentRatio = settledRemainingTotal > 0 ? paymentAmount / settledRemainingTotal : 1;
+    paymentDetails = {
+      ...freshDetails,
+      total: paymentAmount,
+      subtotal: roundMoney(Number(freshDetails.subtotal ?? 0) * paymentRatio),
+      tax: roundMoney(Number(freshDetails.tax ?? 0) * paymentRatio),
+      items:
+        payableKind === 'FT' && paymentAmount < settledRemainingTotal - 0.009
+          ? [
+              {
+                product_id: null,
+                product_name: `Pagamento parcial de ${sourceDocumentNumber}`,
+                quantity: 1,
+                price: paymentAmount,
+                discount_amount: 0,
+              },
+            ]
+          : freshDetails.items,
+    };
 
     if (payableKind === 'FP') {
       const nextVd = await getNextVdSequence(tenantId);
@@ -1219,7 +1509,7 @@ export async function registerDocumentPayment(payload = {}, user = null) {
         sourceDocType,
         generatedDocumentNumber,
         paymentMethod,
-        details,
+        details: paymentDetails,
         tenantId,
         now,
       });
@@ -1232,7 +1522,7 @@ export async function registerDocumentPayment(payload = {}, user = null) {
         sourceDocType,
         generatedDocumentNumber,
         paymentMethod,
-        details,
+        details: paymentDetails,
         tenantId,
         now,
       });
@@ -1245,13 +1535,16 @@ export async function registerDocumentPayment(payload = {}, user = null) {
         sourceDocType,
         generatedDocumentNumber,
         paymentMethod,
-        details,
+        details: paymentDetails,
         tenantId,
         now,
       });
     }
 
-    const sourcePaymentStatus = payableKind === 'FP' ? 'approved' : 'completed';
+    const remainingAfter = Math.max(0, roundMoney(settledRemainingTotal - paymentAmount));
+    const fullySettled = remainingAfter <= 0.009;
+    const sourcePaymentStatus =
+      payableKind === 'FP' ? 'approved' : fullySettled || payableKind !== 'FT' ? 'completed' : 'pending';
 
     if (sourceType === 'order') {
       const result = await updateOrderDocumentPayment(
@@ -1295,6 +1588,14 @@ export async function registerDocumentPayment(payload = {}, user = null) {
     generatedDocumentType,
     generatedDocumentNumber,
     paymentMethod,
-    status: payableKind === 'FP' ? 'approved' : 'completed',
+    paymentAmount,
+    remainingTotal: Math.max(0, roundMoney(settledRemainingTotal - paymentAmount)),
+    fullySettled: Math.max(0, roundMoney(settledRemainingTotal - paymentAmount)) <= 0.009,
+    status:
+      payableKind === 'FP'
+        ? 'approved'
+        : Math.max(0, roundMoney(settledRemainingTotal - paymentAmount)) <= 0.009 || payableKind !== 'FT'
+          ? 'completed'
+          : 'pending',
   };
 }

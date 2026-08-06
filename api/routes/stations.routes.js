@@ -1,4 +1,5 @@
 import express from 'express';
+import { requireAdmin } from '../middlewares/auth.js';
 import {
   claimTableLock,
   getServerStationSettings,
@@ -33,7 +34,7 @@ router.get('/stations/server-settings', async (_req, res) => {
   }
 });
 
-router.patch('/stations/server-settings', async (req, res) => {
+router.patch('/stations/server-settings', requireAdmin, async (req, res) => {
   try {
     const settings = await updateServerStationSettings({
       lanAccessEnabled: req.body?.lanAccessEnabled,

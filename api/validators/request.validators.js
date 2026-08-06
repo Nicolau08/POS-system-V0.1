@@ -43,6 +43,11 @@ export function validateRegisterDocumentPaymentBody(body) {
   if (!isObject(body)) return 'payload invalido';
   if (!String(body.documentNumber ?? '').trim()) return 'documentNumber obrigatorio';
   if (!String(body.paymentMethod ?? '').trim()) return 'paymentMethod obrigatorio';
+  const amountRaw = body.amount ?? body.paymentAmount ?? body.valor;
+  if (amountRaw != null && String(amountRaw).trim() !== '') {
+    const amount = Number(amountRaw);
+    if (!Number.isFinite(amount) || amount <= 0) return 'amount invalido';
+  }
   return true;
 }
 

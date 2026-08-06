@@ -20,6 +20,9 @@ type PosSelectProps = {
   triggerClassName?: string;
   /** sm = filtros compactos; md = formulários */
   size?: 'sm' | 'md';
+  /** Acção no fundo do menu (estilo «Ver mais…») */
+  footerActionLabel?: string;
+  onFooterAction?: () => void;
 };
 
 type MenuCoords = {
@@ -46,6 +49,8 @@ export default function PosSelect({
   className = '',
   triggerClassName = '',
   size = 'sm',
+  footerActionLabel,
+  onFooterAction,
 }: PosSelectProps) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<MenuCoords | null>(null);
@@ -153,13 +158,18 @@ export default function PosSelect({
           >
             {options.map((option) => {
               const active = option.value === value;
+              const isActionOption =
+                option.value === '__create_supplier__' ||
+                option.value.startsWith('__action__');
               return (
                 <button
                   key={option.value}
                   type="button"
                   role="option"
                   aria-selected={active}
-                  className={`pos-dropdown-item ${active ? 'is-active' : ''}`}
+                  className={`pos-dropdown-item ${active ? 'is-active' : ''} ${
+                    isActionOption ? '!text-[#a5b4fc] hover:!bg-[var(--pos-brand-hover-bg)]' : ''
+                  }`}
                   onClick={() => {
                     onChange(option.value);
                     setOpen(false);
@@ -169,6 +179,18 @@ export default function PosSelect({
                 </button>
               );
             })}
+            {footerActionLabel && onFooterAction ? (
+              <button
+                type="button"
+                className="pos-dropdown-item mt-0.5 !text-[#a5b4fc] hover:!bg-[var(--pos-brand-hover-bg)]"
+                onClick={() => {
+                  setOpen(false);
+                  onFooterAction();
+                }}
+              >
+                {footerActionLabel}
+              </button>
+            ) : null}
           </div>,
           document.body,
         )

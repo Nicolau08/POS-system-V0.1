@@ -92,6 +92,19 @@ export function useAuth() {
         return false;
       }
 
+      if (response.status === 429) {
+        const lockedPayload = await response.json().catch(() => ({}));
+        const seconds = Number(lockedPayload?.retryAfterSeconds ?? 0);
+        window.alert(
+          seconds > 0
+            ? `Conta temporariamente bloqueada. Tente novamente em ${seconds}s.`
+            : 'Conta temporariamente bloqueada. Tente novamente mais tarde.',
+        );
+        setLoginError(true);
+        window.setTimeout(() => setLoginError(false), 500);
+        return false;
+      }
+
       if (!response.ok) {
         setLoginError(true);
         window.setTimeout(() => setLoginError(false), 500);

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   RotateCcw, FolderPlus, Edit, Trash2, Plus, Edit3, Trash, 
   Printer, FileText, Hash, Download, 
@@ -257,6 +257,18 @@ export default function ProductsManager() {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  const canRenameProduct = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const raw = window.localStorage.getItem('currentUser');
+      if (!raw) return false;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return Number(parsed.accessLevel ?? parsed.access_level ?? 0) >= 9;
+    } catch {
+      return false;
+    }
+  }, [isEditProductModalOpen]);
 
   const formatPrice = (value: number) => formatMoneyMt(value);
 
@@ -594,12 +606,23 @@ export default function ProductsManager() {
         method: 'DELETE',
         headers: { ...getPosUserAuthHeaders() },
       });
-      if (!response.ok) throw new Error('Falha ao remover produto');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const message = String(
+          (data?.error && typeof data.error === 'object' ? data.error.message : null) ??
+            data?.error ??
+            data?.message ??
+            'Falha ao remover produto',
+        );
+        throw new Error(message);
+      }
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
+      showToast('Produto removido com sucesso.');
       fetchData();
     } catch (error) {
       console.error('Error deleting product:', error);
+      showToast(error instanceof Error ? error.message : 'Falha ao remover produto', 'error');
     }
   };
 
@@ -1854,9 +1877,22 @@ export default function ProductsManager() {
                       type="text" 
                       required
                       value={editingProduct.name ?? ''}
+                      disabled={!canRenameProduct}
+                      title={
+                        canRenameProduct
+                          ? undefined
+                          : 'Apenas utilizadores de nível 9 podem alterar o nome do produto'
+                      }
                       onChange={(e) => setEditingProduct({...editingProduct, name: e.target.value})}
-                      className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                      className={`w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 outline-none transition-colors ${
+                        canRenameProduct ? '' : 'opacity-60 cursor-not-allowed'
+                      }`}
                     />
+                    {!canRenameProduct ? (
+                      <p className="text-[11px] text-amber-400/90">
+                        O nome só pode ser alterado por utilizadores de nível 9.
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="space-y-2">

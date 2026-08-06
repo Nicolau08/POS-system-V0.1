@@ -62,7 +62,7 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'painel.documentos', required_level: 0 },
       { key: 'painel.produtos', required_level: 0 },
       { key: 'painel.estoque', required_level: 0 },
-      { key: 'painel.relatorios', required_level: 0 },
+      { key: 'painel.relatorios', required_level: 5 },
       { key: 'painel.clientes_fornecedores', required_level: 0 },
       { key: 'painel.promocoes_acoes', required_level: 0 },
       { key: 'painel.usuarios_seguranca', required_level: 0 },
@@ -342,6 +342,30 @@ db.serialize(() => {
     }
   );
 
+  // Relatórios expõem PII (clientes, dívidas): mínimo nível 5 em bases já existentes.
+  db.run(
+    `UPDATE permission_rules
+     SET required_level = 5, updated_at = datetime('now')
+     WHERE key = 'painel.relatorios' AND required_level < 5`,
+    (reportsHardeningErr) => {
+      if (reportsHardeningErr && !String(reportsHardeningErr.message || '').includes('no such table')) {
+        console.error(
+          '[database] Falha ao endurecer regra painel.relatorios:',
+          reportsHardeningErr.message,
+        );
+      }
+    }
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('painel.relatorios', 5, datetime('now'))`,
+    (reportsSeedErr) => {
+      if (reportsSeedErr && !String(reportsSeedErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra painel.relatorios:', reportsSeedErr.message);
+      }
+    }
+  );
+
   db.run(`DELETE FROM permission_rules WHERE key = 'painel.paises'`, (delPaisesErr) => {
     if (delPaisesErr && !String(delPaisesErr.message || '').includes('no such table')) {
       console.error('[database] Falha ao remover regra painel.paises:', delPaisesErr.message);
@@ -563,6 +587,11 @@ db.serialize(() => {
       doc_year INTEGER,
       doc_sequence INTEGER,
       document_number TEXT,
+      approved_document_type TEXT,
+      approved_document_number TEXT,
+      external_document TEXT,
+      notes TEXT,
+      is_waste INTEGER NOT NULL DEFAULT 0,
       created_at TEXT,
       updated_at TEXT
     )
@@ -1184,6 +1213,21 @@ db.serialize(() => {
   db.run(`ALTER TABLE orders ADD COLUMN approved_document_number TEXT`, (err) => {
     if (err && !String(err.message || '').includes('duplicate column name')) {
       console.error('Erro ao adicionar coluna approved_document_number em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN external_document TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna external_document em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN notes TEXT`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna notes em orders:', err.message);
+    }
+  });
+  db.run(`ALTER TABLE orders ADD COLUMN is_waste INTEGER NOT NULL DEFAULT 0`, (err) => {
+    if (err && !String(err.message || '').includes('duplicate column name')) {
+      console.error('Erro ao adicionar coluna is_waste em orders:', err.message);
     }
   });
   db.run(`ALTER TABLE orders ADD COLUMN tenant_id TEXT`, (err) => {

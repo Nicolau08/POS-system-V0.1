@@ -17,6 +17,8 @@ export type ReportKey =
   | 'cash_sales_vd'
   | 'tax_map'
   | 'accounts_receivable'
+  | 'customer_statement'
+  | 'supplier_statement'
   | 'top_customers'
   | 'stock_movement'
   | 'low_stock'
@@ -41,6 +43,8 @@ export interface BuiltReport {
   subtitle: string;
   columns: string[];
   rows: ReportRow[];
+  /** Coluna usada para separar visualmente grupos na tabela. */
+  groupBy?: string;
   summaries: Array<{ label: string; value: string }>;
   meta: Array<{ label: string; value: string }>;
 }
@@ -49,6 +53,8 @@ export interface ReportBuildContext {
   dateFrom: string;
   dateTo: string;
   selectedCustomer: string;
+  /** Todos os identificadores da entidade seleccionada (id local, cloud_id, etc.). */
+  selectedCustomerIds?: string[];
   selectedStatus: string;
   selectedPaymentMethod: string;
   selectedCategory: string;
@@ -77,6 +83,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
 
   { key: 'tax_map', title: 'Mapa de IVA', section: 'Financeiro', description: 'Base tributável, IVA e totais por documento.' },
   { key: 'accounts_receivable', title: 'Conta corrente / valores a receber', section: 'Financeiro', description: 'Saldos em dívida por cliente (faturas por pagar).' },
+  { key: 'customer_statement', title: 'Extrato de cliente', section: 'Financeiro', description: 'Documentos emitidos ao cliente com datas, débitos, créditos e saldo.' },
+  { key: 'supplier_statement', title: 'Extrato de fornecedor', section: 'Financeiro', description: 'Documentos emitidos ao fornecedor com datas, débitos, créditos e saldo.' },
 
   { key: 'products', title: 'Produtos', section: 'Cadastros', description: 'Lista geral de produtos, preços, categoria e stock.' },
   { key: 'customers', title: 'Clientes', section: 'Cadastros', description: 'Relação de clientes com contactos.' },
@@ -143,6 +151,8 @@ type DocumentRow = {
   customer_id?: string | null;
   approved_document_type?: string | null;
   approved_document_number?: string | null;
+  credit_note_total?: number | null;
+  receipt_total?: number | null;
 };
 
 type ProductRow = {
@@ -179,17 +189,140 @@ function resolveDocCode(doc: DocumentRow): string {
 
   if (docType === 'VD' || docType === 'VENDA') return 'VD';
   if (docType === 'FT' || docType === 'FATURA') return 'FT';
+  if (docType === 'FTF' || docType === 'COMPRA' || docType.includes('FORNECEDOR')) return 'FTF';
   if (docType === 'FP' || docType.includes('PROFORMA') || docType.includes('COTAC')) return 'FP';
   if (docType === 'RC' || docType === 'RECIBO') return 'RC';
   if (docType === 'NC') return 'NC';
+  if (docType === 'ND' || docType.includes('DÉBITO') || docType.includes('DEBITO')) return 'ND';
+  if (docType === 'PAG' || docType.includes('PAGAMENTO')) return 'PAG';
+  if (docType === 'PUR' || docType === 'EN/ST') return docType;
 
   if (docNumber.startsWith('VD/')) return 'VD';
+  if (docNumber.startsWith('FTF/')) return 'FTF';
   if (docNumber.startsWith('FT/')) return 'FT';
   if (docNumber.startsWith('FP/')) return 'FP';
   if (docNumber.startsWith('RC/') || docNumber.startsWith('PBNK')) return 'RC';
   if (docNumber.startsWith('NC/')) return 'NC';
+  if (docNumber.startsWith('ND/')) return 'ND';
+  if (docNumber.startsWith('PAG/')) return 'PAG';
+  if (docNumber.startsWith('PUR/')) return 'PUR';
+  if (docNumber.startsWith('EN/ST/')) return 'EN/ST';
 
   return docType || 'VD';
+}
+
+const CUSTOMER_STATEMENT_CODES = new Set(['FT', 'RC', 'NC', 'VD', 'FP', 'AD', 'RCA']);
+const SUPPLIER_STATEMENT_CODES = new Set(['FTF', 'PAG', 'ND', 'PUR', 'EN/ST', 'PAAD']);
+
+function statementReference(doc: DocumentRow): string {
+  const reference = String(doc.approved_document_number ?? '').trim();
+  const referenceType = String(doc.approved_document_type ?? '').trim().toUpperCase();
+  if (!reference) return '-';
+  return referenceType ? `${referenceType} ${reference}` : reference;
+}
+
+function buildPartyStatement(
+  docs: DocumentRow[],
+  mode: 'customer' | 'supplier',
+): {
+  rows: ReportRow[];
+  totalDebit: number;
+  totalCredit: number;
+  closingBalance: number;
+} {
+  const allowed = mode === 'customer' ? CUSTOMER_STATEMENT_CODES : SUPPLIER_STATEMENT_CODES;
+  const eligible = docs
+    .filter((doc) => {
+      const code = resolveDocCode(doc);
+      if (!allowed.has(code)) return false;
+      const status = String(doc.status ?? '').trim().toLowerCase();
+      return status !== 'cancelled' && status !== 'cancelado';
+    });
+
+  let totalDebit = 0;
+  let totalCredit = 0;
+  let closingBalance = 0;
+  const partyLabel = mode === 'customer' ? 'Cliente' : 'Fornecedor';
+  const defaultPartyName = mode === 'customer' ? 'Consumidor final' : 'Fornecedor';
+  const groups = new Map<string, { name: string; docs: DocumentRow[] }>();
+
+  for (const doc of eligible) {
+    const name = String(doc.client_name ?? '').trim() || defaultPartyName;
+    // Alguns documentos antigos usam id local e outros cloud_id para a mesma
+    // entidade; o nome normalizado evita separar artificialmente esse extrato.
+    const key = name.toLocaleLowerCase('pt');
+    const group = groups.get(key) ?? { name, docs: [] };
+    group.docs.push(doc);
+    groups.set(key, group);
+  }
+
+  const rows: ReportRow[] = [];
+  const sortedGroups = Array.from(groups.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, 'pt'),
+  );
+
+  for (const group of sortedGroups) {
+    let balance = 0;
+    const sortedDocs = group.docs.slice().sort((a, b) => {
+      const da = new Date(a.created_at ?? 0).getTime();
+      const db = new Date(b.created_at ?? 0).getTime();
+      if (da !== db) return da - db;
+      return String(a.document_number ?? '').localeCompare(String(b.document_number ?? ''), 'pt');
+    });
+
+    for (const doc of sortedDocs) {
+      const code = resolveDocCode(doc);
+      const amount = Math.abs(Number(doc.total ?? 0) || 0);
+      let debit = 0;
+      let credit = 0;
+
+      if (mode === 'customer') {
+        // Cliente deve-nos: FT/VD em débito; RC/NC em crédito. FP só listagem (não afecta saldo).
+        if (code === 'FT' || code === 'VD' || code === 'AD' || code === 'RCA') {
+          debit = amount;
+        } else if (code === 'RC' || code === 'NC') {
+          credit = amount;
+        } else if (code === 'FP') {
+          debit = amount;
+        }
+      } else {
+        // Devemos ao fornecedor: FTF em débito; PAG/ND em crédito.
+        if (code === 'FTF' || code === 'PUR' || code === 'EN/ST' || code === 'PAAD') {
+          debit = amount;
+        } else if (code === 'PAG' || code === 'ND') {
+          credit = amount;
+        }
+      }
+
+      const affectsBalance = !(mode === 'customer' && code === 'FP');
+      if (affectsBalance) {
+        balance = Math.round((balance + debit - credit) * 100) / 100;
+        totalDebit += debit;
+        totalCredit += credit;
+      } else {
+        totalDebit += debit;
+      }
+
+      rows.push({
+        Data: formatDate(doc.created_at),
+        Documento: doc.document_number || '-',
+        Tipo: code,
+        [partyLabel]: group.name,
+        Referência: statementReference(doc),
+        Débito: debit > 0 ? formatCurrency(debit) : '-',
+        Crédito: credit > 0 ? formatCurrency(credit) : '-',
+        Saldo: formatCurrency(balance),
+      });
+    }
+    closingBalance = Math.round((closingBalance + balance) * 100) / 100;
+  }
+
+  return {
+    rows,
+    totalDebit: Math.round(totalDebit * 100) / 100,
+    totalCredit: Math.round(totalCredit * 100) / 100,
+    closingBalance,
+  };
 }
 
 function resolveStatusLabel(status: string | null | undefined, docCode: string) {
@@ -204,9 +337,12 @@ function resolveStatusLabel(status: string | null | undefined, docCode: string) 
 function isPendingInvoice(doc: DocumentRow) {
   const code = resolveDocCode(doc);
   if (code !== 'FT') return false;
+  const remaining = Math.max(0, Number(doc.total ?? 0) - Number(doc.receipt_total ?? 0));
+  if (remaining <= 0.009) return false;
   const status = String(doc.status ?? '').trim().toLowerCase();
+  if (status === 'completed' || status === 'pago') return false;
   const payment = String(doc.payment_method ?? '').toLowerCase();
-  return status === 'pending' || payment.includes('conta corrente');
+  return status === 'pending' || payment.includes('conta corrente') || remaining > 0.009;
 }
 
 function buildDocumentsParams(ctx: ReportBuildContext) {
@@ -278,15 +414,24 @@ function collectRevenueOrderIds(docs: DocumentRow[]): Set<string> {
   return ids;
 }
 
+function resolveSelectedCustomerIds(ctx: ReportBuildContext): Set<string> | null {
+  if (ctx.selectedCustomer === 'all') return null;
+  const ids = (ctx.selectedCustomerIds?.length ? ctx.selectedCustomerIds : [ctx.selectedCustomer])
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean);
+  return ids.length ? new Set(ids) : null;
+}
+
 async function fetchDocuments(ctx: ReportBuildContext) {
   const params = buildDocumentsParams(ctx);
   const docs = toArray<DocumentRow>(await ctx.fetchJson(`/documentos?${params.toString()}`));
+  const selectedIds = resolveSelectedCustomerIds(ctx);
   return docs.filter((doc) => {
     const code = resolveDocCode(doc);
     if (code === 'INV' || String(doc.doc_type ?? '').toLowerCase().includes('invent')) return false;
-    if (ctx.selectedCustomer !== 'all') {
-      const customerId = String(doc.customer_id ?? '');
-      if (customerId && customerId !== ctx.selectedCustomer) return false;
+    if (selectedIds) {
+      const customerId = String(doc.customer_id ?? '').trim();
+      if (!customerId || !selectedIds.has(customerId)) return false;
     }
     if (ctx.selectedPaymentMethod !== 'all') {
       const payment = String(doc.payment_method ?? '').trim();
@@ -822,7 +967,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
       const key = String(doc.client_name || 'Consumidor final');
       const current = grouped.get(key) || { count: 0, total: 0 };
       current.count += 1;
-      current.total += Number(doc.total || 0);
+      current.total += Math.max(0, Number(doc.total || 0) - Number(doc.receipt_total || 0));
       grouped.set(key, current);
     });
     const rows = Array.from(grouped.entries())
@@ -832,7 +977,10 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
         'Faturas em dívida': item.count,
         'Valor a receber': formatCurrency(item.total),
       }));
-    const totalDue = docs.reduce((sum, doc) => sum + Number(doc.total || 0), 0);
+    const totalDue = docs.reduce(
+      (sum, doc) => sum + Math.max(0, Number(doc.total || 0) - Number(doc.receipt_total || 0)),
+      0,
+    );
     const metaBlock = ctx.buildMeta('Conta corrente');
     return {
       key: reportKey,
@@ -843,6 +991,35 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
       summaries: [
         { label: 'Clientes devedores', value: String(rows.length) },
         { label: 'Total a receber', value: formatCurrency(totalDue) },
+      ],
+      meta: metaBlock.meta,
+    };
+  }
+
+  if (reportKey === 'customer_statement' || reportKey === 'supplier_statement') {
+    const mode = reportKey === 'customer_statement' ? 'customer' : 'supplier';
+    const docs = await fetchDocuments(ctx);
+    const statement = buildPartyStatement(docs, mode);
+    const partyLabel = mode === 'customer' ? 'Cliente' : 'Fornecedor';
+    const metaBlock = ctx.buildMeta(mode === 'customer' ? 'Extrato de cliente' : 'Extrato de fornecedor');
+    return {
+      key: reportKey,
+      title: metaBlock.title,
+      subtitle:
+        mode === 'customer'
+          ? 'Movimentos emitidos ao cliente no período (com datas e saldo)'
+          : 'Movimentos emitidos ao fornecedor no período (com datas e saldo)',
+      columns: ['Data', 'Documento', 'Tipo', partyLabel, 'Referência', 'Débito', 'Crédito', 'Saldo'],
+      rows: statement.rows,
+      groupBy: ctx.selectedCustomer === 'all' ? partyLabel : undefined,
+      summaries: [
+        { label: 'Documentos', value: String(statement.rows.length) },
+        { label: 'Total débito', value: formatCurrency(statement.totalDebit) },
+        { label: 'Total crédito', value: formatCurrency(statement.totalCredit) },
+        {
+          label: mode === 'customer' ? 'Saldo a receber' : 'Saldo a pagar',
+          value: formatCurrency(statement.closingBalance),
+        },
       ],
       meta: metaBlock.meta,
     };

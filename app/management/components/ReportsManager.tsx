@@ -48,6 +48,12 @@ interface CustomerOption {
   name: string;
 }
 
+interface PartyOption {
+  id: string;
+  name: string;
+  ids?: string[];
+}
+
 interface CategoryOption {
   id: string;
   name: string;
@@ -129,9 +135,15 @@ function buildCalendarDays(monthValue: string) {
 }
 
 function buildCsv(columns: string[], rows: ReportRow[]) {
+  const neutralize = (value: string) => {
+    const text = String(value ?? '');
+    // Evita fórmula Excel/Sheets injectada via nome de cliente (=, +, -, @, tab).
+    if (/^[=+\-@\t\r]/.test(text)) return `'${text}`;
+    return text;
+  };
   const header = columns.join(',');
   const body = rows.map((row) =>
-    columns.map((column) => `"${String(row[column] ?? '').replace(/"/g, '""')}"`).join(',')
+    columns.map((column) => `"${neutralize(String(row[column] ?? '')).replace(/"/g, '""')}"`).join(',')
   );
   return [header, ...body].join('\n');
 }
@@ -311,6 +323,8 @@ export default function ReportsManager() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedReport, setSelectedReport] = useState<ReportKey | null>(null);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [statementCustomers, setStatementCustomers] = useState<PartyOption[]>([]);
+  const [suppliers, setSuppliers] = useState<PartyOption[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
@@ -341,16 +355,44 @@ export default function ReportsManager() {
   }, [searchQuery]);
 
   const groupedReports = useMemo(() => {
-    return ['Vendas', 'Cadastros', 'Stock'].map((section) => ({
-      section: section as ReportDefinition['section'],
-      items: filteredReports.filter((report) => report.section === section),
-    }));
+    return (['Vendas', 'Documentos Fiscais', 'Financeiro', 'Cadastros', 'Stock'] as ReportDefinition['section'][])
+      .map((section) => ({
+        section,
+        items: filteredReports.filter((report) => report.section === section),
+      }))
+      .filter((group) => group.items.length > 0);
   }, [filteredReports]);
 
   const filteredProducts = useMemo(() => {
     if (selectedCategory === 'all') return products;
     return products.filter((product) => product.category_id === selectedCategory);
   }, [products, selectedCategory]);
+
+  const resolvePartyOptions = (reportKey: ReportKey | null): PartyOption[] => {
+    if (reportKey === 'supplier_statement') return suppliers;
+    if (reportKey === 'customer_statement') return statementCustomers.length ? statementCustomers : customers;
+    return customers;
+  };
+
+  const partyLabel =
+    selectedReport === 'supplier_statement'
+      ? 'Fornecedor'
+      : selectedReport === 'customer_statement'
+        ? 'Cliente'
+        : 'Cliente / Fornecedor';
+
+  const partyOptions = useMemo<PartyOption[]>(
+    () => resolvePartyOptions(selectedReport),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customers, selectedReport, statementCustomers, suppliers],
+  );
+
+  useEffect(() => {
+    if (selectedCustomer === 'all') return;
+    if (!partyOptions.some((party) => party.id === selectedCustomer)) {
+      setSelectedCustomer('all');
+    }
+  }, [partyOptions, selectedCustomer]);
 
   useEffect(() => {
     if (!filteredProducts.some((product) => product.id === selectedProduct)) {
@@ -400,10 +442,14 @@ export default function ReportsManager() {
       ]);
       const reportFilters = reportFiltersRaw as {
         customers?: CustomerOption[];
+        statementCustomers?: PartyOption[];
+        suppliers?: PartyOption[];
         paymentMethods?: string[];
       };
 
       setCustomers(toArray<CustomerOption>(reportFilters?.customers));
+      setStatementCustomers(toArray<PartyOption>(reportFilters?.statementCustomers));
+      setSuppliers(toArray<PartyOption>(reportFilters?.suppliers));
       setCategories(toArray<CategoryOption>(localCategories));
       setProducts(toArray<ProductOption>(localProducts));
       setPaymentMethods(toArray<string>(reportFilters?.paymentMethods));
@@ -423,7 +469,7 @@ export default function ReportsManager() {
     const customerName =
       selectedCustomer === 'all'
         ? 'Todos'
-        : customers.find((customer) => customer.id === selectedCustomer)?.name || 'Cliente';
+        : partyOptions.find((party) => party.id === selectedCustomer)?.name || partyLabel;
     const categoryName =
       selectedCategory === 'all'
         ? 'Todos'
@@ -437,7 +483,7 @@ export default function ReportsManager() {
       title,
       meta: [
         { label: 'Período', value: `${dateFrom} até ${dateTo}` },
-        { label: 'Cliente', value: customerName },
+        { label: partyLabel, value: customerName },
         { label: 'Grupo', value: categoryName },
         { label: 'Produto', value: productName },
         { label: 'Pagamento', value: selectedPaymentMethod === 'all' ? 'Todos' : selectedPaymentMethod },
@@ -536,10 +582,15 @@ export default function ReportsManager() {
         throw new Error('A data inicial não pode ser maior do que a data final.');
       }
 
+      const availableParties = resolvePartyOptions(reportKey);
+      const selectedParty = availableParties.find((party) => party.id === selectedCustomer);
+      const effectiveCustomer = selectedCustomer !== 'all' && !selectedParty ? 'all' : selectedCustomer;
+
       const nextReport = await buildReport(reportKey, {
         dateFrom,
         dateTo,
-        selectedCustomer,
+        selectedCustomer: effectiveCustomer,
+        selectedCustomerIds: selectedParty?.ids?.length ? selectedParty.ids : undefined,
         selectedStatus,
         selectedPaymentMethod,
         selectedCategory,
@@ -655,10 +706,13 @@ export default function ReportsManager() {
 
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar">
             <FilterSelect
-              label="Cliente"
+              label={partyLabel}
               value={selectedCustomer}
               onChange={setSelectedCustomer}
-              options={[{ value: 'all', label: 'Todos' }, ...customers.map((item) => ({ value: item.id, label: item.name }))]}
+              options={[
+                { value: 'all', label: 'Todos' },
+                ...partyOptions.map((item) => ({ value: item.id, label: item.name })),
+              ]}
             />
 
             <FilterSelect
@@ -820,23 +874,45 @@ export default function ReportsManager() {
                       <tbody>
                         {builtReport.rows.length > 0 ? (
                           <>
-                            {builtReport.rows.map((row, index) => (
-                              <tr key={`${builtReport.key}-${index}`} className={index % 2 === 0 ? 'bg-white' : 'bg-[#cfcfcf]'}>
-                                {builtReport.columns.map((column) => {
-                                  const cellValue = row[column];
-                                  const alignment = getColumnAlignment(column, cellValue);
+                            {builtReport.rows.map((row, index) => {
+                              const groupColumn = builtReport.groupBy;
+                              const groupValue = groupColumn ? String(row[groupColumn] ?? '') : '';
+                              const previousGroupValue =
+                                groupColumn && index > 0
+                                  ? String(builtReport.rows[index - 1]?.[groupColumn] ?? '')
+                                  : '';
+                              const startsGroup = Boolean(groupColumn && groupValue !== previousGroupValue);
 
-                                  return (
-                                    <td
-                                      key={column}
-                                      className={`${getAlignmentClass(alignment)} px-2 py-2 border-b border-zinc-200 align-top whitespace-nowrap overflow-hidden text-ellipsis`}
-                                    >
-                                      {String(cellValue ?? '-')}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            ))}
+                              return (
+                                <React.Fragment key={`${builtReport.key}-${index}`}>
+                                  {startsGroup ? (
+                                    <tr className="bg-zinc-700 text-white">
+                                      <td
+                                        colSpan={builtReport.columns.length}
+                                        className="px-3 py-2 font-bold text-left"
+                                      >
+                                        {groupColumn}: {groupValue}
+                                      </td>
+                                    </tr>
+                                  ) : null}
+                                  <tr className={index % 2 === 0 ? 'bg-white' : 'bg-[#cfcfcf]'}>
+                                    {builtReport.columns.map((column) => {
+                                      const cellValue = row[column];
+                                      const alignment = getColumnAlignment(column, cellValue);
+
+                                      return (
+                                        <td
+                                          key={column}
+                                          className={`${getAlignmentClass(alignment)} px-2 py-2 border-b border-zinc-200 align-top whitespace-nowrap overflow-hidden text-ellipsis`}
+                                        >
+                                          {String(cellValue ?? '-')}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                </React.Fragment>
+                              );
+                            })}
                             {totalSummary ? (
                               <tr className="report-total-row">
                                 <td colSpan={Math.max(1, builtReport.columns.length - 1)} className="px-2 py-2 text-right font-bold">

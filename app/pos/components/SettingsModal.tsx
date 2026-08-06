@@ -279,23 +279,18 @@ export function SettingsModal({
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" onClick={onClose}>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-          />
-          <motion.div
-            initial={{ scale: 0.96, opacity: 0, y: 12 }}
-            animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0.96, opacity: 0, y: 12 }}
-            className="relative flex h-[min(860px,92vh)] w-full max-w-5xl overflow-hidden rounded border border-zinc-700 bg-[#1e1e1e] shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <aside className="flex w-[240px] shrink-0 flex-col border-r border-zinc-800 bg-[#171717]">
-              <div className="border-b border-zinc-800 px-5 py-4">
-                <h2 className="text-lg font-semibold text-white">Configurações</h2>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[110] flex bg-[#141414]"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Configurações"
+        >
+          <aside className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800 bg-[#171717]">
+              <div className="flex h-14 shrink-0 items-center border-b border-zinc-800 px-5">
+                <h2 className="text-base font-semibold text-white">Configurações</h2>
               </div>
               <nav className="flex-1 overflow-y-auto py-2 custom-scrollbar">
                 {SECTIONS.map((section) => {
@@ -318,8 +313,8 @@ export function SettingsModal({
               </nav>
             </aside>
 
-            <div className="flex min-w-0 flex-1 flex-col">
-              <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
+            <div className="flex min-w-0 flex-1 flex-col bg-[#1e1e1e]">
+              <div className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
                 <div className="flex items-center gap-3">
                   <h3 className="text-base font-semibold text-white">{sectionTitle}</h3>
                   {activeSection === 'display' || activeSection === 'impressao' ? (
@@ -739,8 +734,7 @@ export function SettingsModal({
                 </button>
               </div>
             </div>
-          </motion.div>
-        </div>
+        </motion.div>
       )}
     </AnimatePresence>
   );

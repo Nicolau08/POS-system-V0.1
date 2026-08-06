@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Banknote, CreditCard, Lock, Monitor, Printer, Save, Smartphone, User, X } from 'lucide-react';
 import type { CartItem, Customer, Discount, PaymentEntry, PaymentMethod, PaymentMethodOption } from '@/app/pos/types';
@@ -29,6 +29,15 @@ function PosTerminalIcon({ size = 24, className }: { size?: number; className?: 
       <path d="M8.5 15h1.5M11.25 15h1.5M14 15h1.5M8.5 17.25h1.5M11.25 17.25h1.5M14 17.25h1.5M8.5 19.5h1.5M11.25 19.5h1.5M14 19.5h1.5" />
     </svg>
   );
+}
+
+/** Aceita apenas dígitos e um separador decimal; vírgula é convertida em ponto. */
+function sanitizeDecimalInput(value: string) {
+  const cleaned = String(value ?? '')
+    .replace(',', '.')
+    .replace(/[^0-9.]/g, '');
+  const [first, ...rest] = cleaned.split('.');
+  return rest.length ? `${first}.${rest.join('')}` : first;
 }
 
 export function PaymentModal({
@@ -67,6 +76,9 @@ export function PaymentModal({
   title,
   contextLabel,
   hideReceiptPrint = false,
+  allowPartialPayment = false,
+  paymentAmount,
+  setPaymentAmount,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -105,36 +117,84 @@ export function PaymentModal({
   /** Substitui a linha «Mesa: …» (ex.: número do documento). */
   contextLabel?: string;
   hideReceiptPrint?: boolean;
+  /** Permite pagar menos do que o total (faturas de cliente). */
+  allowPartialPayment?: boolean;
+  paymentAmount?: string;
+  setPaymentAmount?: (value: string) => void;
 }) {
+  const [isPartialPayment, setIsPartialPayment] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsPartialPayment(false);
+      return;
+    }
+    setIsPartialPayment(false);
+  }, [isOpen]);
+
   const isProforma = docType === 'FP';
   const receivedRaw = (receivedAmount ?? '').trim();
   const receivedParsed = receivedRaw === '' ? NaN : parseFloat(receivedRaw);
   const receivedForChange = Number.isFinite(receivedParsed) ? receivedParsed : 0;
   const totalPago = payments.reduce((acc, p) => acc + p.amount, 0);
-  const missingAmount = Math.max(0, total - totalPago);
-  /** Vazio = pagamento exato (sem troco); preenchido = cálculo de troco (exige >= total). */
-  const singleChange = receivedRaw === '' ? 0 : Math.max(0, receivedForChange - total);
-  const multiChange = Math.max(0, totalPago - total);
+  const paymentAmountRaw = (paymentAmount ?? '').trim();
+  const paymentAmountParsed = paymentAmountRaw === '' ? NaN : parseFloat(paymentAmountRaw);
+  const partialModeActive = allowPartialPayment && isPartialPayment;
+  const effectivePayTotal = partialModeActive
+    ? Number.isFinite(paymentAmountParsed) && paymentAmountParsed > 0
+      ? Math.min(paymentAmountParsed, total)
+      : 0
+    : total;
+  const missingAmount = Math.max(0, effectivePayTotal - totalPago);
+  /** Vazio = pagamento exato (sem troco); preenchido = cálculo de troco (exige >= valor a pagar). */
+  const singleChange = receivedRaw === '' ? 0 : Math.max(0, receivedForChange - effectivePayTotal);
+  const multiChange = Math.max(0, totalPago - effectivePayTotal);
+  const remainingAfterPartial = Math.max(0, total - effectivePayTotal);
 
   const isCashSingle =
     !isMultiplePayment && !!paymentMethod && isCashMethod(paymentMethod, paymentMethods);
   const cashInputAllowed =
     !isCashSingle ||
     receivedRaw === '' ||
-    (Number.isFinite(receivedParsed) && receivedParsed >= total);
+    (Number.isFinite(receivedParsed) && receivedParsed >= effectivePayTotal - 0.009);
+
+  const partialAmountValid =
+    !partialModeActive ||
+    (Number.isFinite(paymentAmountParsed) &&
+      paymentAmountParsed > 0 &&
+      paymentAmountParsed <= total + 0.009);
 
   const canFinalize = isProforma
     ? cart.length > 0 || total > 0
-    : ((!isMultiplePayment && !!paymentMethod && cashInputAllowed) || (isMultiplePayment && totalPago >= total));
+    : partialAmountValid &&
+      effectivePayTotal > 0 &&
+      ((!isMultiplePayment && !!paymentMethod && cashInputAllowed) ||
+        (isMultiplePayment && totalPago >= effectivePayTotal - 0.009 && totalPago > 0));
 
   const enabledMethods = paymentMethods.filter((method) => method.enabled);
   const modalTitle = title || (isProforma ? 'Salvar Proforma' : 'Finalizar Pagamento');
   const secondaryContext = contextLabel || `Mesa: ${tableNumber || 'N/A'}`;
 
+  const handleTogglePartialPayment = () => {
+    setIsPartialPayment((prev) => {
+      const next = !prev;
+      if (next) {
+        setPaymentAmount?.('');
+        if (isMultiplePayment) onToggleMultiplePayment();
+      } else {
+        setPaymentAmount?.(String(Number(total.toFixed(2))));
+      }
+      return next;
+    });
+  };
+
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" onClick={onClose}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+          onClick={(e) => e.stopPropagation()}
+        >
           <motion.div
             initial={{ scale: 0.9, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -213,20 +273,67 @@ export function PaymentModal({
                   </div>
                 ) : null}
                 {!isProforma && (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium text-zinc-500 capitalize">Método de pagamento</span>
-                  <button
-                    onClick={onToggleMultiplePayment}
-                    className={`h-9 px-4 rounded font-bold text-xs transition-colors ${
-                      isMultiplePayment
-                        ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff]'
-                        : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200'
-                    }`}
-                  >
-                    Múltiplos Pagamentos
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {allowPartialPayment ? (
+                      <button
+                        type="button"
+                        onClick={handleTogglePartialPayment}
+                        className={`h-9 px-4 rounded font-bold text-xs transition-colors ${
+                          isPartialPayment
+                            ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff]'
+                            : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200'
+                        }`}
+                      >
+                        Parcial
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isPartialPayment) {
+                          setIsPartialPayment(false);
+                          setPaymentAmount?.(String(Number(total.toFixed(2))));
+                        }
+                        onToggleMultiplePayment();
+                      }}
+                      className={`h-9 px-4 rounded font-bold text-xs transition-colors ${
+                        isMultiplePayment
+                          ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff]'
+                          : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-200'
+                      }`}
+                    >
+                      Múltiplos Pagamentos
+                    </button>
+                  </div>
                 </div>
                 )}
+
+                {partialModeActive && setPaymentAmount ? (
+                  <div className="space-y-2 rounded border border-zinc-800 bg-zinc-900/40 p-3">
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-medium text-zinc-400">Valor parcial a pagar</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={paymentAmount ?? ''}
+                        onChange={(e) => setPaymentAmount(sanitizeDecimalInput(e.target.value))}
+                        placeholder="0"
+                        autoFocus
+                        className="w-full h-11 px-3 bg-zinc-950 border border-zinc-700 rounded text-right text-[#a5b4fc] font-bold outline-none focus:border-[#0001fb] placeholder:text-zinc-600"
+                      />
+                    </label>
+                    {Number.isFinite(paymentAmountParsed) && paymentAmountParsed > 0 ? (
+                      <div className="flex justify-between text-xs text-amber-300">
+                        <span>Fica a dever</span>
+                        <span className="font-semibold tabular-nums">
+                          {formatPrice(remainingAfterPartial)}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {!isProforma && !isMultiplePayment ? (
                   <div className="grid grid-cols-3 gap-2">
@@ -256,10 +363,10 @@ export function PaymentModal({
 
                     <div className="flex gap-2">
                       <input
-                        type="number"
-                        step="any"
+                        type="text"
+                        inputMode="decimal"
                         value={multiplePaymentAmount}
-                        onChange={(e) => setMultiplePaymentAmount(e.target.value)}
+                        onChange={(e) => setMultiplePaymentAmount(sanitizeDecimalInput(e.target.value))}
                         placeholder="Valor"
                         className="flex-1 h-11 px-3 bg-zinc-900 border border-zinc-700 rounded text-right text-[#a5b4fc] font-bold outline-none focus:border-[#0001fb]"
                       />
@@ -314,10 +421,10 @@ export function PaymentModal({
                 {!isProforma && !isMultiplePayment && isCashMethod(paymentMethod, paymentMethods) && (
                   <div className="space-y-2 border border-zinc-800 rounded p-3 bg-zinc-900/40">
                     <input
-                      type="number"
-                      step="any"
+                      type="text"
+                      inputMode="decimal"
                       value={receivedAmount}
-                      onChange={(e) => setReceivedAmount(e.target.value)}
+                      onChange={(e) => setReceivedAmount(sanitizeDecimalInput(e.target.value))}
                       placeholder="Valor recebido"
                       className="w-full h-11 px-3 bg-zinc-950 border border-zinc-700 rounded text-right text-[#a5b4fc] font-bold outline-none focus:border-[#0001fb]"
                     />

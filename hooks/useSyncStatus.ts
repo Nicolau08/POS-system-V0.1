@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
 type SyncStatusApiResponse = {
@@ -67,6 +67,7 @@ export function useSyncStatus() {
       const response = await fetch(`${getPosApiBase()}/sync/status`, {
         method: 'GET',
         cache: 'no-store',
+        headers: { ...getPosUserAuthHeaders() },
       });
 
       if (!response.ok) {

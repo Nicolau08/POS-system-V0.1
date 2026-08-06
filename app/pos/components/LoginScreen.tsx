@@ -213,13 +213,24 @@ export function LoginScreen({
             ))}
         </div>
         {users.length === 0 && (
-          <div className="rounded border border-zinc-800 bg-zinc-900/70 px-6 py-4 text-center text-zinc-400 max-w-lg">
-            <p className="font-medium text-zinc-300">Sem utilizadores para iniciar sessão</p>
-            <p className="mt-2 text-sm leading-relaxed">
-              Os utilizadores vêm da base de dados local (SQLite). Se ainda não concluiu a configuração
-              inicial, volte ao assistente. Se já configurou, confirme que a API está a responder e que
-              existem utilizadores com PIN na base desta instalação.
-            </p>
+          <div
+            role="status"
+            aria-label="A carregar utilizadores"
+            className="flex items-center gap-2.5"
+          >
+            {[0, 1, 2].map((index) => (
+              <motion.span
+                key={index}
+                className="h-3 w-3 rounded-full bg-zinc-300"
+                animate={{ opacity: [0.25, 1, 0.25], scale: [0.8, 1, 0.8] }}
+                transition={{
+                  duration: 1.1,
+                  repeat: Infinity,
+                  ease: 'easeInOut',
+                  delay: index * 0.18,
+                }}
+              />
+            ))}
           </div>
         )}
       </div>

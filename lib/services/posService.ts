@@ -1,4 +1,11 @@
-import { getPosApiBase, getPosApiDirectBase, getPosUserAuthHeaders, clearPosAuthSession } from '@/lib/apiBase';
+import {
+  getPosApiBase,
+  getPosApiDirectBase,
+  getPosUserAuthHeaders,
+  getStoredAuthToken,
+  setStoredAuthToken,
+  clearPosAuthSession,
+} from '@/lib/apiBase';
 
 export class PosApiError extends Error {
   status: number;
@@ -29,7 +36,7 @@ function unwrapApiPayload(payload: unknown): any {
   throw new PosApiError(message, 400, code, payload);
 }
 
-const fetchJSON = async (path: string, options?: RequestInit): Promise<any> => {
+const fetchJSON = async (path: string, options?: RequestInit, didRetryAuth = false): Promise<any> => {
   const base = getPosApiBase().replace(/\/$/, '');
   const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
   const response = await fetch(url, {
@@ -60,6 +67,16 @@ const fetchJSON = async (path: string, options?: RequestInit): Promise<any> => {
       'Erro API'
     );
     const code = errorObject?.code != null ? String(errorObject.code) : null;
+    // Bearer obsoleto (restart API / secret novo): limpar token e tentar 1x com x-user-id.
+    if (
+      response.status === 401 &&
+      !didRetryAuth &&
+      typeof window !== 'undefined' &&
+      getStoredAuthToken()
+    ) {
+      setStoredAuthToken(null);
+      return fetchJSON(path, options, true);
+    }
     if (response.status === 401 && typeof window !== 'undefined' && localStorage.getItem('isLoggedIn') === 'true') {
       clearPosAuthSession();
     }
@@ -141,6 +158,7 @@ export const fetchCustomers = async () => {
     email: row?.email != null ? String(row.email) : undefined,
     address: row?.address != null ? String(row.address) : undefined,
     debt_balance: Number(row?.debt_balance ?? row?.debtBalance ?? 0) || 0,
+    is_supplier: Boolean(row?.is_supplier ?? row?.isSupplier ?? false),
   }));
 };
 
@@ -667,6 +685,56 @@ export const restoreDatabaseBackup = async (backupFile: string) => {
   return data?.restored ?? data;
 };
 
+export type DbEncryptionStatus = {
+  encryptionConfigured: boolean;
+  databaseMarkedEncrypted: boolean;
+  databasePath?: string;
+};
+
+export const fetchDbEncryptionStatus = async (): Promise<DbEncryptionStatus> => {
+  const data = await fetchJSON('/maintenance/db-encryption-status');
+  return {
+    encryptionConfigured: Boolean(data?.encryptionConfigured),
+    databaseMarkedEncrypted: Boolean(data?.databaseMarkedEncrypted),
+    databasePath: data?.databasePath ? String(data.databasePath) : undefined,
+  };
+};
+
+export const exportDbRecoveryKey = async (payload: {
+  enteredPin: string;
+  wrapPassword: string;
+  wrapPasswordConfirm: string;
+}) => {
+  const data = await fetchJSON('/maintenance/db-recovery-key/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return {
+    recoveryPackage: data?.recoveryPackage ?? data,
+    fileName: String(data?.fileName ?? 'posly-db-recovery.json'),
+    warning: data?.warning != null ? String(data.warning) : null,
+  };
+};
+
+export const unwrapDbRecoveryKey = async (payload: {
+  enteredPin: string;
+  wrapPassword: string;
+  recoveryPackage: unknown;
+}) => {
+  const data = await fetchJSON('/maintenance/db-recovery-key/unwrap', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return {
+    keyHex: String(data?.keyHex ?? ''),
+    tenantId: data?.tenantId != null ? String(data.tenantId) : '',
+    exportedAt: data?.exportedAt != null ? String(data.exportedAt) : '',
+    warning: data?.warning != null ? String(data.warning) : null,
+  };
+};
+
 export type PosLocationTable = {
   id: string;
   locationId: string;
@@ -759,6 +827,18 @@ export const fetchWarehouses = async (): Promise<PosWarehouse[]> => {
     isActive: Boolean(row.isActive ?? row.is_active ?? true),
     createdAt: row.createdAt ?? row.created_at ?? null,
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
+  }));
+};
+
+export const fetchWarehouseStock = async (
+  warehouseId: string,
+): Promise<Array<{ productId: string; quantity: number }>> => {
+  const rows = await fetchJSON(`/warehouses/${encodeURIComponent(warehouseId)}/stock?_=${Date.now()}`, {
+    cache: 'no-store',
+  });
+  return (Array.isArray(rows) ? rows : []).map((row: any) => ({
+    productId: String(row.productId ?? row.product_id ?? ''),
+    quantity: Number(row.quantity ?? 0) || 0,
   }));
 };
 

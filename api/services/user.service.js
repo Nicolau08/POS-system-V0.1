@@ -38,6 +38,45 @@ const getDb = (sql, params = []) =>
     });
   });
 
+/** Tentativas de login em memória (por processo). Reinício da API limpa o estado. */
+const loginAttemptState = new Map();
+const LOGIN_MAX_FAILURES = Math.max(3, Number(process.env.POS_LOGIN_MAX_FAILURES ?? 5) || 5);
+const LOGIN_BASE_LOCK_MS = Math.max(5_000, Number(process.env.POS_LOGIN_BASE_LOCK_MS ?? 30_000) || 30_000);
+const LOGIN_MAX_LOCK_MS = Math.max(
+  LOGIN_BASE_LOCK_MS,
+  Number(process.env.POS_LOGIN_MAX_LOCK_MS ?? 15 * 60_000) || 15 * 60_000,
+);
+
+function readLoginLock(userId) {
+  const key = String(userId ?? '').trim();
+  if (!key) return null;
+  const entry = loginAttemptState.get(key);
+  if (!entry) return null;
+  if (entry.lockedUntil && Date.now() >= entry.lockedUntil) {
+    loginAttemptState.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function recordLoginFailure(userId) {
+  const key = String(userId ?? '').trim();
+  const prev = loginAttemptState.get(key) ?? { count: 0, lockedUntil: 0 };
+  const count = prev.count + 1;
+  let lockedUntil = 0;
+  if (count >= LOGIN_MAX_FAILURES) {
+    const lockIndex = count - LOGIN_MAX_FAILURES;
+    const lockMs = Math.min(LOGIN_MAX_LOCK_MS, LOGIN_BASE_LOCK_MS * 2 ** lockIndex);
+    lockedUntil = Date.now() + lockMs;
+  }
+  const next = { count, lockedUntil };
+  loginAttemptState.set(key, next);
+  return next;
+}
+
+function clearLoginFailures(userId) {
+  loginAttemptState.delete(String(userId ?? '').trim());
+}
 async function resolveTenantId(tenantCandidate) {
   return requireTenantId(tenantCandidate, {
     status: 401,
@@ -98,6 +137,22 @@ function parseIsoTimestampStrict(value) {
 }
 
 export async function authenticateLogin({ userId, enteredPin }) {
+  const lock = readLoginLock(userId);
+  if (lock?.lockedUntil && Date.now() < lock.lockedUntil) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((lock.lockedUntil - Date.now()) / 1000));
+    logInfo('login_failed', {
+      user_id: userId,
+      reason: 'locked',
+      retry_after_seconds: retryAfterSeconds,
+    });
+    return {
+      ok: false,
+      reason: 'locked',
+      lockedUntil: new Date(lock.lockedUntil).toISOString(),
+      retryAfterSeconds,
+    };
+  }
+
   const user = await getDb(
     `SELECT id, name, surname, email, role, access_level, active, pin, tenant_id
      FROM users
@@ -107,23 +162,33 @@ export async function authenticateLogin({ userId, enteredPin }) {
   );
 
   if (!user || Number(user.active ?? 1) === 0) {
+    recordLoginFailure(userId);
     logInfo('login_failed', { user_id: userId, reason: 'invalid_credentials' });
     return { ok: false, reason: 'invalid_credentials' };
   }
-
-  console.log("🔐 LOGIN DEBUG START");
-  console.log("USER ID:", userId);
-  console.log("PIN RECEBIDO:", JSON.stringify(enteredPin));
-  console.log("PIN LENGTH:", String(enteredPin).length);
-  console.log("HASH DB:", user.pin);
 
   const auth = await verifyPinAgainstStored(enteredPin, user.pin);
 
-  console.log("BCRYPT RESULT:", auth);
   if (!auth.valid) {
-    logInfo('login_failed', { user_id: userId, reason: 'invalid_credentials' });
+    const failure = recordLoginFailure(userId);
+    logInfo('login_failed', {
+      user_id: userId,
+      reason: 'invalid_credentials',
+      failures: failure.count,
+    });
+    if (failure.lockedUntil && Date.now() < failure.lockedUntil) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((failure.lockedUntil - Date.now()) / 1000));
+      return {
+        ok: false,
+        reason: 'locked',
+        lockedUntil: new Date(failure.lockedUntil).toISOString(),
+        retryAfterSeconds,
+      };
+    }
     return { ok: false, reason: 'invalid_credentials' };
   }
+
+  clearLoginFailures(userId);
 
   if (auth.needsMigration) {
     const upgradedPinHash = await hashPin(enteredPin);
@@ -491,6 +556,43 @@ export async function validateAdminPassword(adminPassword, tenantCandidate = nul
   }
 
   return validAdminUser;
+}
+
+/** Confirma o PIN do utilizador autenticado (re-auth para operações sensíveis). */
+export async function verifyCurrentUserPin(userId, enteredPin) {
+  const id = String(userId ?? '').trim();
+  const pin = String(enteredPin ?? '').trim();
+  if (!id || !/^\d{4,}$/.test(pin)) return { ok: false };
+
+  const row = await getDb(
+    `SELECT id, pin, active, role, access_level
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
+    [id],
+  );
+  if (!row || Number(row.active ?? 1) === 0) return { ok: false };
+
+  const auth = await verifyPinAgainstStored(pin, row.pin);
+  if (!auth.valid) return { ok: false };
+
+  if (auth.needsMigration) {
+    const upgradedPinHash = await hashPin(pin);
+    await runDb(`UPDATE users SET pin = ?, updated_at = ? WHERE id = ?`, [
+      upgradedPinHash,
+      new Date().toISOString(),
+      id,
+    ]);
+  }
+
+  return {
+    ok: true,
+    user: {
+      id: String(row.id),
+      role: String(row.role ?? ''),
+      access_level: Number(row.access_level ?? 0),
+    },
+  };
 }
 
 export async function resetAdminPinToDefault(userId, tenantCandidate = null) {

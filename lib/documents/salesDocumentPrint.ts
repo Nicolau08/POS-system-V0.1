@@ -22,6 +22,8 @@ export type SalesDocumentSale = {
   user_name?: string | null;
   approved_document_type?: string | null;
   approved_document_number?: string | null;
+  notes?: string | null;
+  is_waste?: boolean | number | null;
 };
 
 export type SalesDocumentItem = {
@@ -223,6 +225,7 @@ function buildVendaBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
   const docNumber = String(sale.document_number ?? sale.id ?? '-');
   const payment = String(sale.payment_method ?? '-');
   const sourceReference = formatDocumentSourceReferenceLabel(sale);
+  const notes = String(sale.notes ?? '').trim();
 
   return `
     <div class="client-name">${escapeHtml(sale.client_name || 'Consumidor final')}</div>
@@ -232,6 +235,7 @@ function buildVendaBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
       <div class="meta-item"><div class="meta-label">Pagamento</div><div>${escapeHtml(payment)}</div></div>
     </div>
     ${sourceReference ? `<div class="payment-note">${escapeHtml(sourceReference)}</div>` : ''}
+    ${notes ? `<div class="payment-note"><strong>${sale.is_waste ? 'Desperdício — ' : 'Observação — '}</strong>${escapeHtml(notes.replace(/^Desperdício:\s*/i, ''))}</div>` : ''}
     ${buildItemsTable(items, getPosTaxPercentLabel())}
     ${buildTotalsBlock(subtotal, tax, total)}
     <div class="payment-note">Documento: ${escapeHtml(docNumber)}</div>

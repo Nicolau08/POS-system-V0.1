@@ -25,6 +25,12 @@ const REDACT_KEYS = new Set([
   'secret',
   'api_key',
   'apikey',
+  'phone',
+  'email',
+  'address',
+  'customer_name',
+  'client_name',
+  'nuit',
 ]);
 
 function envFlag(name, defaultValue = false) {

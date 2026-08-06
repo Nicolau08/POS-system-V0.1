@@ -53,6 +53,7 @@ export async function listAllClientes(query = {}, user = null) {
     email: row?.email != null ? String(row.email) : null,
     address: row?.address != null ? String(row.address) : null,
     debt_balance: Number(row?.debt_balance ?? 0) || 0,
+    is_supplier: Number(row?.is_supplier ?? 0) === 1,
   });
 
   if (!pagination.hasPagination) {

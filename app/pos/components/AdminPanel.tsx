@@ -86,7 +86,10 @@ export function AdminPanel({
   };
 
   const handleOpenSettings = () => {
-    guard('gerenciamento.configuracoes', 'Configurações', () => setIsSettingsOpen(true));
+    guard('gerenciamento.configuracoes', 'Configurações', () => {
+      setIsSettingsOpen(true);
+      onClose();
+    });
   };
 
   const handleToggleMaximize = async () => {

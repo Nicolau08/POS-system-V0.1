@@ -11,7 +11,7 @@ import {
   FileText,
   ChevronDown,
 } from 'lucide-react';
-import { getPosApiBase } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { computeTaxFromBasePrice } from '@/lib/taxMath';
@@ -19,6 +19,7 @@ import { getCachedTaxRates, setCachedTaxRates } from '@/lib/posSessionCache';
 import PosSelect from '@/components/PosSelect';
 import { fetchWarehouses, type PosWarehouse } from '@/lib/services/posService';
 import { PurchaseProductMultiSelectModal } from '@/app/management/components/PurchaseProductMultiSelectModal';
+import { CustomerSupplierFormModal } from '@/app/management/components/CustomerSupplierFormModal';
 
 export type PurchaseProductOption = {
   id: string;
@@ -75,11 +76,13 @@ type PartyMeta = {
   active?: boolean;
   isCustomer?: boolean;
   taxExempt?: boolean;
+  code?: string;
 };
 
 const CUSTOMERS_META_KEY = 'customers-manager-meta';
 const DEFAULT_SUPPLIER_NAME = 'Fornecedor';
 const DEFAULT_SUPPLIER_PHONE = '000000000';
+const CREATE_SUPPLIER_OPTION = '__create_supplier__';
 
 function readPartyMetaById(): Record<string, PartyMeta> {
   try {
@@ -100,6 +103,11 @@ function writePartyMeta(id: string, meta: PartyMeta) {
       active: meta.active ?? true,
       isCustomer: meta.isCustomer ?? false,
       taxExempt: meta.taxExempt ?? false,
+      ...(meta.code != null && String(meta.code).trim()
+        ? { code: String(meta.code).trim() }
+        : all[id]?.code
+          ? { code: all[id].code }
+          : {}),
     };
     localStorage.setItem(CUSTOMERS_META_KEY, JSON.stringify(all));
   } catch {
@@ -116,6 +124,15 @@ function isSupplierParty(id: string, metaById: Record<string, PartyMeta>) {
 function isDefaultSupplierName(name: string) {
   const n = name.trim().toLowerCase();
   return n === 'fornecedor' || n === 'fornecedor padrão' || n === 'fornecedor padrao';
+}
+
+function toPartyOptions(rows: any[]): PartyOption[] {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      id: String(row.id),
+      name: String(row.name ?? 'Sem nome'),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt'));
 }
 
 type PurchaseStockModalProps = {
@@ -215,7 +232,17 @@ export default function PurchaseStockModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [successHint, setSuccessHint] = useState('');
+  const [isCreateSupplierOpen, setIsCreateSupplierOpen] = useState(false);
   const [warehouses, setWarehouses] = useState<PosWarehouse[]>([]);
+  const supplierCreateDefaults = useMemo(
+    () => ({
+      isCustomer: false,
+      active: true,
+      taxExempt: false,
+      country: 'Moçambique',
+    }),
+    [],
+  );
   const [warehouseId, setWarehouseId] = useState('');
   const [taxRates, setTaxRates] = useState<TaxRateOption[]>(
     () => (getCachedTaxRates() as TaxRateOption[] | null) ?? [],
@@ -276,16 +303,48 @@ export default function PurchaseStockModal({
     [matchedProducts],
   );
 
+  const supplierOptions = useMemo(
+    () => [
+      {
+        value: '',
+        label: parties.length === 0 ? 'A criar fornecedor padrão…' : 'Seleccione o fornecedor…',
+      },
+      ...parties.map((party) => ({ value: party.id, label: party.name })),
+      { value: CREATE_SUPPLIER_OPTION, label: 'Criar Fornecedor...' },
+    ],
+    [parties],
+  );
+
+  const refreshSuppliers = useCallback(async (preferredId?: string | null) => {
+    const partyRes = await fetch(`${getPosApiBase()}/clientes`, {
+      headers: { ...getPosUserAuthHeaders() },
+    });
+    const partyData = unwrapApiSuccessPayload<any[]>(await partyRes.json());
+    const allParties = toPartyOptions(Array.isArray(partyData) ? partyData : []);
+    const metaById = readPartyMetaById();
+    const suppliers = allParties.filter((party) => isSupplierParty(party.id, metaById));
+    setParties(suppliers);
+    setPartyId((prev) => {
+      if (preferredId && suppliers.some((party) => party.id === preferredId)) return preferredId;
+      if (prev && suppliers.some((party) => party.id === prev)) return prev;
+      return suppliers[0]?.id ?? '';
+    });
+    return suppliers;
+  }, []);
+
   const loadMeta = useCallback(async () => {
     setLoadingMeta(true);
     setError('');
     try {
       const year = new Date(documentDate).getFullYear() || new Date().getFullYear();
+      const authHeaders = getPosUserAuthHeaders();
       const [partyRes, nextRes, whRows, taxRes] = await Promise.all([
-        fetch(`${getPosApiBase()}/clientes`),
-        fetch(`${getPosApiBase()}/documentos/next-number?prefix=${encodeURIComponent('FTF')}&year=${year}`),
+        fetch(`${getPosApiBase()}/clientes`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/documentos/next-number?prefix=${encodeURIComponent('FTF')}&year=${year}`, {
+          headers: { ...authHeaders },
+        }),
         fetchWarehouses(),
-        fetch(`${getPosApiBase()}/tax-rates`),
+        fetch(`${getPosApiBase()}/tax-rates`, { headers: { ...authHeaders } }),
       ]);
       setWarehouses(whRows.filter((w) => w.isActive));
       const defaultWh = whRows.find((w) => w.isDefault && w.isActive) || whRows.find((w) => w.isActive);
@@ -297,12 +356,7 @@ export default function PurchaseStockModal({
         setCachedTaxRates(taxData);
       }
       const partyData = unwrapApiSuccessPayload<any[]>(await partyRes.json());
-      const allParties: PartyOption[] = (Array.isArray(partyData) ? partyData : [])
-        .map((row) => ({
-          id: String(row.id),
-          name: String(row.name ?? 'Sem nome'),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name, 'pt'));
+      const allParties = toPartyOptions(Array.isArray(partyData) ? partyData : []);
 
       let metaById = readPartyMetaById();
       let suppliers = allParties.filter((party) => isSupplierParty(party.id, metaById));
@@ -321,7 +375,7 @@ export default function PurchaseStockModal({
         } else {
           const createRes = await fetch(`${getPosApiBase()}/clientes`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
             body: JSON.stringify({
               name: DEFAULT_SUPPLIER_NAME,
               phone: DEFAULT_SUPPLIER_PHONE,
@@ -410,6 +464,33 @@ export default function PurchaseStockModal({
     // Só reinicia ao abrir / mudar produto inicial — não quando `products` muda de referência.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMeta/products/taxRates intencionais
   }, [isOpen, initialProductId]);
+
+  const handleSupplierSelect = useCallback((value: string) => {
+    if (value === CREATE_SUPPLIER_OPTION) {
+      setPartyId('');
+      setIsCreateSupplierOpen(true);
+      return;
+    }
+    setPartyId(value);
+  }, []);
+
+  const handleSupplierCreated = useCallback(
+    async (saved: {
+      id: string;
+      code: string;
+      active: boolean;
+      taxExempt: boolean;
+    }) => {
+      writePartyMeta(saved.id, {
+        active: saved.active,
+        isCustomer: false,
+        taxExempt: saved.taxExempt,
+        code: saved.code,
+      });
+      await refreshSuppliers(saved.id);
+    },
+    [refreshSuppliers],
+  );
 
   useEffect(() => {
     if (!isOpen || !defaultTaxRateId) return;
@@ -598,7 +679,7 @@ export default function PurchaseStockModal({
 
       const res = await fetch(`${getPosApiBase()}/documentos`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
@@ -628,41 +709,22 @@ export default function PurchaseStockModal({
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#0f0f0f] text-zinc-300">
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-6 py-5">
           <div className="mx-auto w-full max-w-6xl">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-            <label className="md:col-span-2 block space-y-1.5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="block min-w-0 space-y-1.5">
               <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                 <Building2 size={12} /> Fornecedor
               </span>
               <PosSelect
                 value={partyId}
-                onChange={setPartyId}
+                onChange={handleSupplierSelect}
                 disabled={loadingMeta || saving}
                 size="md"
                 placeholder={parties.length === 0 ? 'A criar fornecedor padrão…' : 'Seleccione o fornecedor…'}
-                options={[
-                  {
-                    value: '',
-                    label: parties.length === 0 ? 'A criar fornecedor padrão…' : 'Seleccione o fornecedor…',
-                  },
-                  ...parties.map((party) => ({ value: party.id, label: party.name })),
-                ]}
+                options={supplierOptions}
               />
             </label>
 
-            <label className="block space-y-1.5">
-              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                <CalendarDays size={12} /> Data
-              </span>
-              <input
-                type="date"
-                value={documentDate}
-                onChange={(event) => setDocumentDate(event.target.value)}
-                disabled={saving}
-                className="pos-field h-10 border border-[#3f3f46] px-3 text-sm"
-              />
-            </label>
-
-            <label className="md:col-span-2 block space-y-1.5">
+            <label className="block min-w-0 space-y-1.5">
               <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                 Armazém destino
               </span>
@@ -679,7 +741,7 @@ export default function PurchaseStockModal({
               />
             </label>
 
-            <label className="block space-y-1.5">
+            <label className="block min-w-0 space-y-1.5">
               <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                 <FileText size={12} /> Doc. externo
               </span>
@@ -687,9 +749,23 @@ export default function PurchaseStockModal({
                 type="text"
                 value={externalDoc}
                 onChange={(event) => setExternalDoc(event.target.value)}
-                placeholder="Factura do fornecedor"
+                placeholder="Nº da fatura do fornecedor"
                 disabled={saving}
-                className="pos-field h-10 border border-[#3f3f46] px-3 text-sm placeholder:text-zinc-600"
+                className="pos-field h-10 w-full border border-[#3f3f46] px-3 text-sm placeholder:text-zinc-600"
+              />
+            </label>
+
+            <label className="block min-w-0 space-y-1.5">
+              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                <CalendarDays size={12} /> Data
+              </span>
+              <input
+                type="date"
+                value={documentDate}
+                readOnly
+                tabIndex={-1}
+                disabled={saving}
+                className="pos-field h-10 w-full border border-[#3f3f46] px-3 text-sm text-zinc-400"
               />
             </label>
           </div>
@@ -914,6 +990,13 @@ export default function PurchaseStockModal({
         initialQuery={productQuery}
         onClose={() => setProductMultiOpen(false)}
         onConfirm={addProductsBatch}
+      />
+
+      <CustomerSupplierFormModal
+        isOpen={isCreateSupplierOpen}
+        initialValues={supplierCreateDefaults}
+        onClose={() => setIsCreateSupplierOpen(false)}
+        onSaved={handleSupplierCreated}
       />
     </>
   );

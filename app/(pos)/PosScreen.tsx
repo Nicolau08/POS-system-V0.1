@@ -111,6 +111,7 @@ import {
   type SetupStatusPayload,
 } from '@/lib/services/posService';
 import { resolveCategoryColor } from '@/lib/categoryColors';
+import { isSupplierPartyRecord, readPartyMetaById, type PartyMeta } from '@/lib/partyMeta';
 import {
   clearPosSessionCache,
   getCachedActivationState,
@@ -355,6 +356,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', email: '', address: '' });
   const [customerSearch, setCustomerSearch] = useState('');
+  const [partyMetaById, setPartyMetaById] = useState<Record<string, PartyMeta>>({});
   const [isAddingCustomer, setIsAddingCustomer] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [customerToDelete, setCustomerToDelete] = useState<string | null>(null);
@@ -1201,10 +1203,10 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       const normalized = String(entry.method ?? '').toLowerCase().replace(/-/g, ' ');
       return normalized.includes('conta') && normalized.includes('corrente');
     });
-    if (isAccountReceivable && !selectedCustomer) {
+    if (isAccountReceivable && !selectedCustomer && !customerName.trim()) {
       setIsAddingCustomer(false);
       setIsCustomerModalOpen(true);
-      setPaymentFinalizeError('Selecione ou crie um cliente para conta corrente');
+      setPaymentFinalizeError('Selecione um cliente ou digite o nome para conta corrente');
       return;
     }
 
@@ -1267,6 +1269,43 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     
     // Save to Supabase via service layer
     try {
+      let checkoutCustomer = selectedCustomer;
+      const typedCustomerName = customerName.trim();
+
+      if (!checkoutCustomer && typedCustomerName) {
+        const normalizedName = typedCustomerName.toLocaleLowerCase('pt');
+        checkoutCustomer =
+          customers.find(
+            (customer) =>
+              !isSupplierPartyRecord(customer, partyMetaById) &&
+              customer.name.trim().toLocaleLowerCase('pt') === normalizedName,
+          ) ?? null;
+
+        if (!checkoutCustomer) {
+          const updatedCustomers = await saveCustomer({
+            editingCustomerId: null,
+            newCustomer: {
+              name: typedCustomerName,
+              // O cadastro completo pode ser feito depois; o nome basta no checkout rápido.
+              phone: '000000000',
+              email: '',
+              address: '',
+            },
+          });
+          setCustomers(updatedCustomers);
+          checkoutCustomer =
+            updatedCustomers.find(
+              (customer) =>
+                customer.name.trim().toLocaleLowerCase('pt') === normalizedName,
+            ) ?? null;
+        }
+
+        if (!checkoutCustomer) {
+          throw new Error('Não foi possível criar o cliente digitado.');
+        }
+        setSelectedCustomer(checkoutCustomer);
+      }
+
       const idempotencyKey =
         checkoutIdempotencyKeyRef.current ||
         (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -1277,8 +1316,8 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       const result = await createOrder({
         cart,
         globalDiscount,
-        selectedCustomerId: selectedCustomer?.cloud_id || selectedCustomer?.id || null,
-        selectedCustomerName: selectedCustomer?.name || customerName || null,
+        selectedCustomerId: checkoutCustomer?.cloud_id || checkoutCustomer?.id || null,
+        selectedCustomerName: checkoutCustomer?.name || typedCustomerName || null,
         selectedUserId: currentUser?.id || null,
         selectedUserName: currentUser?.name || null,
         selectedTableId: selectedTableId || null,
@@ -1609,6 +1648,11 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     }
   };
 
+  // A marcação cliente/fornecedor é editada noutro ecrã: reler ao abrir a lista.
+  useEffect(() => {
+    setPartyMetaById(readPartyMetaById());
+  }, [isCustomerModalOpen]);
+
   const startEditingCustomer = (customer: Customer, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingCustomer(customer);
@@ -1621,9 +1665,12 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     setIsAddingCustomer(true);
   };
 
-  const filteredCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(customerSearch.toLowerCase()) || 
-    c.phone.includes(customerSearch)
+  const customerParties = customers.filter(
+    (customer) => !isSupplierPartyRecord(customer, partyMetaById),
+  );
+  const filteredCustomers = customerParties.filter(c =>
+    (c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+      c.phone.includes(customerSearch))
   );
 
   const { productFamilies, visibleProducts } = useProducts(products, searchQuery, selectedCategory);
@@ -1863,7 +1910,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
               selectedCustomer={selectedCustomer}
               customerName={customerName}
               onCustomerNameChange={setCustomerName}
-              customers={customers}
+              customers={customerParties}
               onSelectCustomer={(customer) => {
                 setSelectedCustomer(customer);
                 if (customer) setCustomerName('');

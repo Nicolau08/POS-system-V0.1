@@ -108,6 +108,7 @@ const { autoUpdater } = electronUpdaterModule;
 let backendProcess = null;
 let webProcess = null;
 let mainWindow = null;
+let splashWindow = null;
 let backendStartupLogs = '';
 let webStartupLogs = '';
 
@@ -175,16 +176,28 @@ const appendBoundedLog = (current, chunk) => {
 
 const waitForHttp = async (url, timeoutMs = 45000) => {
   const started = Date.now();
+  // Preferir /health (público). Raiz antiga também é pública após o fix de auth.
+  const probeUrl = (() => {
+    try {
+      const parsed = new URL(url);
+      if (!parsed.pathname || parsed.pathname === '/') {
+        parsed.pathname = '/health';
+      }
+      return parsed.toString();
+    } catch {
+      return String(url).replace(/\/?$/, '/health');
+    }
+  })();
   while (Date.now() - started < timeoutMs) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(probeUrl, { method: 'GET', cache: 'no-store' });
       if (response.ok || response.status < 500) return;
     } catch {
       // keep polling until timeout
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Timeout aguardando ${url}`);
+  throw new Error(`Timeout aguardando ${probeUrl}`);
 };
 
 const resolveLicenseHmacSecret = () =>
@@ -1037,11 +1050,9 @@ const startBackend = async () => {
       ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
       ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
       ...licenseEnv,
-      ...(isPackagedBuild()
-        ? {
-            AUTH_ALLOW_LEGACY_LOCAL: '1',
-          }
-        : {}),
+      // Nunca activar AUTH_ALLOW_LEGACY_LOCAL em builds empacotados: o proxy
+      // Next (/pos-backend → 127.0.0.1) faria a API tratar pedidos LAN como
+      // loopback e devolveria /clientes sem credenciais.
     },
     onLog: (chunk) => {
       backendStartupLogs = appendBoundedLog(backendStartupLogs, chunk);
@@ -1069,6 +1080,9 @@ const startStandaloneWeb = async () => {
     entryPath: webEntry,
     env: {
       PORT: String(webPort),
+      // Só a janela Electron precisa do frontend; postos LAN falam com a API.
+      // 0.0.0.0 + rewrite /pos-backend expunha clientes sem autenticação.
+      HOSTNAME: '127.0.0.1',
       POS_API_URL: `http://127.0.0.1:${apiPort}`,
       NEXT_PUBLIC_POS_API_URL: `http://127.0.0.1:${apiPort}`,
       NEXT_PUBLIC_POS_API_DIRECT_URL: `http://127.0.0.1:${apiPort}`,
@@ -1176,6 +1190,131 @@ const buildLicenseBlockedHtml = (reason) => `
 </html>
 `;
 
+const buildSplashHtml = () => `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>POSly</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .stage {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        font-family: Segoe UI, sans-serif;
+      }
+      .mark {
+        width: 104px;
+        height: 104px;
+        border-radius: 22px;
+        box-shadow: 0 18px 48px rgba(0, 1, 251, 0.35);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      .label {
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #a1a1aa;
+        animation: fade 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(0.9);
+          opacity: 0.65;
+        }
+      }
+      @keyframes fade {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.45;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .mark,
+        .label {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 374 374" aria-hidden="true">
+        <rect width="374" height="374" rx="62.25" ry="62.25" fill="#0001fb" />
+        <path
+          fill="#fff"
+          d="M296.5,122.76v103.43c0,13.72-11.12,24.84-24.84,24.84h-83.25c-5.34,0-10.2,3.07-12.48,7.9l-18,38.1c-2.28,4.82-7.14,7.9-12.48,7.9h-67.95v-108.01c0-4.1,1.62-8.03,4.52-10.93l23.56-23.56c2.9-2.9,6.82-4.52,10.92-4.52h126.65c3.17,0,5.74,2.57,5.74,5.74,0,1.59-.64,3.02-1.68,4.07-1.03,1.03-2.47,1.68-4.06,1.68h-92.64c-14.61,0-26.45,11.84-26.45,26.45v79.65h14.12c5.39,0,10.29-3.14,12.54-8.04l7.55-16.44,17.71-38.53c2.25-4.89,7.15-8.03,12.54-8.03h39.21c7.68,0,14.9-1.97,21.16-5.43,11.07-6.11,19.2-16.86,21.78-29.63.58-2.83.88-5.76.88-8.76v-2.72h-.08c-.28-4.45-1.19-8.71-2.7-12.7-3.68-9.81-10.8-17.96-19.88-22.97-6.26-3.48-13.48-5.45-21.16-5.45h-76.5l.03-47.75h91.54c4.09,0,8.02,1.62,10.92,4.52l17.83,17.83,20.43,20.42c2.9,2.9,4.53,6.82,4.53,10.93Z"
+        />
+      </svg>
+      <div class="label">A iniciar POSly…</div>
+    </div>
+  </body>
+</html>
+`;
+
+/** Feedback visual imediato: sem isto o arranque fica sem janela e o utilizador reabre a app várias vezes. */
+const createSplashWindow = () => {
+  if (splashWindow && !splashWindow.isDestroyed()) return splashWindow;
+  const splash = new BrowserWindow({
+    width: 320,
+    height: 320,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    center: true,
+    show: false,
+    skipTaskbar: false,
+    alwaysOnTop: true,
+    title: 'POSly',
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  splash.on('closed', () => {
+    splashWindow = null;
+  });
+  splash.once('ready-to-show', () => {
+    if (!splash.isDestroyed()) splash.show();
+  });
+  void splash.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml())}`);
+  splashWindow = splash;
+  return splash;
+};
+
+const closeSplashWindow = () => {
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  splashWindow = null;
+};
+
+const revealMainWindow = (win) => {
+  closeSplashWindow();
+  if (!win || win.isDestroyed()) return;
+  if (!win.isVisible()) win.show();
+  win.focus();
+};
+
 const createWindow = async (opts = {}) => {
   const { blockedReason = null } = opts;
   if (typeof app.setName === 'function') {
@@ -1187,6 +1326,8 @@ const createWindow = async (opts = {}) => {
     height: 800,
     title: 'POSly',
     icon: winIcon,
+    show: false,
+    backgroundColor: '#121212',
     webPreferences: {
       contextIsolation: true,
       sandbox: false,
@@ -1206,6 +1347,7 @@ const createWindow = async (opts = {}) => {
 
   if (blockedReason) {
     await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(blockedReason))}`);
+    revealMainWindow(win);
     return;
   }
 
@@ -1219,6 +1361,7 @@ const createWindow = async (opts = {}) => {
       await win.loadURL(
         `data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(`${String(error?.message ?? error)}${hint}`))}`,
       );
+      revealMainWindow(win);
       return;
     }
     try {
@@ -1229,9 +1372,11 @@ const createWindow = async (opts = {}) => {
         `data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(String(error?.message ?? error)))}`,
       );
     }
+    revealMainWindow(win);
     return;
   }
   await win.loadURL(`http://127.0.0.1:${resolveAppWebPort()}`);
+  revealMainWindow(win);
 };
 
 ipcMain.handle('dialog:selectFolder', async () => {
@@ -1670,7 +1815,7 @@ function destroyReceiptPrintWindow() {
 }
 
 function receiptPrintTempPath() {
-  return path.join(app.getPath('temp'), 'posly-receipt-print.html');
+  return path.join(app.getPath('userData'), 'posly-receipt-print.html');
 }
 
 function resolvePrintGeometry(payload) {
@@ -1719,11 +1864,19 @@ function acquireReceiptPrintMutex() {
 
 async function loadReceiptHtml(printWindow, html) {
   const tmpPath = receiptPrintTempPath();
-  fsSync.writeFileSync(tmpPath, html, 'utf8');
-  await printWindow.loadFile(tmpPath);
-  await printWindow.webContents
-    .executeJavaScript('document.body ? document.body.offsetHeight : 0', true)
-    .catch(() => null);
+  try {
+    fsSync.writeFileSync(tmpPath, html, { encoding: 'utf8', mode: 0o600 });
+    await printWindow.loadFile(tmpPath);
+    await printWindow.webContents
+      .executeJavaScript('document.body ? document.body.offsetHeight : 0', true)
+      .catch(() => null);
+  } finally {
+    try {
+      fsSync.unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function buildSilentPrintOptions({ deviceName, copies, widthMm, heightMm, useNativePageSize }) {
@@ -2072,7 +2225,24 @@ if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function')
   app.setAppUserModelId('com.nicol.posly');
 }
 
+// Reabrir o atalho durante o arranque deve focar a instância a carregar, não abrir outra.
+const hasSingleInstanceLock =
+  typeof app.requestSingleInstanceLock === 'function' ? app.requestSingleInstanceLock() : true;
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+app.on('second-instance', () => {
+  const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow : splashWindow;
+  if (!target || target.isDestroyed()) return;
+  if (target.isMinimized()) target.restore();
+  target.show();
+  target.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   electronLogInfo('electron.app_ready', 'Electron pronto — a iniciar serviços', {
     module: 'main',
     action: 'whenReady',
@@ -2080,6 +2250,7 @@ app.whenReady().then(async () => {
     packaged: isPackagedBuild(),
     mode: resolvePosAppMode(),
   });
+  createSplashWindow();
   try {
     await startBackend();
     electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
@@ -2094,17 +2265,22 @@ app.whenReady().then(async () => {
       reason: 'Erro ao subir API/web antes da janela',
       error: String(error?.message ?? error),
     });
+    closeSplashWindow();
     dialog.showErrorBox('Falha ao iniciar', String(error?.message ?? error ?? 'Erro desconhecido'));
     stopServices();
     app.quit();
     return;
   }
 
-  await createWindow();
-  electronLogInfo('electron.window_created', 'Janela principal criada', {
-    module: 'main',
-    action: 'createWindow',
-  });
+  try {
+    await createWindow();
+    electronLogInfo('electron.window_created', 'Janela principal criada', {
+      module: 'main',
+      action: 'createWindow',
+    });
+  } finally {
+    closeSplashWindow();
+  }
   setupAutoUpdates();
 });
 

@@ -61,6 +61,18 @@ export function updateOrderPaymentStatus(orderId, nextStatus, updatedAt, tenantI
   );
 }
 
+export function updateOrderNotes(orderId, notes, isWaste, updatedAt, tenantId) {
+  return run(
+    `UPDATE orders
+     SET notes = ?,
+         is_waste = ?,
+         updated_at = ?
+     WHERE CAST(id AS TEXT) = ?
+       AND tenant_id = ?`,
+    [notes, isWaste ? 1 : 0, updatedAt, orderId, tenantId]
+  );
+}
+
 export function findOrderById(orderId, tenantId) {
   return get(
     `SELECT id
@@ -212,11 +224,22 @@ export function rollbackTransaction() {
 }
 
 export function insertOrder(params) {
+  // 18 params (legacy) ou 19 (+ external_document)
+  if (Array.isArray(params) && params.length >= 19) {
+    return run(
+      `INSERT INTO orders
+        (id, customer_id, user_id, user_name, total, subtotal, tax, discount, payment_method, status,
+         doc_type, doc_prefix, doc_year, doc_sequence, document_number, created_at, updated_at, tenant_id,
+         external_document)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params,
+    );
+  }
   return run(
     `INSERT INTO orders
       (id, customer_id, user_id, user_name, total, subtotal, tax, discount, payment_method, status, doc_type, doc_prefix, doc_year, doc_sequence, document_number, created_at, updated_at, tenant_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    params
+    params,
   );
 }
 
@@ -412,6 +435,59 @@ export function findOrderByDocumentNumber(documentNumber, tenantId) {
      LIMIT 1`,
     [documentNumber, tenantId]
   );
+}
+
+export async function sumDebitNotesForSource(documentNumber, tenantId) {
+  const row = await get(
+    `SELECT COALESCE(SUM(COALESCE(total, 0)), 0) AS total
+     FROM orders
+     WHERE tenant_id = ?
+       AND UPPER(COALESCE(doc_prefix, '')) = 'ND'
+       AND UPPER(TRIM(COALESCE(approved_document_type, ''))) = 'FTF'
+       AND UPPER(TRIM(COALESCE(approved_document_number, ''))) = UPPER(TRIM(?))`,
+    [tenantId, documentNumber]
+  );
+  return Number(row?.total ?? 0);
+}
+
+/** Soma dos recibos (RC) já emitidos contra uma fatura de cliente (FT). */
+export async function sumReceiptsForSource(documentNumber, tenantId) {
+  const row = await get(
+    `SELECT COALESCE(SUM(COALESCE(total, 0)), 0) AS total
+     FROM orders
+     WHERE tenant_id = ?
+       AND UPPER(COALESCE(doc_prefix, '')) = 'RC'
+       AND UPPER(TRIM(COALESCE(approved_document_type, ''))) = 'FT'
+       AND UPPER(TRIM(COALESCE(approved_document_number, ''))) = UPPER(TRIM(?))`,
+    [tenantId, documentNumber]
+  );
+  return Number(row?.total ?? 0);
+}
+
+/** Quantidades já devolvidas por produto em NDs ligadas à FTF de origem. */
+export async function sumDebitNoteQuantitiesByProductForSource(documentNumber, tenantId) {
+  const rows = await all(
+    `SELECT CAST(oi.product_id AS TEXT) AS product_id,
+            COALESCE(SUM(COALESCE(oi.quantity, 0)), 0) AS quantity
+     FROM order_items oi
+     INNER JOIN orders o
+       ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
+      AND o.tenant_id = oi.tenant_id
+     WHERE o.tenant_id = ?
+       AND UPPER(COALESCE(o.doc_prefix, '')) = 'ND'
+       AND UPPER(TRIM(COALESCE(o.approved_document_type, ''))) = 'FTF'
+       AND UPPER(TRIM(COALESCE(o.approved_document_number, ''))) = UPPER(TRIM(?))
+       AND oi.product_id IS NOT NULL
+     GROUP BY CAST(oi.product_id AS TEXT)`,
+    [tenantId, documentNumber]
+  );
+  const map = {};
+  for (const row of rows ?? []) {
+    const pid = row?.product_id != null ? String(row.product_id) : '';
+    if (!pid) continue;
+    map[pid] = Number(row?.quantity ?? 0) || 0;
+  }
+  return map;
 }
 
 export function findOrderByDocumentParts(prefix, year, sequence, tenantId) {

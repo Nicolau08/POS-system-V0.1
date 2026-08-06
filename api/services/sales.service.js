@@ -147,6 +147,27 @@ const salesSelectSql = `
     ${SALES_STATUS_SQL} AS status,
     v.approved_document_type AS approved_document_type,
     v.approved_document_number AS approved_document_number,
+    CASE
+      WHEN UPPER(COALESCE(v.doc_type, '')) = 'FT'
+        OR (
+          UPPER(COALESCE(v.doc_type, '')) NOT IN ('FP', 'TK', 'VD')
+          AND LOWER(REPLACE(COALESCE(v.payment_method, ''), '-', ' ')) LIKE '%conta corrente%'
+        )
+      THEN COALESCE((
+        SELECT SUM(COALESCE(rc.total, 0))
+        FROM orders rc
+        WHERE rc.tenant_id = v.tenant_id
+          AND UPPER(COALESCE(rc.doc_prefix, '')) = 'RC'
+          AND UPPER(TRIM(COALESCE(rc.approved_document_type, ''))) = 'FT'
+          AND UPPER(TRIM(COALESCE(rc.approved_document_number, ''))) = (
+            'FT/' ||
+            CAST(strftime('%Y', v.data) AS TEXT) ||
+            '/' ||
+            printf('%04d', COALESCE(v.doc_sequence, v.id))
+          )
+      ), 0)
+      ELSE 0
+    END AS receipt_total,
     0 AS discount,
     ROUND(v.total / ${TAX_DIVISOR}, 2) AS subtotal,
     ROUND(v.total - (v.total / ${TAX_DIVISOR}), 2) AS tax,

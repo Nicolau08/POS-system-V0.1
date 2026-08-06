@@ -3,6 +3,8 @@ export type DocumentSourceReference = {
   document_number?: string | null;
   approved_document_type?: string | null;
   approved_document_number?: string | null;
+  /** Nº da fatura do fornecedor (Doc. Externo na compra) */
+  external_document?: string | null;
 };
 
 function sourceDocKindLabel(type: string): string {
@@ -82,10 +84,18 @@ export function formatDocumentReferenceDisplay(
   row: DocumentSourceReference,
   docCode?: string,
 ): string {
+  const code = docCode || resolveDocumentFilterCode(row);
+
+  // Fatura de fornecedor: mostrar Doc. Externo da compra (não o PAG gerado ao pagar)
+  if (code === 'FTF') {
+    const external = String(row.external_document ?? '').trim();
+    if (external) return external;
+    return '';
+  }
+
   const linked = getLinkedDocumentReference(row);
   if (!linked) return '';
 
-  const code = docCode || resolveDocumentFilterCode(row);
   const kindLabel = sourceDocKindLabel(linked.type);
 
   if (code === 'RC' || code === 'VD' || code === 'PAG' || code === 'ND' || code === 'NC') {
@@ -93,12 +103,6 @@ export function formatDocumentReferenceDisplay(
   }
   if (code === 'FT' && linked.type === 'RC') {
     return `Recibo ${linked.number}`;
-  }
-  if (code === 'FTF' && linked.type === 'PAG') {
-    return `Pagamento ${linked.number}`;
-  }
-  if (code === 'FTF' && (linked.type === 'ND' || linked.type.includes('DEBIT'))) {
-    return `Nota de débito ${linked.number}`;
   }
   if (code === 'FP' && linked.type === 'VD') {
     return `Venda a dinheiro ${linked.number}`;

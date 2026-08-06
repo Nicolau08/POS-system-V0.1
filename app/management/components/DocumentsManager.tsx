@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Banknote, Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileMinus2, FileSpreadsheet, Printer, RefreshCcw, X } from 'lucide-react';
-import { getPosApiBase } from '@/lib/apiBase';
+import { Banknote, Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileMinus2, FileSpreadsheet, PackagePlus, Printer, RefreshCcw, X } from 'lucide-react';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { extractApiErrorMessage, unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { formatDocumentReferenceDisplay } from '@/lib/documents/documentReference';
@@ -22,6 +22,9 @@ import { ManagementToolbarButton, ManagementToolbarDivider } from '@/components/
 import type { DocumentsPartyKind } from '@/app/management/documentsMenu';
 import { PaymentModal } from '@/app/pos/components/PaymentModal';
 import { SupplierDebitNoteModal } from '@/app/management/components/SupplierDebitNoteModal';
+import PurchaseStockModal, {
+  type PurchaseProductOption,
+} from '@/app/management/components/PurchaseStockModal';
 
 type OrderRow = {
   id: number | string;
@@ -31,6 +34,11 @@ type OrderRow = {
   status?: string | null;
   approved_document_type?: string | null;
   approved_document_number?: string | null;
+  external_document?: string | null;
+  notes?: string | null;
+  is_waste?: boolean | number | null;
+  credit_note_total?: number | null;
+  receipt_total?: number | null;
   discount?: number | null;
   subtotal?: number | null;
   tax?: number | null;
@@ -185,6 +193,23 @@ function formatMoney(value: number | null | undefined) {
   return formatMoneyMt(Number(value ?? 0));
 }
 
+function supplierInvoiceOutstanding(row: OrderRow | null | undefined) {
+  if (!row) return 0;
+  return Math.max(0, Number(row.total ?? 0) - Number(row.credit_note_total ?? 0));
+}
+
+function customerInvoiceOutstanding(row: OrderRow | null | undefined) {
+  if (!row) return 0;
+  return Math.max(0, Number(row.total ?? 0) - Number(row.receipt_total ?? 0));
+}
+
+function customerInvoiceIsFullyPaid(row: OrderRow | null | undefined) {
+  if (!row) return false;
+  const status = String(row.status ?? '').toLowerCase();
+  if (status === 'completed' || status === 'pago') return true;
+  return customerInvoiceOutstanding(row) <= 0.009;
+}
+
 const DEFAULT_TAX_RATE_PERCENT = getPosTaxRate() * 100;
 const DEFAULT_TAX_RATE_LABEL = getPosTaxPercentLabel();
 
@@ -329,9 +354,12 @@ export default function DocumentsManager({
   const [actionMessage, setActionMessage] = useState('');
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isDebitNoteModalOpen, setIsDebitNoteModalOpen] = useState(false);
+  const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
+  const [purchaseProducts, setPurchaseProducts] = useState<PurchaseProductOption[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [receivedAmount, setReceivedAmount] = useState('');
+  const [partialPaymentAmount, setPartialPaymentAmount] = useState('');
   const [isMultiplePayment, setIsMultiplePayment] = useState(false);
   const [payments, setPayments] = useState<PaymentEntry[]>([]);
   const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('cash');
@@ -344,10 +372,12 @@ export default function DocumentsManager({
     if (externalDocType == null || externalDocType === '' || externalDocType === 'all') {
       setSelectedDocType('');
       setSelectedOrderId(null);
+      setIsPurchaseOpen(false);
       return;
     }
     setSelectedDocType(externalDocType);
     setSelectedOrderId(null);
+    setIsPurchaseOpen(false);
   }, [externalDocType, externalPartyKind]);
 
   const getCustomerName = (order: OrderRow) => String(order.client_name || 'Consumidor final');
@@ -371,13 +401,14 @@ export default function DocumentsManager({
     setLoading(true);
     setErrorMessage('');
     try {
+      const authHeaders = getPosUserAuthHeaders();
       const [ordersRes, salesRes, itemsRes, usersRes, clientsRes, productsRes] = await Promise.all([
-        fetch(`${getPosApiBase()}/documentos`),
-        fetch(`${getPosApiBase()}/vendas`),
-        fetch(`${getPosApiBase()}/documentos-itens`),
-        fetch(`${getPosApiBase()}/users`),
-        fetch(`${getPosApiBase()}/clientes`),
-        fetch(`${getPosApiBase()}/produtos`),
+        fetch(`${getPosApiBase()}/documentos`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/vendas`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/documentos-itens`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/users`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/clientes`, { headers: { ...authHeaders } }),
+        fetch(`${getPosApiBase()}/produtos`, { headers: { ...authHeaders } }),
       ]);
       if (!ordersRes.ok) throw new Error(`Falha ao carregar documentos (${ordersRes.status})`);
       if (!salesRes.ok) throw new Error(`Falha ao carregar vendas (${salesRes.status})`);
@@ -420,7 +451,21 @@ export default function DocumentsManager({
 
       const usersData = (unwrapApiSuccessPayload<Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>>(await usersRes.json()) ?? []);
       const clientsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await clientsRes.json()) ?? []);
-      const productsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await productsRes.json()) ?? []);
+      const productsData = (unwrapApiSuccessPayload<
+        Array<{
+          id?: string | number | null;
+          name?: string | null;
+          code?: number | null;
+          cost?: number | null;
+          unit?: string | null;
+          stock_quantity?: number | null;
+          track_lot?: boolean | number | null;
+          tax_rate_id?: string | null;
+          is_service?: boolean | number | null;
+          product_kind?: string | null;
+          active?: boolean | number | null;
+        }>
+      >(await productsRes.json()) ?? []);
 
       const productNames = Array.from(
         new Set(
@@ -430,6 +475,27 @@ export default function DocumentsManager({
         )
       ).sort((a, b) => a.localeCompare(b));
       setRegisteredProductNames(productNames);
+
+      setPurchaseProducts(
+        productsData
+          .filter((p) => {
+            if (p?.active === 0 || p?.active === false) return false;
+            if (p?.is_service === true || Number(p?.is_service) === 1) return false;
+            const kind = String(p?.product_kind ?? 'simple');
+            return kind !== 'composed' && kind !== 'service';
+          })
+          .map((p) => ({
+            id: String(p.id ?? ''),
+            name: String(p.name ?? '').trim() || 'Produto',
+            code: p.code != null ? Number(p.code) : undefined,
+            cost: Number(p.cost ?? 0) || 0,
+            unit: p.unit != null ? String(p.unit) : undefined,
+            stock_quantity: Number(p.stock_quantity ?? 0) || 0,
+            track_lot: Boolean(p.track_lot),
+            tax_rate_id: p.tax_rate_id != null ? String(p.tax_rate_id) : null,
+          }))
+          .filter((p) => Boolean(p.id)),
+      );
 
       const clientNames = Array.from(
         new Set(
@@ -608,17 +674,66 @@ export default function DocumentsManager({
 
   const showPayToolbarAction = selectedDocType === 'FTF' || selectedDocType === 'FT';
   const showCreateDebitNoteAction = selectedDocType === 'FTF';
+  const showCreateSupplierInvoiceAction = selectedDocType === 'FTF';
+
+  const outstandingTotal = useMemo(() => {
+    if (selectedDocType !== 'FTF' && selectedDocType !== 'FT') return 0;
+    return filteredOrders.reduce((sum, row) => {
+      if (selectedDocType === 'FT') {
+        return sum + customerInvoiceOutstanding(row);
+      }
+      const rowStatus = String(row.status || '').toLowerCase();
+      const paid = rowStatus === 'completed' || rowStatus === 'pago';
+      const approved = rowStatus === 'approved' || rowStatus === 'aprovado';
+      const settled =
+        paid || approved || Boolean(String(row.approved_document_number ?? '').trim());
+      if (settled) return sum;
+      return sum + supplierInvoiceOutstanding(row);
+    }, 0);
+  }, [filteredOrders, selectedDocType]);
+
   const selectedOrderIsPayable = useMemo(() => {
     if (!selectedOrder || !showPayToolbarAction) return false;
+    const code = resolveOrderDocTypeFilterCode(selectedOrder);
+    if (code !== selectedDocType) return false;
+    if (selectedDocType === 'FT') {
+      return customerInvoiceOutstanding(selectedOrder) > 0.009;
+    }
     const status = String(selectedOrder.status ?? '').toLowerCase();
     if (status === 'completed' || status === 'approved' || status === 'pago') return false;
     if (String(selectedOrder.approved_document_number ?? '').trim()) return false;
-    const code = resolveOrderDocTypeFilterCode(selectedOrder);
-    return code === selectedDocType;
+    if (selectedDocType === 'FTF' && supplierInvoiceOutstanding(selectedOrder) <= 0.009) return false;
+    return true;
   }, [selectedOrder, selectedDocType, showPayToolbarAction]);
 
   const paymentCart = useMemo<CartItem[]>(() => {
     if (!selectedOrder) return [];
+    if (selectedDocType === 'FTF' && Number(selectedOrder.credit_note_total ?? 0) > 0) {
+      return [
+        {
+          id: `doc-${selectedOrder.id}`,
+          name: `Saldo de ${String(selectedOrder.document_number ?? 'FTF')}`,
+          price: supplierInvoiceOutstanding(selectedOrder),
+          category: 'Documento',
+          quantity: 1,
+        },
+      ];
+    }
+    if (selectedDocType === 'FT') {
+      const outstanding = customerInvoiceOutstanding(selectedOrder);
+      const alreadyPaid = Number(selectedOrder.receipt_total ?? 0);
+      if (alreadyPaid > 0.009 || outstanding < Number(selectedOrder.total ?? 0) - 0.009) {
+        return [
+          {
+            id: `doc-${selectedOrder.id}`,
+            name: `Saldo de ${String(selectedOrder.document_number ?? 'FT')}`,
+            price: outstanding,
+            category: 'Documento',
+            quantity: 1,
+          },
+        ];
+      }
+    }
     if (selectedItems.length === 0) {
       return [
         {
@@ -641,24 +756,33 @@ export default function DocumentsManager({
         quantity: qty > 0 ? qty : 1,
       };
     });
-  }, [selectedOrder, selectedItems]);
+  }, [selectedDocType, selectedOrder, selectedItems]);
 
   const paymentTotals = useMemo(() => {
-    const total = Number(selectedOrder?.total ?? 0);
-    const subtotal = Number(
-      selectedOrder?.subtotal ?? total - Number(selectedOrder?.tax ?? 0),
+    const originalTotal = Number(selectedOrder?.total ?? 0);
+    const total =
+      selectedDocType === 'FTF'
+        ? supplierInvoiceOutstanding(selectedOrder)
+        : selectedDocType === 'FT'
+          ? customerInvoiceOutstanding(selectedOrder)
+          : originalTotal;
+    const originalSubtotal = Number(
+      selectedOrder?.subtotal ?? originalTotal - Number(selectedOrder?.tax ?? 0),
     );
-    const tax = Number(selectedOrder?.tax ?? Math.max(0, total - subtotal));
+    const ratio = originalTotal > 0 ? total / originalTotal : 0;
+    const subtotal = originalSubtotal * ratio;
+    const tax = Number(selectedOrder?.tax ?? Math.max(0, originalTotal - originalSubtotal)) * ratio;
     return {
       total,
       subtotal: Math.max(0, subtotal),
       tax: Math.max(0, tax),
     };
-  }, [selectedOrder]);
+  }, [selectedDocType, selectedOrder]);
 
   const resetPaymentState = () => {
     setPaymentMethod(null);
     setReceivedAmount('');
+    setPartialPaymentAmount('');
     setPayments([]);
     setIsMultiplePayment(false);
     setMultiplePaymentAmount('');
@@ -721,16 +845,40 @@ export default function DocumentsManager({
       setPaymentFinalizeError('Seleccione o método de pagamento.');
       return;
     }
+
+    const remaining = paymentTotals.total;
+    let amountToPay = remaining;
+    if (selectedDocType === 'FT') {
+      if (isMultiplePayment) {
+        amountToPay = payments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+      } else {
+        const parsed = Number(String(partialPaymentAmount || '').trim());
+        amountToPay = Number.isFinite(parsed) && parsed > 0 ? parsed : remaining;
+      }
+      amountToPay = Math.round(amountToPay * 100) / 100;
+      if (!(amountToPay > 0)) {
+        setPaymentFinalizeError('Indique o valor a pagar.');
+        return;
+      }
+      if (amountToPay > remaining + 0.009) {
+        setPaymentFinalizeError(
+          `O valor a pagar não pode exceder o saldo em dívida (${formatMoney(remaining)}).`,
+        );
+        return;
+      }
+    }
+
     setIsFinalizingPayment(true);
     setPaymentFinalizeError(null);
     try {
       const res = await fetch(`${getPosApiBase()}/documentos/registar-pagamento`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getPosUserAuthHeaders() },
         body: JSON.stringify({
           documentNumber: String(selectedOrder.document_number).trim(),
           paymentMethod: method,
           payableKind: selectedDocType === 'FTF' ? 'FTF' : selectedDocType === 'FT' ? 'FT' : undefined,
+          ...(selectedDocType === 'FT' ? { amount: amountToPay } : {}),
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -741,11 +889,22 @@ export default function DocumentsManager({
         generatedDocumentType?: string;
         generatedDocumentNumber?: string;
         sourceDocumentNumber?: string;
+        paymentAmount?: number;
+        remainingTotal?: number;
+        fullySettled?: boolean;
       }>(payload);
       setIsPaymentModalOpen(false);
       resetPaymentState();
+      const paidLabel =
+        data?.paymentAmount != null ? ` (${formatMoney(Number(data.paymentAmount))})` : '';
+      const remainingLabel =
+        data?.fullySettled === false && data?.remainingTotal != null
+          ? ` Saldo restante: ${formatMoney(Number(data.remainingTotal))}.`
+          : data?.fullySettled
+            ? ' Fatura liquidada.'
+            : '';
       setActionMessage(
-        `${String(data?.generatedDocumentType ?? 'DOC')} ${String(data?.generatedDocumentNumber ?? '')} gerado para ${String(data?.sourceDocumentNumber ?? selectedOrder.document_number)}.`,
+        `${String(data?.generatedDocumentType ?? 'DOC')} ${String(data?.generatedDocumentNumber ?? '')} gerado para ${String(data?.sourceDocumentNumber ?? selectedOrder.document_number)}${paidLabel}.${remainingLabel}`,
       );
       await fetchData();
     } catch (error) {
@@ -879,24 +1038,44 @@ export default function DocumentsManager({
       className="flex h-full flex-col bg-[#1a1a1a] text-zinc-300 overflow-x-hidden overflow-y-visible"
       onClick={handleScreenClickToDeselect}
     >
-      <div className="relative z-40 h-16 bg-[#1a1a1a] border-b border-zinc-800 px-2 overflow-visible">
-        <div className="h-full flex items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
+      {!isPurchaseOpen ? (
+        <div className="relative z-40 h-16 bg-[#1a1a1a] border-b border-zinc-800 px-2 overflow-visible">
+          <div className="flex h-full items-center gap-3 overflow-visible">
+            <div className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
           <ManagementToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
           <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
           <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
-          {showPayToolbarAction ? (
+          {showCreateSupplierInvoiceAction ? (
             <>
               <ManagementToolbarDivider />
               <ManagementToolbarButton
+                icon={<PackagePlus size={20} />}
+                label="Criar Fatura de Fornecedor"
+                onClick={() => {
+                  setActionMessage('');
+                  setIsPurchaseOpen(true);
+                }}
+                title="Registar compra (mesma função do Stock)"
+              />
+            </>
+          ) : null}
+          {showPayToolbarAction ? (
+            <>
+              {!showCreateSupplierInvoiceAction ? <ManagementToolbarDivider /> : null}
+              <ManagementToolbarButton
                 icon={<Banknote size={20} />}
-                label="Pagar"
+                label={selectedDocType === 'FTF' ? 'Pagar Fatura de Fornecedor' : 'Pagar'}
                 disabled={!selectedOrderIsPayable}
                 onClick={handleOpenPayment}
                 title={
                   !selectedOrder
-                    ? 'Selecione uma fatura para pagar'
+                    ? selectedDocType === 'FTF'
+                      ? 'Selecione uma Fatura de Fornecedor para pagar'
+                      : 'Selecione uma fatura para pagar'
                     : selectedOrderIsPayable
-                      ? 'Registar pagamento'
+                      ? selectedDocType === 'FTF'
+                        ? 'Registar pagamento da Fatura de Fornecedor'
+                        : 'Registar pagamento'
                       : 'Documento já pago'
                 }
               />
@@ -907,18 +1086,47 @@ export default function DocumentsManager({
               <ManagementToolbarDivider />
               <ManagementToolbarButton
                 icon={<FileMinus2 size={20} />}
-                label="Criar"
+                label="Emitir Nota de débito"
                 onClick={() => {
                   setActionMessage('');
                   setIsDebitNoteModalOpen(true);
                 }}
-                title="Criar nota de débito contra uma FTF"
+                title="Emitir nota de débito contra uma fatura de fornecedor"
               />
             </>
           ) : null}
+            </div>
+            {selectedDocType === 'FTF' || selectedDocType === 'FT' ? (
+              <div className="shrink-0 pr-3 text-right leading-tight">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                  {selectedDocType === 'FTF' ? 'Valor a pagar' : 'Valor a receber'}
+                </div>
+                <div
+                  className={`text-2xl font-semibold tabular-nums ${
+                    outstandingTotal > 0 ? 'text-rose-300' : 'text-zinc-200'
+                  }`}
+                >
+                  {formatMoney(outstandingTotal)}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
 
+      {isPurchaseOpen && showCreateSupplierInvoiceAction ? (
+        <PurchaseStockModal
+          isOpen={isPurchaseOpen}
+          onClose={() => setIsPurchaseOpen(false)}
+          products={purchaseProducts}
+          onSaved={async () => {
+            setActionMessage('Fatura de Fornecedor registada.');
+            setIsPurchaseOpen(false);
+            await fetchData();
+          }}
+        />
+      ) : (
+      <>
       <div className="relative z-30 border-b border-zinc-800 bg-[#181818] px-3 py-2 overflow-visible">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
           <FilterSelect label="Cliente" value={selectedClient} onChange={setSelectedClient} options={['all', ...clientOptions]} />
@@ -1001,7 +1209,28 @@ export default function DocumentsManager({
                     const isApprovedQuotation = isQuotationOrProforma && (approved || quotationConverted);
                     const docFilterCode = resolveOrderDocTypeFilterCode(row);
                     const referenceLabel = formatDocumentReferenceDisplay(row, docFilterCode);
-                    const settled = paid || approved || quotationConverted;
+                    const creditNoteTotal =
+                      docFilterCode === 'FTF' ? Number(row.credit_note_total ?? 0) : 0;
+                    const receiptTotal =
+                      docFilterCode === 'FT' ? Number(row.receipt_total ?? 0) : 0;
+                    const rowOutstanding =
+                      docFilterCode === 'FTF'
+                        ? supplierInvoiceOutstanding(row)
+                        : docFilterCode === 'FT'
+                          ? customerInvoiceOutstanding(row)
+                          : Math.max(0, Number(row.total ?? 0));
+                    const fullyCredited =
+                      docFilterCode === 'FTF' && creditNoteTotal > 0 && rowOutstanding <= 0.009;
+                    const partiallyCredited =
+                      docFilterCode === 'FTF' && creditNoteTotal > 0 && !fullyCredited;
+                    const fullyPaidFt =
+                      docFilterCode === 'FT' && customerInvoiceIsFullyPaid(row);
+                    const partiallyPaidFt =
+                      docFilterCode === 'FT' && receiptTotal > 0.009 && !fullyPaidFt;
+                    const settled =
+                      (docFilterCode === 'FT'
+                        ? fullyPaidFt
+                        : paid || approved || quotationConverted || fullyCredited);
                     const due = dueDateMeta(row.created_at, row.doc_type);
                     const dueClass = settled
                       ? 'text-zinc-200'
@@ -1010,14 +1239,30 @@ export default function DocumentsManager({
                         : due.tone === 'warning'
                           ? 'text-amber-300'
                           : 'text-zinc-300';
-                    const statusLabel = isApprovedQuotation || approved
+                    const statusLabel = fullyCredited
+                      ? 'Creditada'
+                      : partiallyCredited
+                        ? 'Crédito parcial'
+                      : fullyPaidFt
+                        ? 'Pago'
+                      : partiallyPaidFt
+                        ? 'Pago parcial'
+                      : isApprovedQuotation || approved
                       ? 'Aprovado'
                       : paid
                         ? 'Pago'
                         : isQuotationOrProforma
                           ? 'Lançado'
                           : 'Não pago';
-                    const statusClass = isApprovedQuotation || approved
+                    const statusClass = fullyCredited
+                      ? 'bg-green-600 text-white'
+                      : partiallyCredited
+                        ? 'bg-amber-600 text-white'
+                      : fullyPaidFt
+                        ? 'bg-green-600 text-white'
+                      : partiallyPaidFt
+                        ? 'bg-amber-600 text-white'
+                      : isApprovedQuotation || approved
                       ? 'bg-blue-600 text-white'
                       : paid
                         ? 'bg-green-600 text-white'
@@ -1047,7 +1292,7 @@ export default function DocumentsManager({
                         <Td className="text-right">{formatMoney(Number(row.subtotal ?? (Number(row.total ?? 0) - Number(row.tax ?? 0))))}</Td>
                         <Td className="text-right text-zinc-200">{formatMoney(row.total)}</Td>
                         <Td className={`text-right ${settled ? 'text-zinc-400' : 'text-rose-300'}`}>
-                          {formatMoney(settled ? 0 : Number(row.total ?? 0))}
+                          {formatMoney(settled ? 0 : rowOutstanding)}
                         </Td>
                         <Td>
                           <DocumentStatusBadge label={statusLabel} className={statusClass} hint={referenceLabel || undefined} />
@@ -1222,6 +1467,9 @@ export default function DocumentsManager({
         </div>
       )}
 
+      </>
+      )}
+
       <PaymentModal
         isOpen={isPaymentModalOpen}
         onClose={() => {
@@ -1275,6 +1523,9 @@ export default function DocumentsManager({
         title="Finalizar Pagamento"
         contextLabel={selectedOrder?.document_number ? `Doc: ${selectedOrder.document_number}` : 'Documento'}
         hideReceiptPrint
+        allowPartialPayment={selectedDocType === 'FT'}
+        paymentAmount={partialPaymentAmount}
+        setPaymentAmount={setPartialPaymentAmount}
       />
 
       <SupplierDebitNoteModal
@@ -1282,6 +1533,9 @@ export default function DocumentsManager({
         onClose={() => setIsDebitNoteModalOpen(false)}
         sourceOrders={orders}
         itemsByOrderId={itemsByOrderId}
+        initialSourceOrder={selectedOrder}
+        initialSourceOrderId={selectedOrder ? String(selectedOrder.id) : null}
+        initialSourceItems={selectedOrder ? itemsByOrderId[String(selectedOrder.id)] ?? [] : []}
         onSaved={(result) => {
           setActionMessage(
             result.documentNumber
