@@ -467,75 +467,100 @@ export async function redeemReactivationToken(rawToken) {
   const secret = resolveLicenseHmacSecret();
   const machineId = getLocalMachineId();
 
-  if (localPayload && secret) {
+  const applyOffline = async () => {
+    if (!localPayload || !secret) return null;
     const offline = verifyOfflineReactivationToken(tokenDigits, {
       secret,
       tenantId: localPayload.tenant_id,
       machineId: localPayload.machine_id,
       voucherNonce: localPayload.voucher_nonce,
+      currentExpirationIso: localPayload.expiration || localPayload.expires_at,
     });
-    if (offline.ok) {
-      const updated = resignMachineLicensePayload(
-        localPayload,
-        offline.expirationIso,
-        secret,
-      );
-      await persistLicenseState({
-        tenantId: offline.tenantId,
-        expiresAt: offline.expirationIso,
-        licenseKey: licenseKeyFromPayload(updated),
-        machineId: offline.machineId,
-        licensePayload: updated,
-      });
-      return {
-        success: true,
-        offline: true,
-        tenantId: offline.tenantId,
-        expiresAt: offline.expirationIso,
-        license: updated,
-      };
+    if (!offline.ok) {
+      return { error: offline.error || 'Token offline inválido.', status: 400 };
     }
-  }
+    const updated = resignMachineLicensePayload(
+      localPayload,
+      offline.expirationIso,
+      secret,
+    );
+    await persistLicenseState({
+      tenantId: offline.tenantId,
+      expiresAt: offline.expirationIso,
+      licenseKey: licenseKeyFromPayload(updated),
+      machineId: offline.machineId,
+      licensePayload: updated,
+    });
+    // Melhor esforço: marcar o token como usado na consola (evita reutilização).
+    void callIssuer('/api/license-issuer/reactivate', {
+      token: tokenDigits,
+      machine_id: machineId,
+    }).catch(() => null);
+    return {
+      success: true,
+      offline: true,
+      tenantId: offline.tenantId,
+      expiresAt: offline.expirationIso,
+      license: updated,
+    };
+  };
 
+  // Preferir consola (marca used_at); offline só se a rede/issuer falhar.
   const online = await callIssuer('/api/license-issuer/reactivate', {
     token: tokenDigits,
     machine_id: machineId,
   });
-  if (online.skipped) {
-    return { error: online.error, status: 503 };
-  }
-  if (!online.ok) {
-    return { error: online.error || 'Falha na reativação online.', status: online.status || 400 };
+
+  if (online.ok) {
+    const licensePayload = online.data?.license;
+    const expiresAt = normalizeText(online.data?.license_expires_at);
+    const tenantId = normalizeText(online.data?.tenant_id);
+    if (!licensePayload || !expiresAt || !tenantId) {
+      return { error: 'Resposta da consola incompleta.', status: 502 };
+    }
+
+    const fullPayload = {
+      ...licensePayload,
+      voucher_nonce: licensePayload.voucher_nonce ?? localPayload?.voucher_nonce ?? undefined,
+      activated_at: licensePayload.activated_at || new Date().toISOString(),
+    };
+
+    await persistLicenseState({
+      tenantId,
+      expiresAt,
+      licenseKey: normalizeText(online.data?.license_key) || licenseKeyFromPayload(fullPayload),
+      machineId,
+      licensePayload: fullPayload,
+    });
+
+    return {
+      success: true,
+      offline: false,
+      tenantId,
+      expiresAt,
+      license: fullPayload,
+      license_key: online.data?.license_key,
+    };
   }
 
-  const licensePayload = online.data?.license;
-  const expiresAt = normalizeText(online.data?.license_expires_at);
-  const tenantId = normalizeText(online.data?.tenant_id);
-  if (!licensePayload || !expiresAt || !tenantId) {
-    return { error: 'Resposta da consola incompleta.', status: 502 };
+  const issuerMsg = String(online.error ?? '');
+  const isTokenLifecycleError =
+    /já foi utilizado|Token expirado|não encontrado|não corresponde|não autorizada|Token inválido/i.test(
+      issuerMsg,
+    );
+  if (!online.skipped && isTokenLifecycleError) {
+    return { error: issuerMsg || 'Falha na reativação online.', status: online.status || 400 };
   }
 
-  const fullPayload = {
-    ...licensePayload,
-    voucher_nonce: licensePayload.voucher_nonce ?? localPayload?.voucher_nonce ?? undefined,
-    activated_at: licensePayload.activated_at || new Date().toISOString(),
-  };
-
-  await persistLicenseState({
-    tenantId,
-    expiresAt,
-    licenseKey: normalizeText(online.data?.license_key) || licenseKeyFromPayload(fullPayload),
-    machineId,
-    licensePayload: fullPayload,
-  });
+  const offlineResult = await applyOffline();
+  if (offlineResult?.success) return offlineResult;
+  if (offlineResult?.error && online.skipped) {
+    return { error: offlineResult.error, status: offlineResult.status || 400 };
+  }
 
   return {
-    success: true,
-    offline: false,
-    tenantId,
-    expiresAt,
-    license: fullPayload,
-    license_key: online.data?.license_key,
+    error: issuerMsg || offlineResult?.error || 'Falha na reativação online.',
+    status: online.status || offlineResult?.status || 400,
   };
 }
 

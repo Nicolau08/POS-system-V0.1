@@ -20,7 +20,7 @@ export function CancelOrderModal({
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className="bg-zinc-900 border border-zinc-800 rounded p-8 w-full max-w-[400px] text-center space-y-6"
+            className="bg-[var(--pos-surface)] border border-zinc-800 rounded p-8 w-full max-w-[400px] text-center space-y-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-20 h-20 bg-amber-500/10 rounded flex items-center justify-center mx-auto text-amber-500">

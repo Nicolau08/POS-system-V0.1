@@ -83,6 +83,7 @@ export function runPermissionRulesSeedIfEmpty(callback) {
       { key: 'vendas.dividir_pedido', required_level: 0 },
       { key: 'vendas.aplicar_desconto', required_level: 0 },
       { key: 'vendas.apagar_documento', required_level: 0 },
+      { key: 'vendas.anular_vd', required_level: 5 },
       { key: 'vendas.devolucao', required_level: 0 },
       { key: 'vendas.override_taxes', required_level: 0 },
       { key: 'vendas.ver_historico_vendas', required_level: 0 },
@@ -338,6 +339,27 @@ db.serialize(() => {
     (voidSentErr) => {
       if (voidSentErr && !String(voidSentErr.message || '').includes('no such table')) {
         console.error('[database] Falha ao garantir regra vendas.anular_item_enviado:', voidSentErr.message);
+      }
+    }
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO permission_rules (key, required_level, updated_at) VALUES ('vendas.anular_vd', 5, datetime('now'))`,
+    (voidVdErr) => {
+      if (voidVdErr && !String(voidVdErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao garantir regra vendas.anular_vd:', voidVdErr.message);
+      }
+    }
+  );
+
+  db.run(
+    `UPDATE payment_methods
+     SET name = 'Dinheiro', updated_at = datetime('now')
+     WHERE LOWER(TRIM(code)) = 'cash'
+       AND LOWER(TRIM(COALESCE(name, ''))) IN ('cash', 'dinheiro')`,
+    (cashNameErr) => {
+      if (cashNameErr && !String(cashNameErr.message || '').includes('no such table')) {
+        console.error('[database] Falha ao normalizar nome Dinheiro:', cashNameErr.message);
       }
     }
   );

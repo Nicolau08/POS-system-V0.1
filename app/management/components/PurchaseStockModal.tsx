@@ -10,6 +10,7 @@ import {
   CalendarDays,
   FileText,
   ChevronDown,
+  Banknote,
 } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
@@ -17,20 +18,31 @@ import { formatMoneyMt } from '@/lib/currency';
 import { computeTaxFromBasePrice } from '@/lib/taxMath';
 import { getCachedTaxRates, setCachedTaxRates } from '@/lib/posSessionCache';
 import PosSelect from '@/components/PosSelect';
-import { fetchWarehouses, type PosWarehouse } from '@/lib/services/posService';
+import { fetchPaymentMethods, fetchWarehouses, type PosWarehouse } from '@/lib/services/posService';
 import { PurchaseProductMultiSelectModal } from '@/app/management/components/PurchaseProductMultiSelectModal';
 import { CustomerSupplierFormModal } from '@/app/management/components/CustomerSupplierFormModal';
+import { PaymentModal } from '@/app/pos/components/PaymentModal';
+import type {
+  CartItem,
+  PaymentEntry,
+  PaymentMethod,
+  PaymentMethodOption,
+} from '@/app/pos/types';
 
 export type PurchaseProductOption = {
   id: string;
   name: string;
   code?: number;
   cost?: number;
+  /** Preço de venda (documentos de cliente). */
+  price?: number;
   unit?: string;
   stock_quantity?: number;
   track_lot?: boolean;
   tax_rate_id?: string | null;
 };
+
+export type DocumentCreatePrefix = 'FTF' | 'FP' | 'FT' | 'VD';
 
 type TaxRateOption = {
   id: string;
@@ -82,7 +94,96 @@ type PartyMeta = {
 const CUSTOMERS_META_KEY = 'customers-manager-meta';
 const DEFAULT_SUPPLIER_NAME = 'Fornecedor';
 const DEFAULT_SUPPLIER_PHONE = '000000000';
-const CREATE_SUPPLIER_OPTION = '__create_supplier__';
+const CREATE_PARTY_OPTION = '__create_party__';
+
+type DocCreateConfig = {
+  prefix: DocumentCreatePrefix;
+  documentType: string;
+  partyKind: 'supplier' | 'customer';
+  partyLabel: string;
+  partyPlaceholder: string;
+  createPartyLabel: string;
+  productsLabel: string;
+  warehouseLabel: string;
+  showWarehouse: boolean;
+  showExternalDoc: boolean;
+  useCostPrice: boolean;
+  paid: boolean;
+  requirePayment: boolean;
+  saveLabel: string;
+  successHint: (number: string) => string;
+};
+
+const DOC_CREATE_CONFIG: Record<DocumentCreatePrefix, DocCreateConfig> = {
+  FTF: {
+    prefix: 'FTF',
+    documentType: 'Compra',
+    partyKind: 'supplier',
+    partyLabel: 'Fornecedor',
+    partyPlaceholder: 'Seleccione o fornecedor…',
+    createPartyLabel: 'Criar Fornecedor...',
+    productsLabel: 'Produtos da compra',
+    warehouseLabel: 'Armazém destino',
+    showWarehouse: true,
+    showExternalDoc: true,
+    useCostPrice: true,
+    paid: false,
+    requirePayment: false,
+    saveLabel: 'Guardar compra',
+    successHint: (n) => `Compra ${n} registada (não paga). Stock actualizado.`,
+  },
+  FP: {
+    prefix: 'FP',
+    documentType: 'Cotação',
+    partyKind: 'customer',
+    partyLabel: 'Cliente',
+    partyPlaceholder: 'Seleccione o cliente…',
+    createPartyLabel: 'Criar Cliente...',
+    productsLabel: 'Produtos da cotação',
+    warehouseLabel: 'Armazém',
+    showWarehouse: false,
+    showExternalDoc: false,
+    useCostPrice: false,
+    paid: false,
+    requirePayment: false,
+    saveLabel: 'Guardar cotação',
+    successHint: (n) => `Cotação ${n} registada.`,
+  },
+  FT: {
+    prefix: 'FT',
+    documentType: 'Fatura',
+    partyKind: 'customer',
+    partyLabel: 'Cliente',
+    partyPlaceholder: 'Seleccione o cliente…',
+    createPartyLabel: 'Criar Cliente...',
+    productsLabel: 'Produtos da fatura',
+    warehouseLabel: 'Armazém origem',
+    showWarehouse: false,
+    showExternalDoc: false,
+    useCostPrice: false,
+    paid: false,
+    requirePayment: false,
+    saveLabel: 'Guardar fatura',
+    successHint: (n) => `Fatura ${n} registada (não paga).`,
+  },
+  VD: {
+    prefix: 'VD',
+    documentType: 'Venda a dinheiro',
+    partyKind: 'customer',
+    partyLabel: 'Cliente',
+    partyPlaceholder: 'Seleccione o cliente…',
+    createPartyLabel: 'Criar Cliente...',
+    productsLabel: 'Produtos da venda',
+    warehouseLabel: 'Armazém origem',
+    showWarehouse: false,
+    showExternalDoc: false,
+    useCostPrice: false,
+    paid: true,
+    requirePayment: true,
+    saveLabel: 'Pagamento',
+    successHint: (n) => `Venda a dinheiro ${n} registada.`,
+  },
+};
 
 function readPartyMetaById(): Record<string, PartyMeta> {
   try {
@@ -140,6 +241,8 @@ type PurchaseStockModalProps = {
   onClose: () => void;
   products: PurchaseProductOption[];
   initialProductId?: string | null;
+  /** Prefixo do documento a criar. Por defeito FTF (compra). */
+  documentPrefix?: DocumentCreatePrefix;
   onSaved: () => void | Promise<void>;
 };
 
@@ -214,13 +317,16 @@ export default function PurchaseStockModal({
   onClose,
   products,
   initialProductId,
+  documentPrefix = 'FTF',
   onSaved,
 }: PurchaseStockModalProps) {
+  const cfg = DOC_CREATE_CONFIG[documentPrefix] ?? DOC_CREATE_CONFIG.FTF;
+  const isSupplierMode = cfg.partyKind === 'supplier';
   const [parties, setParties] = useState<PartyOption[]>([]);
   const [partyId, setPartyId] = useState('');
   const [documentDate, setDocumentDate] = useState(() => toInputDate(new Date()));
   const [externalDoc, setExternalDoc] = useState('');
-  const [docNumber, setDocNumber] = useState('FTF/…');
+  const [docNumber, setDocNumber] = useState(`${cfg.prefix}/…`);
   const [lines, setLines] = useState<PurchaseLine[]>([]);
   const [productQuery, setProductQuery] = useState('');
   const [productPickerOpen, setProductPickerOpen] = useState(false);
@@ -232,26 +338,60 @@ export default function PurchaseStockModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [successHint, setSuccessHint] = useState('');
-  const [isCreateSupplierOpen, setIsCreateSupplierOpen] = useState(false);
+  const [isCreatePartyOpen, setIsCreatePartyOpen] = useState(false);
   const [warehouses, setWarehouses] = useState<PosWarehouse[]>([]);
-  const supplierCreateDefaults = useMemo(
+  const partyCreateDefaults = useMemo(
     () => ({
-      isCustomer: false,
+      isCustomer: !isSupplierMode,
       active: true,
       taxExempt: false,
       country: 'Moçambique',
     }),
-    [],
+    [isSupplierMode],
   );
   const [warehouseId, setWarehouseId] = useState('');
   const [taxRates, setTaxRates] = useState<TaxRateOption[]>(
     () => (getCachedTaxRates() as TaxRateOption[] | null) ?? [],
   );
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
+  const [isMultiplePayment, setIsMultiplePayment] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
+  const [receivedAmount, setReceivedAmount] = useState('');
+  const [payments, setPayments] = useState<PaymentEntry[]>([]);
+  const [multiplePaymentMethod, setMultiplePaymentMethod] = useState<PaymentMethod>('Dinheiro');
+  const [multiplePaymentAmount, setMultiplePaymentAmount] = useState('');
+  const [paymentFinalizeError, setPaymentFinalizeError] = useState<string | null>(null);
 
   const selectedParty = useMemo(
     () => parties.find((p) => String(p.id) === String(partyId)) ?? null,
     [parties, partyId],
   );
+
+  const paymentCart = useMemo<CartItem[]>(
+    () =>
+      lines.map((line, index) => {
+        const br = breakdownLine(line, taxRates);
+        return {
+          id: line.productId || `line-${index}`,
+          name: line.name,
+          price: br.unitGross,
+          category: 'Documento',
+          quantity: line.quantity,
+        };
+      }),
+    [lines, taxRates],
+  );
+
+  const resetPaymentState = useCallback(() => {
+    setIsPaymentOpen(false);
+    setIsMultiplePayment(false);
+    setPaymentMethod(null);
+    setReceivedAmount('');
+    setPayments([]);
+    setMultiplePaymentAmount('');
+    setPaymentFinalizeError(null);
+  }, []);
 
   const defaultTaxRateId = useMemo(() => {
     const enabled = taxRates.filter((r) => r.enabled !== false);
@@ -303,34 +443,44 @@ export default function PurchaseStockModal({
     [matchedProducts],
   );
 
-  const supplierOptions = useMemo(
+  const partyOptions = useMemo(
     () => [
       {
         value: '',
-        label: parties.length === 0 ? 'A criar fornecedor padrão…' : 'Seleccione o fornecedor…',
+        label:
+          parties.length === 0
+            ? isSupplierMode
+              ? 'A criar fornecedor padrão…'
+              : 'Sem clientes — crie um abaixo'
+            : cfg.partyPlaceholder,
       },
       ...parties.map((party) => ({ value: party.id, label: party.name })),
-      { value: CREATE_SUPPLIER_OPTION, label: 'Criar Fornecedor...' },
+      { value: CREATE_PARTY_OPTION, label: cfg.createPartyLabel },
     ],
-    [parties],
+    [parties, isSupplierMode, cfg.partyPlaceholder, cfg.createPartyLabel],
   );
 
-  const refreshSuppliers = useCallback(async (preferredId?: string | null) => {
-    const partyRes = await fetch(`${getPosApiBase()}/clientes`, {
-      headers: { ...getPosUserAuthHeaders() },
-    });
-    const partyData = unwrapApiSuccessPayload<any[]>(await partyRes.json());
-    const allParties = toPartyOptions(Array.isArray(partyData) ? partyData : []);
-    const metaById = readPartyMetaById();
-    const suppliers = allParties.filter((party) => isSupplierParty(party.id, metaById));
-    setParties(suppliers);
-    setPartyId((prev) => {
-      if (preferredId && suppliers.some((party) => party.id === preferredId)) return preferredId;
-      if (prev && suppliers.some((party) => party.id === prev)) return prev;
-      return suppliers[0]?.id ?? '';
-    });
-    return suppliers;
-  }, []);
+  const refreshParties = useCallback(
+    async (preferredId?: string | null) => {
+      const partyRes = await fetch(`${getPosApiBase()}/clientes`, {
+        headers: { ...getPosUserAuthHeaders() },
+      });
+      const partyData = unwrapApiSuccessPayload<any[]>(await partyRes.json());
+      const allParties = toPartyOptions(Array.isArray(partyData) ? partyData : []);
+      const metaById = readPartyMetaById();
+      const filtered = isSupplierMode
+        ? allParties.filter((party) => isSupplierParty(party.id, metaById))
+        : allParties.filter((party) => !isSupplierParty(party.id, metaById));
+      setParties(filtered);
+      setPartyId((prev) => {
+        if (preferredId && filtered.some((party) => party.id === preferredId)) return preferredId;
+        if (prev && filtered.some((party) => party.id === prev)) return prev;
+        return filtered[0]?.id ?? '';
+      });
+      return filtered;
+    },
+    [isSupplierMode],
+  );
 
   const loadMeta = useCallback(async () => {
     setLoadingMeta(true);
@@ -340,9 +490,10 @@ export default function PurchaseStockModal({
       const authHeaders = getPosUserAuthHeaders();
       const [partyRes, nextRes, whRows, taxRes] = await Promise.all([
         fetch(`${getPosApiBase()}/clientes`, { headers: { ...authHeaders } }),
-        fetch(`${getPosApiBase()}/documentos/next-number?prefix=${encodeURIComponent('FTF')}&year=${year}`, {
-          headers: { ...authHeaders },
-        }),
+        fetch(
+          `${getPosApiBase()}/documentos/next-number?prefix=${encodeURIComponent(cfg.prefix)}&year=${year}`,
+          { headers: { ...authHeaders } },
+        ),
         fetchWarehouses(),
         fetch(`${getPosApiBase()}/tax-rates`, { headers: { ...authHeaders } }),
       ]);
@@ -359,10 +510,12 @@ export default function PurchaseStockModal({
       const allParties = toPartyOptions(Array.isArray(partyData) ? partyData : []);
 
       let metaById = readPartyMetaById();
-      let suppliers = allParties.filter((party) => isSupplierParty(party.id, metaById));
+      let filtered = isSupplierMode
+        ? allParties.filter((party) => isSupplierParty(party.id, metaById))
+        : allParties.filter((party) => !isSupplierParty(party.id, metaById));
 
       // Sem fornecedor configurado → usar/criar "Fornecedor" por defeito.
-      if (suppliers.length === 0) {
+      if (isSupplierMode && filtered.length === 0) {
         const existingDefault = allParties.find((party) => isDefaultSupplierName(party.name));
         if (existingDefault) {
           writePartyMeta(existingDefault.id, {
@@ -371,7 +524,7 @@ export default function PurchaseStockModal({
             taxExempt: false,
           });
           metaById = readPartyMetaById();
-          suppliers = [existingDefault];
+          filtered = [existingDefault];
         } else {
           const createRes = await fetch(`${getPosApiBase()}/clientes`, {
             method: 'POST',
@@ -393,15 +546,14 @@ export default function PurchaseStockModal({
                 isCustomer: false,
                 taxExempt: false,
               });
-              suppliers = [{ id: createdId, name: DEFAULT_SUPPLIER_NAME }];
+              filtered = [{ id: createdId, name: DEFAULT_SUPPLIER_NAME }];
             }
           }
         }
       }
 
-      setParties(suppliers);
-      setPartyId(suppliers[0]?.id ?? '');
-
+      setParties(filtered);
+      setPartyId(filtered[0]?.id ?? '');
 
       if (nextRes.ok) {
         const nextJson = await nextRes.json();
@@ -411,19 +563,23 @@ export default function PurchaseStockModal({
           payload?.number ||
           payload?.nextNumber ||
           (payload?.sequence != null
-            ? `FTF/${year}/${String(payload.sequence).padStart(5, '0')}`
+            ? `${cfg.prefix}/${year}/${String(payload.sequence).padStart(cfg.prefix === 'FP' || cfg.prefix === 'VD' ? 4 : 5, '0')}`
             : null);
         if (number) setDocNumber(String(number));
-        else setDocNumber(`FTF/${year}/00001`);
+        else setDocNumber(`${cfg.prefix}/${year}/00001`);
       } else {
-        setDocNumber(`FTF/${year}/00001`);
+        setDocNumber(`${cfg.prefix}/${year}/00001`);
       }
     } catch {
-      setError('Não foi possível carregar fornecedores / número do documento.');
+      setError(
+        isSupplierMode
+          ? 'Não foi possível carregar fornecedores / número do documento.'
+          : 'Não foi possível carregar clientes / número do documento.',
+      );
     } finally {
       setLoadingMeta(false);
     }
-  }, [documentDate]);
+  }, [documentDate, cfg.prefix, isSupplierMode]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -435,6 +591,7 @@ export default function PurchaseStockModal({
     setError('');
     setSuccessHint('');
     setPartyId('');
+    resetPaymentState();
 
     const initial = initialProductId
       ? products.find((p) => String(p.id) === String(initialProductId))
@@ -442,6 +599,7 @@ export default function PurchaseStockModal({
     if (initial) {
       const taxRateId = resolveTaxRateId(initial.tax_rate_id, taxRates);
       const lastPurchaseCost = roundMoney(Math.max(0, Number(initial.cost ?? 0) || 0));
+      const sellPrice = roundMoney(Math.max(0, Number(initial.price ?? initial.cost ?? 0) || 0));
       setLines([
         {
           key: newLineKey(),
@@ -449,7 +607,9 @@ export default function PurchaseStockModal({
           name: initial.name,
           unit: initial.unit || 'un',
           quantity: 1,
-          unitPrice: seedPaidUnitPrice(lastPurchaseCost, taxRateId, taxRates),
+          unitPrice: cfg.useCostPrice
+            ? seedPaidUnitPrice(lastPurchaseCost, taxRateId, taxRates)
+            : sellPrice,
           lastPurchaseCost,
           taxRateId,
           trackLot: Boolean(initial.track_lot),
@@ -463,18 +623,18 @@ export default function PurchaseStockModal({
     void loadMeta();
     // Só reinicia ao abrir / mudar produto inicial — não quando `products` muda de referência.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMeta/products/taxRates intencionais
-  }, [isOpen, initialProductId]);
+  }, [isOpen, initialProductId, documentPrefix]);
 
-  const handleSupplierSelect = useCallback((value: string) => {
-    if (value === CREATE_SUPPLIER_OPTION) {
+  const handlePartySelect = useCallback((value: string) => {
+    if (value === CREATE_PARTY_OPTION) {
       setPartyId('');
-      setIsCreateSupplierOpen(true);
+      setIsCreatePartyOpen(true);
       return;
     }
     setPartyId(value);
   }, []);
 
-  const handleSupplierCreated = useCallback(
+  const handlePartyCreated = useCallback(
     async (saved: {
       id: string;
       code: string;
@@ -483,13 +643,13 @@ export default function PurchaseStockModal({
     }) => {
       writePartyMeta(saved.id, {
         active: saved.active,
-        isCustomer: false,
+        isCustomer: !isSupplierMode,
         taxExempt: saved.taxExempt,
         code: saved.code,
       });
-      await refreshSuppliers(saved.id);
+      await refreshParties(saved.id);
     },
-    [refreshSuppliers],
+    [refreshParties, isSupplierMode],
   );
 
   useEffect(() => {
@@ -520,6 +680,10 @@ export default function PurchaseStockModal({
     if (!isOpen) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || saving) return;
+      if (isPaymentOpen) {
+        resetPaymentState();
+        return;
+      }
       if (productMultiOpen) {
         setProductMultiOpen(false);
         return;
@@ -532,18 +696,21 @@ export default function PurchaseStockModal({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose, saving, productPickerOpen, productMultiOpen]);
+  }, [isOpen, onClose, saving, productPickerOpen, productMultiOpen, isPaymentOpen, resetPaymentState]);
 
   const buildPurchaseLine = (product: PurchaseProductOption): PurchaseLine => {
     const taxRateId = resolveTaxRateId(product.tax_rate_id, taxRates) || defaultTaxRateId;
     const lastPurchaseCost = roundMoney(Math.max(0, Number(product.cost ?? 0) || 0));
+    const sellPrice = roundMoney(Math.max(0, Number(product.price ?? product.cost ?? 0) || 0));
     return {
       key: newLineKey(),
       productId: String(product.id),
       name: product.name,
       unit: product.unit || 'un',
       quantity: 1,
-      unitPrice: seedPaidUnitPrice(lastPurchaseCost, taxRateId, taxRates),
+      unitPrice: cfg.useCostPrice
+        ? seedPaidUnitPrice(lastPurchaseCost, taxRateId, taxRates)
+        : sellPrice,
       lastPurchaseCost,
       taxRateId,
       trackLot: Boolean(product.track_lot),
@@ -602,33 +769,68 @@ export default function PurchaseStockModal({
     setLines((prev) => prev.filter((line) => line.key !== key));
   };
 
-  const handleSave = async () => {
-    if (saving) return;
+  const validateDocumentForm = () => {
     setError('');
     setSuccessHint('');
-
     if (!partyId || !selectedParty) {
-      setError('Selecione o fornecedor da compra.');
-      return;
+      setError(
+        isSupplierMode
+          ? 'Selecione o fornecedor da compra.'
+          : 'Selecione o cliente do documento.',
+      );
+      return false;
     }
     if (lines.length === 0) {
-      setError('Adicione pelo menos um produto à compra.');
-      return;
+      setError('Adicione pelo menos um produto.');
+      return false;
     }
     if (lines.some((line) => !(line.quantity > 0))) {
       setError('Todas as quantidades devem ser maiores que zero.');
-      return;
+      return false;
     }
-    if (lines.some((line) => line.trackLot && !String(line.lotCode ?? '').trim())) {
+    if (
+      cfg.useCostPrice &&
+      lines.some((line) => line.trackLot && !String(line.lotCode ?? '').trim())
+    ) {
       setError('Indique o código do lote para os produtos que controlam lote.');
-      return;
+      return false;
     }
-    if (!warehouseId) {
-      setError('Seleccione o armazém destino.');
-      return;
+    if (cfg.showWarehouse && !warehouseId) {
+      setError('Seleccione o armazém.');
+      return false;
     }
+    return true;
+  };
+
+  const openPaymentFlow = async () => {
+    if (!validateDocumentForm()) return;
+    setPaymentFinalizeError(null);
+    try {
+      const methods = await fetchPaymentMethods();
+      setPaymentMethods(methods);
+      if (methods[0]?.name) {
+        setMultiplePaymentMethod(methods[0].name);
+      }
+    } catch {
+      setPaymentMethods([]);
+    }
+    setIsMultiplePayment(false);
+    setPaymentMethod(null);
+    setReceivedAmount('');
+    setPayments([]);
+    setMultiplePaymentAmount('');
+    setIsPaymentOpen(true);
+  };
+
+  const handleSave = async (paymentOverride?: {
+    paid: boolean;
+    paymentMethod: string | null;
+  }) => {
+    if (saving) return;
+    if (!validateDocumentForm()) return;
 
     setSaving(true);
+    setPaymentFinalizeError(null);
     try {
       const items = lines.map((line) => {
         const br = breakdownLine(line, taxRates);
@@ -637,14 +839,16 @@ export default function PurchaseStockModal({
           productId: line.productId,
           name: line.name,
           quantity: line.quantity,
-          // Custo líquido (sem IVA) → camada FIFO / products.cost
           unitPrice: br.unitNet,
           unitGross: br.unitGross,
           taxAmount: br.unitTax,
           taxRateId: line.taxRateId || null,
           taxRate: rate ? Number(rate.rate) || 0 : 0,
           discountAmount: 0,
-          lotCode: line.trackLot ? String(line.lotCode ?? '').trim() || null : null,
+          lotCode:
+            cfg.useCostPrice && line.trackLot
+              ? String(line.lotCode ?? '').trim() || null
+              : null,
           lineNet: br.lineNet,
           lineTax: br.lineTax,
           lineGross: br.lineGross,
@@ -659,21 +863,25 @@ export default function PurchaseStockModal({
         { net: 0, tax: 0, gross: 0 },
       );
 
+      const paid = paymentOverride?.paid ?? cfg.paid;
+      const resolvedPaymentMethod =
+        paymentOverride?.paymentMethod ?? (paid ? 'Dinheiro' : null);
+
       const payload = {
-        documentType: 'Compra',
-        prefix: 'FTF',
+        documentType: cfg.documentType,
+        prefix: cfg.prefix,
         documentDate: `${documentDate}T00:00:00.000Z`,
         dueDate: `${documentDate}T00:00:00.000Z`,
-        paid: false,
-        externalDocument: externalDoc.trim() || null,
-        customerId: selectedParty.id,
-        customerName: selectedParty.name,
-        warehouseId,
+        paid,
+        externalDocument: cfg.showExternalDoc ? externalDoc.trim() || null : null,
+        customerId: selectedParty!.id,
+        customerName: selectedParty!.name,
+        warehouseId: warehouseId || null,
         total: saveTotals.gross,
         subtotal: saveTotals.net,
         tax: saveTotals.tax,
         discount: 0,
-        paymentMethod: null,
+        paymentMethod: resolvedPaymentMethod,
         items: items.map(({ lineNet: _n, lineTax: _t, lineGross: _g, ...item }) => item),
       };
 
@@ -684,22 +892,53 @@ export default function PurchaseStockModal({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        throw new Error(body?.error || body?.message || `Falha ao guardar compra (${res.status})`);
+        throw new Error(body?.error || body?.message || `Falha ao guardar documento (${res.status})`);
       }
 
       const body = await res.json().catch(() => null);
       const savedNumber =
         body?.documentNumber || body?.data?.documentNumber || docNumber;
-      setSuccessHint(`Compra ${savedNumber} registada (não paga). Stock actualizado.`);
+      setSuccessHint(cfg.successHint(String(savedNumber)));
+      resetPaymentState();
       await onSaved();
       window.setTimeout(() => {
         onClose();
       }, 650);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao guardar a compra.');
+      const message = err instanceof Error ? err.message : 'Falha ao guardar o documento.';
+      setError(message);
+      setPaymentFinalizeError(message);
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleFinalizePayment = () => {
+    if (isMultiplePayment) {
+      const paidSum = payments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+      if (payments.length === 0 || paidSum + 0.009 < totals.gross) {
+        setPaymentFinalizeError('Complete o pagamento (valor recebido insuficiente).');
+        return;
+      }
+      void handleSave({
+        paid: true,
+        paymentMethod: payments.map((entry) => entry.method).join(' + '),
+      });
+      return;
+    }
+    if (!paymentMethod) {
+      setPaymentFinalizeError('Seleccione o método de pagamento.');
+      return;
+    }
+    const received = Number(String(receivedAmount).replace(',', '.'));
+    if (!(received > 0) || received + 0.009 < totals.gross) {
+      setPaymentFinalizeError('Indique o valor recebido (igual ou superior ao total).');
+      return;
+    }
+    void handleSave({
+      paid: true,
+      paymentMethod: String(paymentMethod),
+    });
   };
 
   if (!isOpen) return null;
@@ -709,51 +948,63 @@ export default function PurchaseStockModal({
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#0f0f0f] text-zinc-300">
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-6 py-5">
           <div className="mx-auto w-full max-w-6xl">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div
+            className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${
+              cfg.showWarehouse && cfg.showExternalDoc
+                ? 'lg:grid-cols-4'
+                : cfg.showWarehouse || cfg.showExternalDoc
+                  ? 'lg:grid-cols-3'
+                  : 'lg:grid-cols-2'
+            }`}
+          >
             <label className="block min-w-0 space-y-1.5">
               <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                <Building2 size={12} /> Fornecedor
+                <Building2 size={12} /> {cfg.partyLabel}
               </span>
               <PosSelect
                 value={partyId}
-                onChange={handleSupplierSelect}
+                onChange={handlePartySelect}
                 disabled={loadingMeta || saving}
                 size="md"
-                placeholder={parties.length === 0 ? 'A criar fornecedor padrão…' : 'Seleccione o fornecedor…'}
-                options={supplierOptions}
+                placeholder={cfg.partyPlaceholder}
+                options={partyOptions}
               />
             </label>
 
-            <label className="block min-w-0 space-y-1.5">
-              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                Armazém destino
-              </span>
-              <PosSelect
-                value={warehouseId}
-                onChange={setWarehouseId}
-                disabled={loadingMeta || saving || warehouses.length === 0}
-                size="md"
-                placeholder="Seleccione o armazém…"
-                options={warehouses.map((w) => ({
-                  value: w.id,
-                  label: w.isDefault ? `${w.name} (principal)` : w.name,
-                }))}
-              />
-            </label>
+            {cfg.showWarehouse ? (
+              <label className="block min-w-0 space-y-1.5">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                  {cfg.warehouseLabel}
+                </span>
+                <PosSelect
+                  value={warehouseId}
+                  onChange={setWarehouseId}
+                  disabled={loadingMeta || saving || warehouses.length === 0}
+                  size="md"
+                  placeholder="Seleccione o armazém…"
+                  options={warehouses.map((w) => ({
+                    value: w.id,
+                    label: w.isDefault ? `${w.name} (principal)` : w.name,
+                  }))}
+                />
+              </label>
+            ) : null}
 
-            <label className="block min-w-0 space-y-1.5">
-              <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                <FileText size={12} /> Doc. externo
-              </span>
-              <input
-                type="text"
-                value={externalDoc}
-                onChange={(event) => setExternalDoc(event.target.value)}
-                placeholder="Nº da fatura do fornecedor"
-                disabled={saving}
-                className="pos-field h-10 w-full border border-[#3f3f46] px-3 text-sm placeholder:text-zinc-600"
-              />
-            </label>
+            {cfg.showExternalDoc ? (
+              <label className="block min-w-0 space-y-1.5">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                  <FileText size={12} /> Doc. externo
+                </span>
+                <input
+                  type="text"
+                  value={externalDoc}
+                  onChange={(event) => setExternalDoc(event.target.value)}
+                  placeholder="Nº da fatura do fornecedor"
+                  disabled={saving}
+                  className="pos-field h-10 w-full border border-[#3f3f46] px-3 text-sm placeholder:text-zinc-600"
+                />
+              </label>
+            ) : null}
 
             <label className="block min-w-0 space-y-1.5">
               <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
@@ -772,7 +1023,7 @@ export default function PurchaseStockModal({
 
           <div className="mt-5 border-t border-zinc-800 pt-4">
             <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-              Produtos da compra
+              {cfg.productsLabel}
             </span>
             <div className="relative mt-2" ref={productPickerRef}>
               <Search
@@ -842,10 +1093,16 @@ export default function PurchaseStockModal({
             </div>
 
             <div className="mt-3 overflow-hidden rounded-[0.4rem] border border-[#3f3f46]">
-              <div className="grid grid-cols-[minmax(0,1.2fr)_72px_90px_88px_120px_92px_40px] items-center gap-2 border-b border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+              <div
+                className={`grid items-center gap-2 border-b border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500 ${
+                  cfg.useCostPrice
+                    ? 'grid-cols-[minmax(0,1.2fr)_72px_90px_88px_120px_92px_40px]'
+                    : 'grid-cols-[minmax(0,1.2fr)_72px_88px_120px_92px_40px]'
+                }`}
+              >
                 <span>Produto</span>
                 <span className="block w-full text-right">Qtd</span>
-                <span className="block w-full text-left">Lote</span>
+                {cfg.useCostPrice ? <span className="block w-full text-left">Lote</span> : null}
                 <span className="block w-full text-right">Pago/un</span>
                 <span className="block w-full text-left">Imposto</span>
                 <span className="block w-full text-right">Total</span>
@@ -862,12 +1119,18 @@ export default function PurchaseStockModal({
                     return (
                       <div
                         key={line.key}
-                        className="grid grid-cols-[minmax(0,1.2fr)_72px_90px_88px_120px_92px_40px] items-start gap-2 px-3 py-2"
+                        className={`grid items-start gap-2 px-3 py-2 ${
+                          cfg.useCostPrice
+                            ? 'grid-cols-[minmax(0,1.2fr)_72px_90px_88px_120px_92px_40px]'
+                            : 'grid-cols-[minmax(0,1.2fr)_72px_88px_120px_92px_40px]'
+                        }`}
                       >
                         <div className="min-w-0 pt-1.5">
                           <p className="truncate text-sm font-medium text-zinc-100">{line.name}</p>
                           <p className="text-[10px] text-zinc-500">
-                            Último custo de compra {formatMoneyMt(line.lastPurchaseCost ?? 0)}
+                            {cfg.useCostPrice
+                              ? `Último custo de compra ${formatMoneyMt(line.lastPurchaseCost ?? 0)}`
+                              : `Preço de venda ${formatMoneyMt(line.unitPrice)}`}
                           </p>
                         </div>
                         <input
@@ -883,20 +1146,22 @@ export default function PurchaseStockModal({
                           disabled={saving}
                           className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm"
                         />
-                        {line.trackLot ? (
-                          <input
-                            type="text"
-                            value={line.lotCode ?? ''}
-                            onChange={(event) =>
-                              updateLine(line.key, { lotCode: event.target.value })
-                            }
-                            disabled={saving}
-                            placeholder="Lote"
-                            className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-sm"
-                          />
-                        ) : (
-                          <span className="flex h-9 items-center justify-center text-xs text-zinc-600">—</span>
-                        )}
+                        {cfg.useCostPrice ? (
+                          line.trackLot ? (
+                            <input
+                              type="text"
+                              value={line.lotCode ?? ''}
+                              onChange={(event) =>
+                                updateLine(line.key, { lotCode: event.target.value })
+                              }
+                              disabled={saving}
+                              placeholder="Lote"
+                              className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-sm"
+                            />
+                          ) : (
+                            <span className="flex h-9 items-center justify-center text-xs text-zinc-600">—</span>
+                          )
+                        ) : null}
                         <input
                           type="number"
                           min={0}
@@ -975,11 +1240,23 @@ export default function PurchaseStockModal({
           <button
             type="button"
             disabled={saving || loadingMeta}
-            onClick={() => void handleSave()}
+            onClick={() => {
+              if (cfg.requirePayment) {
+                void openPaymentFlow();
+                return;
+              }
+              void handleSave();
+            }}
             className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:opacity-50"
           >
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <PackagePlus size={16} />}
-            Guardar compra
+            {saving ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : cfg.requirePayment ? (
+              <Banknote size={16} />
+            ) : (
+              <PackagePlus size={16} />
+            )}
+            {cfg.saveLabel}
           </button>
         </div>
       </div>
@@ -993,10 +1270,60 @@ export default function PurchaseStockModal({
       />
 
       <CustomerSupplierFormModal
-        isOpen={isCreateSupplierOpen}
-        initialValues={supplierCreateDefaults}
-        onClose={() => setIsCreateSupplierOpen(false)}
-        onSaved={handleSupplierCreated}
+        isOpen={isCreatePartyOpen}
+        initialValues={partyCreateDefaults}
+        onClose={() => setIsCreatePartyOpen(false)}
+        onSaved={handlePartyCreated}
+      />
+
+      <PaymentModal
+        isOpen={isPaymentOpen}
+        onClose={() => {
+          if (saving) return;
+          resetPaymentState();
+        }}
+        selectedCustomer={
+          selectedParty
+            ? { id: selectedParty.id, name: selectedParty.name, phone: '' }
+            : null
+        }
+        customerName={selectedParty?.name || ''}
+        tableNumber=""
+        cart={paymentCart}
+        globalDiscount={null}
+        originalTotal={totals.gross}
+        subtotal={totals.net}
+        tax={totals.tax}
+        totalDiscount={0}
+        total={totals.gross}
+        paymentMethods={paymentMethods}
+        isMultiplePayment={isMultiplePayment}
+        onToggleMultiplePayment={() => {
+          setIsMultiplePayment((prev) => !prev);
+          setPayments([]);
+          setPaymentMethod(null);
+          setReceivedAmount('');
+        }}
+        paymentMethod={paymentMethod}
+        setPaymentMethod={setPaymentMethod}
+        receivedAmount={receivedAmount}
+        setReceivedAmount={setReceivedAmount}
+        payments={payments}
+        setPayments={setPayments}
+        multiplePaymentMethod={multiplePaymentMethod}
+        setMultiplePaymentMethod={setMultiplePaymentMethod}
+        multiplePaymentAmount={multiplePaymentAmount}
+        setMultiplePaymentAmount={setMultiplePaymentAmount}
+        onFinalize={handleFinalizePayment}
+        isFinalizing={saving}
+        finalizeError={paymentFinalizeError}
+        isReceiptPrintEnabled={false}
+        onToggleReceiptPrint={() => undefined}
+        formatPrice={formatMoneyMt}
+        docType="VD"
+        title="Finalizar Pagamento"
+        contextLabel={docNumber ? `Doc: ${docNumber}` : 'Venda a dinheiro'}
+        hideReceiptPrint
       />
     </>
   );

@@ -17,7 +17,7 @@ export function ConfirmDialog({
 }: {
   isOpen: boolean;
   title?: string;
-  message: string;
+  message: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   tone?: 'danger' | 'default';
@@ -76,9 +76,9 @@ export function ConfirmDialog({
               >
                 {icon ?? <Power size={22} />}
               </div>
-              <p id="posly-confirm-message" className="text-[15px] leading-relaxed text-zinc-300 pt-2">
-                {message}
-              </p>
+              <div id="posly-confirm-message" className="text-[15px] leading-relaxed text-zinc-300 pt-2 space-y-2">
+                {typeof message === 'string' ? <p>{message}</p> : message}
+              </div>
             </div>
 
             <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-3 bg-[#1a1a1a]">

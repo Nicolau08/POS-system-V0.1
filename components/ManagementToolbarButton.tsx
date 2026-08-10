@@ -27,7 +27,7 @@ export function ManagementToolbarButton({
       onClick={onClick}
       title={title}
       className={`group flex min-w-[82px] flex-col items-center justify-center rounded px-2 py-2 transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-white disabled:cursor-not-allowed disabled:opacity-35 ${
-        active ? 'bg-[var(--pos-brand-selected-bg)] text-white' : 'text-zinc-400'
+        active ? 'bg-[var(--pos-brand-selected-bg)] text-white' : 'text-zinc-300'
       }`}
     >
       <span className="mb-1 transition-transform group-hover:scale-110">{icon}</span>

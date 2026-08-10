@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import {
   REPORT_DEFINITIONS,
   buildReport,
@@ -74,6 +75,22 @@ const mtCurrencyFormatter = new Intl.NumberFormat('pt-PT', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+
+/** Nome do produto no rodapé dos relatórios. */
+const REPORT_SYSTEM_NAME = 'POSly';
+
+const TENANT_FOOTER_CACHE_KEY = 'pos:tenant-footer-cache';
+
+function readCachedStoreName(): string {
+  try {
+    const raw = sessionStorage.getItem(TENANT_FOOTER_CACHE_KEY);
+    if (!raw) return '';
+    const parsed = JSON.parse(raw) as { name?: string };
+    return String(parsed?.name ?? '').trim();
+  } catch {
+    return '';
+  }
+}
 
 const dateFormatter = new Intl.DateTimeFormat('pt-PT', {
   day: '2-digit',
@@ -344,6 +361,24 @@ export default function ReportsManager() {
   const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [storeName, setStoreName] = useState(() => readCachedStoreName() || 'Loja');
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadStoreName = async () => {
+      try {
+        const data = await fetchLocalJson('/tenant/info');
+        const name = String((data as { name?: string })?.name ?? '').trim();
+        if (!cancelled && name) setStoreName(name);
+      } catch {
+        /* mantém cache / fallback */
+      }
+    };
+    void loadStoreName();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filteredReports = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
@@ -486,7 +521,7 @@ export default function ReportsManager() {
         { label: partyLabel, value: customerName },
         { label: 'Grupo', value: categoryName },
         { label: 'Produto', value: productName },
-        { label: 'Pagamento', value: selectedPaymentMethod === 'all' ? 'Todos' : selectedPaymentMethod },
+        { label: 'Pagamento', value: selectedPaymentMethod === 'all' ? 'Todos' : formatPaymentMethodLabel(selectedPaymentMethod, selectedPaymentMethod) },
         { label: 'Estado', value: selectedStatus === 'all' ? 'Concluídas / Aprovadas' : selectedStatus },
       ],
     };
@@ -685,7 +720,7 @@ export default function ReportsManager() {
                       </div>
                       <div>
                         <div className="text-sm font-bold">{report.title}</div>
-                        <div className="text-xs text-zinc-400 mt-0.5">{report.description}</div>
+                        <div className="text-xs text-zinc-500 mt-0.5">{report.description}</div>
                       </div>
                     </button>
                   ))}
@@ -719,7 +754,7 @@ export default function ReportsManager() {
               label="Método de pagamento"
               value={selectedPaymentMethod}
               onChange={setSelectedPaymentMethod}
-              options={[{ value: 'all', label: 'Todos' }, ...paymentMethods.map((item) => ({ value: item, label: item }))]}
+              options={[{ value: 'all', label: 'Todos' }, ...paymentMethods.map((item) => ({ value: item, label: formatPaymentMethodLabel(item, item) }))]}
             />
 
             <FilterSelect
@@ -753,7 +788,7 @@ export default function ReportsManager() {
               <label className="block text-sm font-medium text-zinc-100 mb-2">Período</label>
               <button
                 onClick={openPeriodModal}
-                className="pos-select-trigger h-auto w-full gap-3 !bg-[#131314] px-4 py-3 text-left"
+                className="pos-select-trigger h-auto w-full gap-3 px-4 py-3 text-left"
               >
                 <CalendarDays size={16} className="shrink-0 text-zinc-300" />
                 <span className="flex-1 text-center text-sm text-white">
@@ -935,8 +970,10 @@ export default function ReportsManager() {
                 </div>
 
                 <div className="report-footer mt-auto pt-24 text-[11px] text-zinc-700 grid grid-cols-[1fr_1fr_80px] items-end gap-3">
-                  <span>NINO POS - Software de Gestao</span>
-                  <span className="text-center">Licenciado a: Cliente / Loja</span>
+                  <span>
+                    {REPORT_SYSTEM_NAME} - Software de Gestão
+                  </span>
+                  <span className="text-center">Licenciado a: {storeName}</span>
                   <span className="text-right">1/1</span>
                 </div>
               </div>
@@ -1098,8 +1135,8 @@ function ActionButton({
       disabled={disabled}
       className={`flex items-center justify-center gap-2 min-h-11 px-3 py-3 border rounded text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
-          ? 'border-[#0001fb] bg-[#0001fb] text-white hover:bg-[#1a1bff]'
-          : 'border-zinc-700 bg-[#131314] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+          ? 'pos-on-accent border-[#0001fb] bg-[#0001fb] text-white hover:bg-[#1a1bff]'
+          : 'border-zinc-600 bg-[var(--pos-field-bg)] text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
       }`}
     >
       {icon}

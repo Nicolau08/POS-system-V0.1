@@ -272,7 +272,7 @@ export function AdminPanel({
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        initialSection="display"
+        initialSection="basicas"
       />
     </>
   );

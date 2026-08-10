@@ -168,7 +168,7 @@ export function Cart({
                   e.stopPropagation();
                   onEditItemQuantity(item);
                 }}
-                className={`flex justify-between items-center p-3 border rounded transition-colors group cursor-pointer ${
+                className={`flex justify-between items-center p-3 border rounded transition-colors cursor-pointer ${
                   selectedCartItemId === item.id
                     ? 'bg-[var(--pos-brand-selected-bg)] border-[rgba(0,1,251,0.5)]'
                     : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/50'
@@ -197,32 +197,38 @@ export function Cart({
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-sm font-bold text-zinc-100">{formatPrice(item.price * item.quantity)}</span>
-                  {allowItemNotes && onEditItemNotes ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditItemNotes(item);
-                      }}
-                      className={`transition-all ${
-                        item.notes
-                          ? 'text-amber-400 opacity-100'
-                          : 'text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-300'
-                      }`}
-                      title="Nota para cozinha"
-                    >
-                      <MessageSquare size={14} />
-                    </button>
+                  {selectedCartItemId === item.id ? (
+                    <>
+                      {allowItemNotes && onEditItemNotes ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditItemNotes(item);
+                          }}
+                          className={`transition-colors ${
+                            item.notes
+                              ? 'text-amber-400 hover:text-amber-300'
+                              : 'text-zinc-500 hover:text-amber-300'
+                          }`}
+                          title="Nota para cozinha"
+                        >
+                          <MessageSquare size={14} />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveItem(item.id);
+                        }}
+                        className="text-zinc-500 hover:text-red-400 transition-colors"
+                        title="Remover artigo"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </>
                   ) : null}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemoveItem(item.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-red-400 transition-all"
-                  >
-                    <Trash2 size={14} />
-                  </button>
                 </div>
               </motion.div>
             ))}
@@ -258,7 +264,7 @@ export function Cart({
           disabled={cart.length === 0}
           className={`flex w-full flex-col items-center justify-center py-3 rounded transition-colors ${
             cart.length > 0
-              ? 'bg-[#00993e] hover:bg-[#00ad46] text-white'
+              ? 'pos-on-accent bg-[#00993e] hover:bg-[#00ad46] text-white'
               : 'bg-zinc-800 text-zinc-700 cursor-not-allowed opacity-50'
           }`}
         >

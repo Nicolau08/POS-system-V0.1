@@ -268,7 +268,7 @@ export default function ProductsManager() {
     } catch {
       return false;
     }
-  }, [isEditProductModalOpen]);
+  }, []);
 
   const formatPrice = (value: number) => formatMoneyMt(value);
 
@@ -1226,7 +1226,7 @@ export default function ProductsManager() {
             <div className="flex border-b border-zinc-800">
               <button
                 type="button"
-                className="relative px-6 py-2 text-[11px] font-medium bg-[#0001fb] text-white"
+                className="pos-on-accent relative px-6 py-2 text-[11px] font-medium bg-[#0001fb] text-white"
               >
                 Detalhes
                 <span className="absolute left-1/2 -bottom-[6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#0001fb]" />
@@ -1235,25 +1235,25 @@ export default function ProductsManager() {
             </div>
 
             <form id="category-form" onSubmit={handleSaveCategory} className="p-6 space-y-5 bg-[#1a1a1a]">
-              <div className="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-[11px] text-zinc-400">
+              <div className="rounded border border-zinc-600 bg-zinc-800/50 px-3 py-2 text-[11px] text-zinc-400">
                 Caminho:{' '}
                 <span className="font-medium text-zinc-200">{categoryPathPreview}</span>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-400">Nome</label>
+                <label className="text-xs font-medium text-zinc-300">Nome</label>
                 <input
                   type="text"
                   autoFocus
                   required
                   value={categoryForm.name}
                   onChange={(e) => setCategoryForm((prev) => ({ ...prev, name: e.target.value }))}
-                  className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:border-blue-500 outline-none transition-colors"
+                  className="pos-field px-3 py-2 text-sm"
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-400">Grupo pai</label>
+                <label className="text-xs font-medium text-zinc-300">Grupo pai</label>
                 <PosSelect
                   value={categoryForm.parent_id}
                   onChange={(v) => setCategoryForm((prev) => ({ ...prev, parent_id: v }))}
@@ -1268,14 +1268,14 @@ export default function ProductsManager() {
                       })),
                   ]}
                 />
-                <p className="text-[10px] text-zinc-500">
+                <p className="text-[10px] text-zinc-400">
                   Com um grupo seleccionado na árvore, «Novo grupo» cria automaticamente um subgrupo.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <label className="text-xs text-zinc-400">Cor</label>
+                  <label className="text-xs font-medium text-zinc-300">Cor</label>
                   <button
                     type="button"
                     onClick={() =>
@@ -1284,7 +1284,7 @@ export default function ProductsManager() {
                         color: randomCategoryColor(prev.color),
                       }))
                     }
-                    className="text-[10px] font-medium uppercase tracking-wide text-zinc-400 hover:text-white transition-colors"
+                    className="text-[10px] font-medium uppercase tracking-wide text-zinc-300 hover:text-[#0001fb] transition-colors"
                   >
                     Gerar outra
                   </button>
@@ -1299,7 +1299,7 @@ export default function ProductsManager() {
                         title={swatch}
                         onClick={() => setCategoryForm((prev) => ({ ...prev, color: swatch }))}
                         className={`h-8 w-8 rounded border-2 transition-transform ${
-                          active ? 'border-white scale-110' : 'border-transparent hover:scale-105'
+                          active ? 'border-zinc-900 scale-110' : 'border-transparent hover:scale-105'
                         }`}
                         style={{ backgroundColor: swatch }}
                       />
@@ -1308,7 +1308,7 @@ export default function ProductsManager() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span
-                    className="h-9 w-9 shrink-0 rounded border border-zinc-700"
+                    className="h-9 w-9 shrink-0 rounded border border-zinc-600"
                     style={{ backgroundColor: categoryForm.color || '#2563eb' }}
                   />
                   <input
@@ -1316,7 +1316,7 @@ export default function ProductsManager() {
                     value={categoryForm.color}
                     onChange={(e) => setCategoryForm((prev) => ({ ...prev, color: e.target.value }))}
                     placeholder="#2563eb"
-                    className="w-full bg-[#1a1a1a] border border-zinc-800 rounded px-3 py-2 text-sm text-white font-mono focus:border-blue-500 outline-none transition-colors"
+                    className="pos-field px-3 py-2 text-sm font-mono"
                   />
                 </div>
               </div>
@@ -1326,7 +1326,7 @@ export default function ProductsManager() {
               <button
                 type="submit"
                 form="category-form"
-                className="flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
+                className="pos-on-accent flex items-center gap-2 px-6 py-2 rounded bg-[#0001fb] text-xs font-medium text-white transition-colors hover:bg-[#1a1bff]"
               >
                 <Check size={16} />
                 Salvar
@@ -1334,7 +1334,7 @@ export default function ProductsManager() {
               <button
                 type="button"
                 onClick={() => setIsCategoryModalOpen(false)}
-                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
+                className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-600 bg-transparent text-xs font-medium text-zinc-200 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
               >
                 <X size={16} />
                 Cancelar

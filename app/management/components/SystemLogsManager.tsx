@@ -1,9 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, ScrollText, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshCw, Search } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import PosSelect from '@/components/PosSelect';
+
+type LogSource = 'app' | 'audit' | 'sync';
 
 type LogItem = {
   id: string;
@@ -18,41 +21,60 @@ type LogItem = {
   error?: unknown;
 };
 
-function levelClass(level: string) {
-  switch (String(level).toLowerCase()) {
-    case 'error':
-      return 'text-red-400 bg-red-500/10 border-red-500/30';
-    case 'warn':
-      return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
-    case 'debug':
-      return 'text-zinc-400 bg-zinc-500/10 border-zinc-500/30';
-    default:
-      return 'text-sky-400 bg-sky-500/10 border-sky-500/30';
+const SOURCE_TABS: Array<{ id: LogSource; label: string }> = [
+  { id: 'app', label: 'Operacionais' },
+  { id: 'sync', label: 'Sincronismo' },
+  { id: 'audit', label: 'Auditoria' },
+];
+
+function actionBadgeClass(level: string, event: string) {
+  const lvl = String(level || '').toLowerCase();
+  const ev = String(event || '').toLowerCase();
+  if (lvl === 'error' || ev.includes('delete') || ev.includes('fail') || ev.includes('blocked')) {
+    return 'bg-red-500/20 text-red-300 border-red-500/35';
   }
+  if (lvl === 'warn' || ev.includes('skip') || ev.includes('change') || ev.includes('update')) {
+    return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
+  }
+  if (ev.includes('create') || ev.includes('insert') || ev.includes('add')) {
+    return 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+  }
+  if (ev.includes('sync')) {
+    return 'bg-violet-500/15 text-violet-300 border-violet-500/30';
+  }
+  if (lvl === 'debug') {
+    return 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30';
+  }
+  return 'bg-zinc-500/15 text-zinc-200 border-zinc-500/30';
 }
 
-function formatWhen(value: string) {
+function formatActionLabel(event: string) {
+  const raw = String(event || '').trim();
+  if (!raw) return 'Evento';
+  const parts = raw.split('.');
+  const last = parts[parts.length - 1] || raw;
+  return last.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatDate(value: string) {
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString('pt-PT', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  if (Number.isNaN(d.getTime())) return { date: value, time: '' };
+  return {
+    date: d.toLocaleDateString('pt-PT', { day: '2-digit', month: 'short', year: 'numeric' }),
+    time: d.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+  };
 }
 
-export default function SystemLogsManager() {
+export default function SystemLogsManager({ embedded = false }: { embedded?: boolean }) {
   const [items, setItems] = useState<LogItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [source, setSource] = useState<'app' | 'audit' | 'sync'>('app');
+  const [source, setSource] = useState<LogSource>('app');
   const [level, setLevel] = useState('');
+  const [qDraft, setQDraft] = useState('');
   const [q, setQ] = useState('');
-  const [selected, setSelected] = useState<LogItem | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -74,7 +96,7 @@ export default function SystemLogsManager() {
       const data = unwrapApiSuccessPayload<{ items?: LogItem[]; total?: number }>(json) ?? json;
       setItems(Array.isArray(data?.items) ? data.items : []);
       setTotal(Number(data?.total ?? 0));
-      setSelected(null);
+      setExpandedId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar logs');
       setItems([]);
@@ -88,176 +110,193 @@ export default function SystemLogsManager() {
     void load();
   }, [load]);
 
+  const subtitle = useMemo(() => {
+    if (source === 'audit') return 'Alterações de negócio e acções de utilizadores.';
+    if (source === 'sync') return 'Eventos de sincronização com a cloud.';
+    return 'Actividade operacional da aplicação.';
+  }, [source]);
+
+  const applySearch = () => setQ(qDraft.trim());
+
+  const handleRefresh = () => {
+    const next = qDraft.trim();
+    if (next !== q) {
+      setQ(next);
+      return;
+    }
+    void load();
+  };
+
   return (
-    <div className="h-full flex flex-col gap-4 p-4">
-      <div className="flex flex-wrap items-end gap-3 justify-between">
+    <div className={`h-full flex flex-col gap-5 ${embedded ? 'p-0' : 'p-4'}`}>
+      {!embedded ? (
         <div>
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <ScrollText size={20} className="text-zinc-400" />
-            Logs do sistema
-          </h2>
-          <p className="text-sm text-zinc-500 mt-1">
-            O quê aconteceu, quando, onde e porquê — operacional e auditoria.
-          </p>
+          <h2 className="text-xl font-semibold text-white tracking-tight">Actividade</h2>
+          <p className="text-sm text-zinc-500 mt-1">{subtitle}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="h-10 px-4 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-medium inline-flex items-center gap-2"
-        >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Actualizar
-        </button>
-      </div>
-
-      <div className="flex flex-wrap gap-2 items-center">
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value as 'app' | 'audit' | 'sync')}
-          className="h-10 rounded bg-zinc-900 border border-zinc-700 px-3 text-sm text-zinc-200"
-        >
-          <option value="app">Operacionais</option>
-          <option value="sync">Sincronismo</option>
-          <option value="audit">Auditoria</option>
-        </select>
-        {source === 'app' && (
-          <select
-            value={level}
-            onChange={(e) => setLevel(e.target.value)}
-            className="h-10 rounded bg-zinc-900 border border-zinc-700 px-3 text-sm text-zinc-200"
-          >
-            <option value="">Todos os níveis</option>
-            <option value="error">error</option>
-            <option value="warn">warn</option>
-            <option value="info">info</option>
-          </select>
-        )}
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void load();
-            }}
-            placeholder="Pesquisar mensagem, evento, módulo…"
-            className="w-full h-10 rounded bg-zinc-900 border border-zinc-700 pl-9 pr-3 text-sm text-zinc-200"
-          />
-        </div>
-        <span className="text-xs text-zinc-500">{total} registos</span>
-      </div>
-
-      {error && (
-        <div className="rounded border border-red-500/30 bg-red-500/10 text-red-300 text-sm px-3 py-2">
-          {error}
-        </div>
+      ) : (
+        <p className="text-sm text-zinc-500 -mt-1">{subtitle}</p>
       )}
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-3">
-        <div className="overflow-auto rounded border border-zinc-800 bg-zinc-950/60">
-          <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-zinc-900 text-zinc-400 text-xs uppercase tracking-wide">
-              <tr>
-                <th className="px-3 py-2 font-medium">Quando</th>
-                <th className="px-3 py-2 font-medium">Nível</th>
-                <th className="px-3 py-2 font-medium">Evento</th>
-                <th className="px-3 py-2 font-medium">Mensagem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 && !loading && (
-                <tr>
-                  <td colSpan={4} className="px-3 py-8 text-center text-zinc-500">
-                    Sem logs para os filtros seleccionados.
-                  </td>
-                </tr>
-              )}
-              {items.map((item) => (
-                <tr
-                  key={item.id}
-                  onClick={() => setSelected(item)}
-                  className={`border-t border-zinc-800/80 cursor-pointer hover:bg-zinc-900/80 ${
-                    selected?.id === item.id ? 'bg-zinc-900' : ''
-                  }`}
-                >
-                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap text-xs">
-                    {formatWhen(item.when)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={`inline-flex px-2 py-0.5 rounded border text-[10px] font-bold uppercase ${levelClass(
-                        item.level,
-                      )}`}
-                    >
-                      {item.level}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-zinc-300 font-mono text-xs">{item.event}</td>
-                  <td className="px-3 py-2 text-zinc-200 truncate max-w-[420px]">{item.message}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="inline-flex w-fit rounded-lg bg-zinc-900/90 p-1 border border-zinc-800">
+        {SOURCE_TABS.map((tab) => {
+          const active = source === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => {
+                setSource(tab.id);
+                setLevel('');
+              }}
+              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                active ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px] max-w-md">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+          <input
+            value={qDraft}
+            onChange={(e) => setQDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') applySearch();
+            }}
+            placeholder="Pesquisar histórico…"
+            className="w-full h-10 rounded-lg bg-zinc-900 border border-zinc-700/80 pl-9 pr-3 text-sm text-zinc-200 placeholder:text-zinc-500 outline-none focus:border-zinc-500"
+          />
         </div>
 
-        <div className="rounded border border-zinc-800 bg-zinc-950/60 p-4 overflow-auto">
-          {!selected ? (
-            <p className="text-sm text-zinc-500">Seleccione um registo para ver o detalhe completo.</p>
-          ) : (
-            <div className="space-y-3 text-sm">
-              <div>
-                <div className="text-xs uppercase text-zinc-500 tracking-wide">Mensagem</div>
-                <div className="text-white font-medium mt-1">{selected.message}</div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs uppercase text-zinc-500">Quando</div>
-                  <div className="text-zinc-200 mt-1">{formatWhen(selected.when)}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase text-zinc-500">Evento</div>
-                  <div className="text-zinc-200 mt-1 font-mono text-xs">{selected.event}</div>
-                </div>
-              </div>
-              <div>
-                <div className="text-xs uppercase text-zinc-500">Onde</div>
-                <div className="text-zinc-200 mt-1">
-                  {[selected.where?.source, selected.where?.module, selected.where?.action]
-                    .filter(Boolean)
-                    .join(' · ') || '—'}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs uppercase text-zinc-500">Porquê</div>
-                <div className="text-zinc-200 mt-1">{selected.why || '—'}</div>
-              </div>
-              <div>
-                <div className="text-xs uppercase text-zinc-500">Quem</div>
-                <div className="text-zinc-200 mt-1">
-                  {selected.who?.name || selected.who?.id
-                    ? `${selected.who?.name ?? '—'} (${selected.who?.id ?? '—'})`
-                    : '—'}
-                </div>
-              </div>
-              {selected.error != null && (
-                <div>
-                  <div className="text-xs uppercase text-zinc-500">Erro</div>
-                  <pre className="mt-1 text-xs text-red-300 whitespace-pre-wrap break-all bg-black/40 rounded p-2 border border-red-500/20">
-                    {typeof selected.error === 'string'
-                      ? selected.error
-                      : JSON.stringify(selected.error, null, 2)}
-                  </pre>
-                </div>
-              )}
-              <div>
-                <div className="text-xs uppercase text-zinc-500">Contexto</div>
-                <pre className="mt-1 text-xs text-zinc-400 whitespace-pre-wrap break-all bg-black/40 rounded p-2 border border-zinc-800">
-                  {JSON.stringify(selected.context ?? {}, null, 2)}
-                </pre>
-              </div>
-            </div>
-          )}
+        {source === 'app' ? (
+          <PosSelect
+            value={level}
+            onChange={setLevel}
+            options={[
+              { value: '', label: 'Todos os níveis' },
+              { value: 'error', label: 'Erros' },
+              { value: 'warn', label: 'Avisos' },
+              { value: 'info', label: 'Info' },
+            ]}
+            size="md"
+            className="w-[180px]"
+            triggerClassName="!bg-zinc-900 !border-zinc-700/80"
+          />
+        ) : null}
+
+        <button
+          type="button"
+          onClick={handleRefresh}
+          className="h-10 px-3 rounded-lg bg-zinc-900 border border-zinc-700/80 text-zinc-300 text-sm hover:bg-zinc-800 hover:text-white inline-flex items-center gap-2"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          Actualizar
+        </button>
+
+        <span className="ml-auto text-xs text-zinc-500">{total} registos</span>
+      </div>
+
+      {error ? (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-sm px-3 py-2">
+          {error}
         </div>
+      ) : null}
+
+      <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-zinc-800/80 bg-[#141414]">
+        <table className="w-full text-left text-sm">
+          <thead className="sticky top-0 z-10 bg-[#1a1a1a] text-zinc-500 text-[11px] uppercase tracking-wider">
+            <tr className="border-b border-zinc-800">
+              <th className="px-4 py-3 font-medium w-[72px]">ID</th>
+              <th className="px-4 py-3 font-medium whitespace-nowrap">Data</th>
+              <th className="px-4 py-3 font-medium whitespace-nowrap">Hora</th>
+              <th className="px-4 py-3 font-medium min-w-[140px]">Acção</th>
+              <th className="px-4 py-3 font-medium">Descrição</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && !loading ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-12 text-center text-zinc-500">
+                  Sem actividade para os filtros seleccionados.
+                </td>
+              </tr>
+            ) : null}
+            {items.map((item) => {
+              const { date, time } = formatDate(item.when);
+              const expanded = expandedId === item.id;
+              const whereLine = [item.where?.module, item.where?.action].filter(Boolean).join(' · ');
+
+              return (
+                <tr
+                  key={item.id}
+                  onClick={() => setExpandedId(expanded ? null : item.id)}
+                  className={`border-b border-zinc-800/70 cursor-pointer transition-colors ${
+                    expanded ? 'bg-zinc-900/70' : 'hover:bg-zinc-900/40'
+                  }`}
+                >
+                  <td className="px-4 py-3.5 align-top text-zinc-500 font-mono text-xs">
+                    {String(item.id).slice(0, 8)}
+                  </td>
+                  <td className="px-4 py-3.5 align-top text-zinc-300 whitespace-nowrap">{date}</td>
+                  <td className="px-4 py-3.5 align-top text-zinc-400 whitespace-nowrap">{time}</td>
+                  <td className="px-4 py-3.5 align-top">
+                    <span
+                      className={`inline-flex max-w-[180px] truncate px-2 py-1 rounded-md border text-[11px] font-medium ${actionBadgeClass(
+                        item.level,
+                        item.event,
+                      )}`}
+                      title={item.event}
+                    >
+                      {formatActionLabel(item.event)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5 align-top">
+                    <div className="text-zinc-200 leading-snug truncate">
+                      {item.message}
+                      {(item.why || whereLine) ? (
+                        <span className="text-zinc-500">
+                          {' — '}
+                          {[whereLine, item.why].filter(Boolean).join(' — ')}
+                        </span>
+                      ) : null}
+                    </div>
+                    {expanded ? (
+                      <div className="mt-3 space-y-2 text-xs">
+                        <div className="text-zinc-500">
+                          Evento: <span className="font-mono text-zinc-300">{item.event}</span>
+                          {' · '}
+                          Nível: <span className="uppercase text-zinc-300">{item.level}</span>
+                          {item.who?.name || item.who?.id ? (
+                            <>
+                              {' · '}
+                              Utilizador:{' '}
+                              <span className="text-zinc-300">{item.who?.name || item.who?.id}</span>
+                            </>
+                          ) : null}
+                        </div>
+                        {item.error != null ? (
+                          <pre className="text-red-300 whitespace-pre-wrap break-all bg-black/40 rounded-lg p-2.5 border border-red-500/20">
+                            {typeof item.error === 'string'
+                              ? item.error
+                              : JSON.stringify(item.error, null, 2)}
+                          </pre>
+                        ) : null}
+                        <pre className="text-zinc-400 whitespace-pre-wrap break-all bg-black/40 rounded-lg p-2.5 border border-zinc-800 max-h-48 overflow-auto">
+                          {JSON.stringify(item.context ?? {}, null, 2)}
+                        </pre>
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

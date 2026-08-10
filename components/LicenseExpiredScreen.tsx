@@ -27,8 +27,32 @@ function formatExpirationPt(iso: string | null): string {
   }).format(new Date(parsed));
 }
 
-function digitsOnly(value: string): string {
-  return value.replace(/\D/g, '');
+/** Mensagens longas de formato/token → texto curto no ecrã. */
+function normalizeActivationError(message: string): string {
+  const text = String(message ?? '').trim();
+  if (!text) return 'Token errado.';
+  if (/já foi utilizado/i.test(text)) {
+    return 'Este token já foi utilizado. Peça um novo na consola.';
+  }
+  if (/Token expirado/i.test(text) || /token.*expirad/i.test(text)) {
+    return 'Token expirado. Gere outro na consola de licenças.';
+  }
+  if (
+    /formato de licen/i.test(text) ||
+    /formato da chave/i.test(text) ||
+    /base64/i.test(text) ||
+    /chave de licen[cç]a inv[aá]lida/i.test(text)
+  ) {
+    return 'Token errado.';
+  }
+  // Não colapsar "Token inválido..." genérico se a mensagem já for clara da consola.
+  if (/ainda está expirada na consola/i.test(text)) {
+    return text;
+  }
+  if (/token (de reativa[cç][aã]o )?inv[aá]lido/i.test(text) && text.length < 80) {
+    return 'Token errado.';
+  }
+  return text;
 }
 
 export default function LicenseExpiredScreen({
@@ -37,7 +61,6 @@ export default function LicenseExpiredScreen({
   isRevalidating = false,
   isActivating = false,
   hasElectronActivation = false,
-  onRevalidate,
   onActivate,
 }: LicenseExpiredScreenProps) {
   const [licenseKey, setLicenseKey] = useState('');
@@ -53,7 +76,7 @@ export default function LicenseExpiredScreen({
     setSuccess(null);
     const trimmedKey = licenseKey.trim();
     if (!trimmedKey) {
-      setError('Introduza o código de renovação.');
+      setError('Introduza o token de ativação.');
       return;
     }
     if (!onActivate) {
@@ -68,18 +91,14 @@ export default function LicenseExpiredScreen({
     } catch (submitError) {
       const message =
         submitError instanceof Error ? submitError.message : 'Falha ao ativar licença.';
-      setError(message);
+      setError(normalizeActivationError(message));
     }
-  };
-
-  const handleContactSupport = () => {
-    window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Renovação de licença POSly')}`;
   };
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#121212] px-4 text-zinc-200">
-      <section className="w-full max-w-2xl rounded-xl border border-rose-900/70 bg-[#0f0f0f] p-8 shadow-2xl">
-        <p className="text-center text-2xl font-bold tracking-wide text-rose-500">POSLY</p>
+      <section className="relative w-full max-w-2xl rounded-xl border border-[#0001fb]/70 bg-[#0f0f0f] p-8 shadow-2xl">
+        <p className="text-center text-2xl font-bold tracking-wide text-[#0001fb]">POSLY</p>
         <h1 className="mt-3 text-center text-2xl font-bold text-amber-400 sm:text-3xl">
           Sua licença expirou!
         </h1>
@@ -101,11 +120,11 @@ export default function LicenseExpiredScreen({
 
         <form className="mt-6 space-y-4" onSubmit={handleActivateSubmit}>
           <label className="block text-sm font-medium text-zinc-200">
-            Código de Renovação
+            Token de ativação
             <input
               value={licenseKey}
               onChange={(event) => setLicenseKey(event.target.value)}
-              placeholder="Token 12 dígitos ou Base64/JSON"
+              placeholder="introduza o token"
               className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none ring-[rgba(0,1,251,0.45)] focus:ring"
               disabled={isBusy}
               autoComplete="off"
@@ -129,63 +148,37 @@ export default function LicenseExpiredScreen({
               disabled={isBusy}
               className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isActivating ? 'A ativar…' : 'Ativar licença'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void onRevalidate()}
-              disabled={isBusy}
-              className="rounded-md border border-zinc-600 bg-transparent px-4 py-2 text-sm text-zinc-100 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isRevalidating ? 'A revalidar…' : 'Revalidar'}
-            </button>
-            <button
-              type="button"
-              onClick={handleContactSupport}
-              className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-            >
-              <MessageCircle className="h-4 w-4" aria-hidden />
-              Contactar Suporte
+              {isActivating ? 'A ativar…' : 'Ativar'}
             </button>
           </div>
         </form>
 
-        <div className="mt-8 border-t border-zinc-800 pt-6">
-          <p className="text-sm text-zinc-300">
-            <strong>Precisa de ajuda?</strong> Contacte nosso suporte:
-          </p>
-          <ul className="mt-3 space-y-2 text-sm text-zinc-300">
-            <li className="flex items-center gap-2">
-              <Phone className="h-4 w-4 shrink-0 text-emerald-500" aria-hidden />
-              <span>
-                Telefone:{' '}
-                <a href={`tel:${digitsOnly(SUPPORT_PHONE)}`} className="hover:text-white">
-                  {SUPPORT_PHONE}
-                </a>
+        <div className="mt-8">
+          <div className="mb-4 flex items-center gap-3" role="separator" aria-label="Suporte">
+            <span className="h-px flex-1 bg-zinc-800" />
+            <span className="shrink-0 text-xs font-normal tracking-wide text-zinc-500">
+              Suporte
+            </span>
+            <span className="h-px flex-1 bg-zinc-800" />
+          </div>
+          <ul className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <li className="flex items-center justify-center gap-2.5 text-sm font-medium text-zinc-200 sm:justify-start">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0001fb]/15 ring-1 ring-[#0001fb]/35">
+                <Phone className="h-4 w-4 text-[#a5b4fc]" aria-hidden />
               </span>
+              <span className="truncate">{SUPPORT_PHONE}</span>
             </li>
-            <li className="flex items-center gap-2">
-              <Mail className="h-4 w-4 shrink-0 text-amber-500" aria-hidden />
-              <span>
-                E-mail:{' '}
-                <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-white">
-                  {SUPPORT_EMAIL}
-                </a>
+            <li className="flex items-center justify-center gap-2.5 text-sm font-medium text-zinc-200 sm:justify-start">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0001fb]/15 ring-1 ring-[#0001fb]/35">
+                <Mail className="h-4 w-4 text-[#a5b4fc]" aria-hidden />
               </span>
+              <span className="truncate">{SUPPORT_EMAIL}</span>
             </li>
-            <li className="flex items-center gap-2">
-              <MessageCircle className="h-4 w-4 shrink-0 text-emerald-500" aria-hidden />
-              <span>
-                WhatsApp:{' '}
-                <a
-                  href={`https://wa.me/${digitsOnly(SUPPORT_WHATSAPP)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="hover:text-white"
-                >
-                  {SUPPORT_WHATSAPP}
-                </a>
+            <li className="flex items-center justify-center gap-2.5 text-sm font-medium text-zinc-200 sm:justify-start">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0001fb]/15 ring-1 ring-[#0001fb]/35">
+                <MessageCircle className="h-4 w-4 text-[#a5b4fc]" aria-hidden />
               </span>
+              <span className="truncate">{SUPPORT_WHATSAPP}</span>
             </li>
           </ul>
         </div>

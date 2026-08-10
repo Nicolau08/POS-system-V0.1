@@ -26,7 +26,6 @@ import {
   Building2,
   Loader2,
   KeyRound,
-  ScrollText,
   Truck,
 } from 'lucide-react';
 import ProductsManager from './components/ProductsManager';
@@ -45,7 +44,6 @@ import CustomersSuppliersManager from './components/CustomersSuppliersManager';
 import PaymentMethodsManager from './components/PaymentMethodsManager';
 import UsersSecurityManager from './components/UsersSecurityManager';
 import MyCompanyManager from './components/MyCompanyManager';
-import SystemLogsManager from './components/SystemLogsManager';
 import DocumentsManager from './components/DocumentsManager';
 import LicenseSerialManager from './components/LicenseSerialManager';
 import TaxRatesManager from './components/TaxRatesManager';
@@ -351,7 +349,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
       { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
       { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Acesso' },
-      { id: 'logs', icon: <ScrollText size={18} />, label: 'Logs do sistema' },
       // Emitir série: só em dev/browser — nunca no executável de produção.
       ...(!isPackagedDesktop
         ? [{ id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' }]
@@ -375,7 +372,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
       customers: 'painel.clientes_fornecedores',
       promos: 'painel.promocoes_acoes',
       security: 'painel.usuarios_seguranca',
-      logs: 'painel.logs_sistema',
       'license-serials': 'painel.emitir_serie',
       payments: 'painel.meios_pagamento',
       taxes: 'painel.taxas_impostos',
@@ -499,10 +495,20 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                       type="button"
                       title={isSidebarCollapsed ? item.label : undefined}
                       onClick={() => {
-                        if (isSidebarCollapsed) setIsSidebarCollapsed(false);
                         const comingFromOther = sidebarSelectedTab !== 'docs';
                         setActiveTab('docs');
                         setSidebarSelectedTab('docs');
+                        // Documentos tem submenu: se o menu estiver fechado, reabre para mostrar as opções.
+                        if (isSidebarCollapsed) {
+                          setIsSidebarCollapsed(false);
+                          setDocsSidebarExpanded(true);
+                          setDocsExpandedSection(null);
+                          if (comingFromOther) {
+                            setDocsSelectedType(null);
+                            setDocsSelectedKind(null);
+                          }
+                          return;
+                        }
                         if (comingFromOther) {
                           setDocsSidebarExpanded(true);
                           setDocsExpandedSection(null);
@@ -519,7 +525,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                         isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
                       } ${
                         docsSidebarExpanded || sidebarSelectedTab === 'docs'
-                          ? 'bg-[#0001fb] text-white'
+                          ? 'pos-on-accent bg-[#0001fb] text-white'
                           : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                       }`}
                     >
@@ -556,7 +562,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                                 }}
                                 className={`flex w-full items-center justify-between gap-2 px-5 py-2.5 pl-8 text-left text-[12px] font-semibold transition-colors ${
                                   sectionOpen
-                                    ? 'bg-[#0000b8] text-white'
+                                    ? 'pos-on-accent bg-[#0000b8] text-white'
                                     : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                                 }`}
                               >
@@ -590,7 +596,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                                         }}
                                       className={`block w-full truncate px-5 py-2.5 pl-10 text-left text-[12px] leading-none transition-colors ${
                                         isActiveItem
-                                          ? 'bg-[#0000b8] text-white'
+                                          ? 'pos-on-accent bg-[#0000b8] text-white'
                                           : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200'
                                       }`}
                                     >
@@ -621,7 +627,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                     isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
                   } ${
                     sidebarSelectedTab === item.id
-                      ? 'bg-[#0001fb] text-white'
+                      ? 'pos-on-accent bg-[#0001fb] text-white'
                       : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
                   }`}
                 >
@@ -821,7 +827,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
           {activeTab === 'customers' && isTabAllowed('customers') && <CustomersSuppliersManager />}
           {activeTab === 'payments' && isTabAllowed('payments') && <PaymentMethodsManager />}
           {activeTab === 'security' && isTabAllowed('security') && <UsersSecurityManager />}
-          {activeTab === 'logs' && isTabAllowed('logs') && <SystemLogsManager />}
           {activeTab === 'license-serials' &&
             isTabAllowed('license-serials') &&
             !isPackagedDesktop && <LicenseSerialManager />}
@@ -837,7 +842,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
             activeTab !== 'customers' &&
             activeTab !== 'payments' &&
             activeTab !== 'security' &&
-            activeTab !== 'logs' &&
             activeTab !== 'license-serials' &&
             activeTab !== 'company' &&
             activeTab !== 'taxes' && (

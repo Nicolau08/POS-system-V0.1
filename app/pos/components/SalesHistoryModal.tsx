@@ -2,11 +2,12 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Ban,
   CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
-  FileText,
+  FileSpreadsheet,
   Inbox,
   Mail,
   Printer,
@@ -17,14 +18,18 @@ import {
   X,
 } from 'lucide-react';
 import type { CompanyProfile } from '@/app/pos/types';
-import { getPosApiBase } from '@/lib/apiBase';
-import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
+import { ConfirmDialog } from '@/app/pos/components/ConfirmDialog';
+import { ManagementToolbarButton, ManagementToolbarDivider } from '@/components/ManagementToolbarButton';
+import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
+import { extractApiErrorMessage, unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import {
   saveSalesDocumentAsPdf,
 } from '@/lib/documents/salesDocumentPrint';
 import { printSalesDocumentThermalSecondCopy } from '@/lib/documents/thermalReceiptPrint';
+import { usePermissions } from '@/hooks/usePermissions';
 import { fetchCompanyProfile } from '@/lib/services/posService';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
 
 type SaleRow = {
@@ -144,6 +149,17 @@ function isSalesDocument(row: SaleRow) {
   return true;
 }
 
+function isVdSale(row: SaleRow) {
+  const docType = String(row.doc_type ?? '').trim().toUpperCase();
+  if (docType === 'VD' || docType === 'VENDA') return true;
+  return String(row.document_number ?? '').trim().toUpperCase().startsWith('VD/');
+}
+
+function isCancelledSale(row: SaleRow) {
+  const status = String(row.status ?? '').trim().toLowerCase();
+  return status === 'cancelled' || status === 'canceled' || status === 'void' || status === 'anulado';
+}
+
 export function SalesHistoryModal({
   isOpen,
   onClose,
@@ -151,12 +167,16 @@ export function SalesHistoryModal({
   isOpen: boolean;
   onClose: () => void;
 }) {
+  const { can } = usePermissions();
+  const canAnularVd = can('vendas.anular_vd', 5);
   const [sales, setSales] = useState<SaleRow[]>([]);
   const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, SaleItemRow[]>>({});
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [actionMessage, setActionMessage] = useState('');
+  const [isAnullingVd, setIsAnullingVd] = useState(false);
+  const [isAnularConfirmOpen, setIsAnularConfirmOpen] = useState(false);
 
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -174,10 +194,11 @@ export function SalesHistoryModal({
     setLoading(true);
     setErrorMessage('');
     try {
+      const authHeaders = getPosUserAuthHeaders();
       const [docsRes, salesRes, itemsRes] = await Promise.all([
-        fetch(`${getPosApiBase()}/documentos`),
-        fetch(`${getPosApiBase()}/vendas`),
-        fetch(`${getPosApiBase()}/documentos-itens`),
+        fetch(`${getPosApiBase()}/documentos`, { headers: { ...authHeaders }, cache: 'no-store' }),
+        fetch(`${getPosApiBase()}/vendas`, { headers: { ...authHeaders }, cache: 'no-store' }),
+        fetch(`${getPosApiBase()}/documentos-itens`, { headers: { ...authHeaders }, cache: 'no-store' }),
       ]);
       if (!docsRes.ok) throw new Error(`Falha ao carregar documentos (${docsRes.status})`);
       if (!salesRes.ok) throw new Error(`Falha ao carregar vendas (${salesRes.status})`);
@@ -245,7 +266,8 @@ export function SalesHistoryModal({
       const docNumber = String(row.document_number ?? '').toLowerCase();
       const customer = String(row.client_name ?? 'Consumidor final').toLowerCase();
       const user = String(row.user_name ?? '-').toLowerCase();
-      const payment = String(row.payment_method ?? '').toLowerCase();
+      const payment = formatPaymentMethodLabel(row.payment_method).toLowerCase();
+      const paymentRaw = String(row.payment_method ?? '').toLowerCase();
       const docType = resolveSaleDocTypeLabel(row).toLowerCase();
       const orderDate = String(row.created_at ?? '').slice(0, 10);
 
@@ -257,6 +279,7 @@ export function SalesHistoryModal({
         !user.includes(textQ) &&
         !docNumber.includes(textQ) &&
         !payment.includes(textQ) &&
+        !paymentRaw.includes(textQ) &&
         !docType.includes(textQ)
       ) {
         return false;
@@ -276,6 +299,9 @@ export function SalesHistoryModal({
   }, [itemsByOrderId, selectedSaleId]);
 
   const canActOnSelection = Boolean(selectedSale);
+  const selectedSaleIsAnullableVd = Boolean(
+    selectedSale && canAnularVd && isVdSale(selectedSale) && !isCancelledSale(selectedSale),
+  );
 
   const handlePrintSecondCopy = () => {
     if (!selectedSale) {
@@ -302,6 +328,38 @@ export function SalesHistoryModal({
       return;
     }
     setActionMessage('');
+  };
+
+  const handleAnularVd = async () => {
+    if (!selectedSale || !selectedSaleIsAnullableVd || isAnullingVd) return;
+    const docNumber = String(selectedSale.document_number ?? selectedSale.id).trim();
+    setIsAnularConfirmOpen(false);
+    setIsAnullingVd(true);
+    setActionMessage('');
+    try {
+      const res = await fetch(
+        `${getPosApiBase()}/documentos/${encodeURIComponent(String(selectedSale.id))}/anular`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getPosUserAuthHeaders(),
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(extractApiErrorMessage(payload, `Falha ao anular VD (${res.status})`));
+      }
+      setActionMessage(`VD ${docNumber} anulada.`);
+      setSelectedSaleId(null);
+      await fetchData();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : 'Falha ao anular VD.');
+    } finally {
+      setIsAnullingVd(false);
+    }
   };
 
   const totalValue = useMemo(
@@ -392,55 +450,78 @@ export function SalesHistoryModal({
         </button>
       </div>
 
-      <div className="border-b border-zinc-800 bg-[#171717] px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-[220px] shrink-0">
+      <div className="relative z-40 h-16 border-b border-zinc-800 bg-[#1a1a1a] px-2 overflow-visible">
+        <div className="flex h-full items-center gap-3 overflow-visible">
+          <div className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
+            <ManagementToolbarButton
+              icon={<RefreshCcw size={20} />}
+              label="Atualizar"
+              onClick={() => void fetchData()}
+            />
+            <ManagementToolbarButton
+              icon={<Printer size={20} />}
+              label="Imprimir"
+              disabled={!canActOnSelection}
+              onClick={handlePrintSecondCopy}
+            />
+            <ManagementToolbarButton
+              icon={<FileSpreadsheet size={20} />}
+              label="Salvar como PDF"
+              disabled={!canActOnSelection}
+              onClick={handleSavePdf}
+            />
+            <ManagementToolbarDivider />
+            <ManagementToolbarButton icon={<Stamp size={20} />} label="Recibo" disabled />
+            <ManagementToolbarButton icon={<Mail size={20} />} label="Enviar por e-mail" disabled />
+            <ManagementToolbarButton icon={<Inbox size={20} />} label="Devolução" disabled />
+            {canAnularVd ? (
+              <ManagementToolbarButton
+                icon={<Ban size={20} />}
+                label="Anular"
+                disabled={!selectedSaleIsAnullableVd || isAnullingVd}
+                onClick={() => {
+                  setActionMessage('');
+                  setIsAnularConfirmOpen(true);
+                }}
+                title={
+                  !selectedSale
+                    ? 'Selecione uma venda a dinheiro para anular'
+                    : selectedSaleIsAnullableVd
+                      ? 'Anular venda a dinheiro e devolver stock'
+                      : 'Esta VD já está anulada ou não é anulável'
+                }
+              />
+            ) : null}
+            <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" disabled />
+          </div>
+          <div className="shrink-0 pr-1">
             <button
               type="button"
               onClick={openPeriodModal}
-              className="flex h-8 w-full items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-2 text-left hover:border-[#0001fb] hover:bg-zinc-800"
+              className="flex h-10 min-w-[220px] items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-3 text-left hover:border-[#0001fb] hover:bg-zinc-800"
+              title="Filtrar período"
             >
-              <CalendarDays size={14} className="shrink-0 text-zinc-400" />
+              <CalendarDays size={16} className="shrink-0 text-zinc-400" />
               <span className="flex-1 text-center text-xs text-zinc-200 whitespace-nowrap">
                 {formatInputDateLabel(dateFrom)} — {formatInputDateLabel(dateTo)}
               </span>
             </button>
           </div>
-
-          <div className="flex flex-1 flex-wrap items-center gap-1 border-l border-zinc-800 pl-2">
-            <ToolbarBtn icon={<RefreshCcw size={18} />} label="Atualizar" onClick={() => void fetchData()} />
-            <ToolbarBtn
-              icon={<Printer size={18} />}
-              label="Imprimir"
-              disabled={!canActOnSelection}
-              onClick={handlePrintSecondCopy}
-            />
-            <ToolbarBtn
-              icon={<FileText size={18} />}
-              label="Salvar como PDF"
-              disabled={!canActOnSelection}
-              onClick={handleSavePdf}
-            />
-            <ToolbarBtn icon={<Stamp size={18} />} label="Recibo" disabled />
-            <ToolbarBtn icon={<Mail size={18} />} label="Enviar por e-mail" disabled />
-            <ToolbarBtn icon={<Inbox size={18} />} label="Devolução" disabled />
-            <ToolbarBtn icon={<Trash2 size={18} />} label="Deletar" disabled />
-          </div>
         </div>
+      </div>
 
-        <div className="mt-2 flex h-12 items-center gap-2 border-t border-zinc-800/80 bg-[#1a1a1a] px-2">
-          <div className="flex items-center gap-3 border-r border-zinc-800 px-3 text-zinc-500">
-            <Search size={18} />
-          </div>
-          <div className="relative flex-1">
-            <input
-              type="text"
-              placeholder="Pesquisar por cliente, usuário ou documento"
-              className="w-full bg-transparent px-2 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
+      <div className="flex h-12 items-center gap-2 border-b border-zinc-800 bg-[#181818] px-2">
+        <div className="flex items-center gap-3 border-r border-zinc-800 px-3 text-zinc-500">
+          <Search size={18} />
+        </div>
+        <div className="relative flex-1">
+          <input
+            type="text"
+            placeholder="Pesquisar por cliente, usuário ou documento"
+            className="w-full bg-transparent px-2 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
         </div>
       </div>
 
@@ -509,7 +590,7 @@ export function SalesHistoryModal({
                         <Td>{formatDateTime(row.created_at)}</Td>
                         <Td>{formatDateTime(row.created_at)}</Td>
                         <Td>POS 1</Td>
-                        <Td>{row.payment_method || '-'}</Td>
+                        <Td>{formatPaymentMethodLabel(row.payment_method)}</Td>
                         <Td className="text-right tabular-nums">{formatMoneyMt(Number(row.discount ?? 0))}</Td>
                         <Td className="text-right tabular-nums">{formatMoneyMt(subtotal)}</Td>
                         <Td className="text-right tabular-nums">{formatMoneyMt(tax)}</Td>
@@ -676,6 +757,29 @@ export function SalesHistoryModal({
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={isAnularConfirmOpen}
+        title="Anular VD"
+        message={
+          <>
+            <p>
+              Anular a venda a dinheiro{' '}
+              <span className="font-semibold text-white">
+                {String(selectedSale?.document_number ?? selectedSale?.id ?? '').trim()}
+              </span>
+              ?
+            </p>
+            <p className="text-zinc-400">O stock dos produtos será devolvido ao armazém.</p>
+          </>
+        }
+        confirmLabel="Anular"
+        cancelLabel="Cancelar"
+        tone="danger"
+        icon={<Ban size={22} />}
+        onCancel={() => setIsAnularConfirmOpen(false)}
+        onConfirm={() => void handleAnularVd()}
+      />
     </div>
   );
 }
@@ -692,38 +796,6 @@ function Th({ children, className = '' }: { children: React.ReactNode; className
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return <td className={`border-r border-zinc-800/80 px-3 py-2 whitespace-nowrap last:border-r-0 ${className}`}>{children}</td>;
-}
-
-function ToolbarBtn({
-  icon,
-  label,
-  onClick,
-  active,
-  disabled,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  active?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex min-w-[72px] flex-col items-center justify-center rounded px-2 py-1.5 text-[9px] font-bold uppercase tracking-wide transition-colors ${
-        disabled
-          ? 'cursor-not-allowed text-zinc-600 opacity-50'
-          : active
-            ? 'bg-[#0001fb]/20 text-[#a5b4fc]'
-            : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb]'
-      }`}
-    >
-      {icon}
-      <span className="mt-0.5 text-center leading-tight">{label}</span>
-    </button>
-  );
 }
 
 function PresetButton({

@@ -32,6 +32,7 @@ import {
   rollbackTransaction,
   sumDebitNotesForSource,
   sumDebitNoteQuantitiesByProductForSource,
+  sumCreditNotesForSource,
   sumReceiptsForSource,
   updateOrderApproval,
   updateOrderDocumentPayment,
@@ -39,6 +40,7 @@ import {
   updateOrderPaymentStatus,
   updateVendaApproval,
   updateVendaDocumentPayment,
+  updateVendaStatus,
   findOrderByDocumentNumber,
   findOrderByDocumentParts,
   findVendaByDocumentNumber,
@@ -59,6 +61,8 @@ import {
   createPartyCreditId,
   insertPartyCredit,
 } from '../repositories/partyCredits.repository.js';
+import { logAudit } from '../utils/logger.js';
+import { formatPaymentMethodLabel } from '../utils/paymentMethodLabel.js';
 
 const STOCK_IN_PREFIXES = new Set(['WH/IN', 'EN/ST', 'PUR', 'FTF', 'NC']);
 const STOCK_OUT_PREFIXES = new Set(['VD', 'TK', 'FT', 'DP', 'WH/LOSS', 'CP', 'ND']);
@@ -127,6 +131,15 @@ function buildDocumentosBaseSql() {
               AND UPPER(COALESCE(nd.doc_prefix, '')) = 'ND'
               AND UPPER(TRIM(COALESCE(nd.approved_document_type, ''))) = 'FTF'
               AND UPPER(TRIM(COALESCE(nd.approved_document_number, ''))) =
+                  UPPER(TRIM(COALESCE(o.document_number, '')))
+          ), 0)
+          WHEN UPPER(COALESCE(o.doc_prefix, '')) = 'FT' THEN COALESCE((
+            SELECT SUM(COALESCE(nc.total, 0))
+            FROM orders nc
+            WHERE nc.tenant_id = o.tenant_id
+              AND UPPER(COALESCE(nc.doc_prefix, '')) = 'NC'
+              AND UPPER(TRIM(COALESCE(nc.approved_document_type, ''))) = 'FT'
+              AND UPPER(TRIM(COALESCE(nc.approved_document_number, ''))) =
                   UPPER(TRIM(COALESCE(o.document_number, '')))
           ), 0)
           ELSE 0
@@ -436,7 +449,10 @@ export async function postDocumento(payload = {}, user = null) {
   const customerName = payload.customerName == null ? null : String(payload.customerName).trim() || null;
   const userId = payload.userId == null ? null : String(payload.userId).trim() || null;
   const userName = payload.userName == null ? null : String(payload.userName).trim() || null;
-  const paymentMethod = payload.paymentMethod == null ? null : String(payload.paymentMethod).trim() || null;
+  const paymentMethodRaw =
+    payload.paymentMethod == null ? null : String(payload.paymentMethod).trim() || null;
+  const paymentMethod =
+    paymentMethodRaw == null ? null : formatPaymentMethodLabel(paymentMethodRaw, paymentMethodRaw);
   const items = Array.isArray(payload.items) ? payload.items : [];
   const allowNegativeStock = Boolean(payload.allowNegativeStock);
   const physicalReturn = payload.physicalReturn !== false; // NC/ND: por defeito movimenta stock
@@ -543,6 +559,21 @@ export async function postDocumento(payload = {}, user = null) {
     }
   }
 
+  if (prefix === 'NC' && linkedDocNumber) {
+    const sourceOrder = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+    if (!sourceOrder?.id || String(sourceOrder.doc_prefix ?? '').toUpperCase() !== 'FT') {
+      throw new HttpError(404, 'Fatura de cliente de origem não encontrada');
+    }
+    const alreadyCredited = await sumCreditNotesForSource(linkedDocNumber, tenantId);
+    const remaining = Math.max(0, roundMoney(Number(sourceOrder.total ?? 0) - alreadyCredited));
+    if (total > remaining + 0.009) {
+      throw new HttpError(
+        409,
+        `Valor da nota de crédito excede o saldo da fatura (${remaining.toFixed(2)} MT)`
+      );
+    }
+  }
+
   const status = paid ? 'completed' : 'pending';
   let stockSign = resolveStockSign(prefix, documentType);
   // NC/ND sem devolução física: não mexer no stock
@@ -626,8 +657,7 @@ export async function postDocumento(payload = {}, user = null) {
   try {
     await beginImmediateTransaction();
 
-    // Revalidar crédito ND sob lock exclusivo (evita duas ND concorrentes a
-    // ultrapassar o saldo da FTF).
+    // Revalidar crédito ND/NC sob lock exclusivo.
     if (prefix === 'ND' && linkedDocNumber) {
       const sourceOrderLocked = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
       if (!sourceOrderLocked?.id || String(sourceOrderLocked.doc_prefix ?? '').toUpperCase() !== 'FTF') {
@@ -642,6 +672,24 @@ export async function postDocumento(payload = {}, user = null) {
         throw new HttpError(
           409,
           `Valor da nota de débito excede o saldo da fatura (${remainingLocked.toFixed(2)} MT)`,
+        );
+      }
+    }
+
+    if (prefix === 'NC' && linkedDocNumber) {
+      const sourceOrderLocked = await findOrderByDocumentNumber(linkedDocNumber, tenantId);
+      if (!sourceOrderLocked?.id || String(sourceOrderLocked.doc_prefix ?? '').toUpperCase() !== 'FT') {
+        throw new HttpError(404, 'Fatura de cliente de origem não encontrada');
+      }
+      const alreadyCreditedLocked = await sumCreditNotesForSource(linkedDocNumber, tenantId);
+      const remainingLocked = Math.max(
+        0,
+        roundMoney(Number(sourceOrderLocked.total ?? 0) - alreadyCreditedLocked),
+      );
+      if (total > remainingLocked + 0.009) {
+        throw new HttpError(
+          409,
+          `Valor da nota de crédito excede o saldo da fatura (${remainingLocked.toFixed(2)} MT)`,
         );
       }
     }
@@ -1376,7 +1424,10 @@ export async function registerDocumentPayment(payload = {}, user = null) {
   const tenantId = resolveTenantIdStrict(user?.tenant_id);
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
   const documentNumber = String(payload.documentNumber ?? '').trim();
-  const paymentMethod = String(payload.paymentMethod ?? '').trim();
+  const paymentMethod = formatPaymentMethodLabel(
+    String(payload.paymentMethod ?? '').trim(),
+    String(payload.paymentMethod ?? '').trim(),
+  );
   const requestedKind = String(payload.payableKind ?? payload.documentKind ?? '')
     .trim()
     .toUpperCase();
@@ -1597,5 +1648,129 @@ export async function registerDocumentPayment(payload = {}, user = null) {
         : Math.max(0, roundMoney(settledRemainingTotal - paymentAmount)) <= 0.009 || payableKind !== 'FT'
           ? 'completed'
           : 'pending',
+  };
+}
+
+function isCancelledStatus(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  return s === 'cancelled' || s === 'canceled' || s === 'void' || s === 'anulado';
+}
+
+function isVdDocument({ docPrefix, docType, documentNumber }) {
+  const prefix = String(docPrefix ?? '').trim().toUpperCase();
+  if (prefix === 'VD') return true;
+  const type = String(docType ?? '').trim().toUpperCase();
+  if (type === 'VD') return true;
+  const number = String(documentNumber ?? '').trim().toUpperCase();
+  return number.startsWith('VD/');
+}
+
+/**
+ * Anula uma Venda a Dinheiro (VD): marca cancelled e devolve stock.
+ */
+export async function anularVendaDinheiro(idRaw, payload = {}, user = null) {
+  const tenantId = resolveTenantIdStrict(user?.tenant_id);
+  assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
+  const rawId = String(idRaw ?? '').trim();
+  if (!rawId) throw new HttpError(400, 'id invalido');
+
+  const now = new Date().toISOString();
+  let sourceType = 'order';
+  let documentId = rawId;
+  let saleId = null;
+  let documentNumber = '';
+  let currentStatus = '';
+  let docPrefix = '';
+  let docType = '';
+
+  if (rawId.toLowerCase().startsWith('venda:')) {
+    sourceType = 'venda';
+    saleId = Number(rawId.slice(6));
+    if (!Number.isFinite(saleId) || saleId <= 0) throw new HttpError(400, 'id de venda invalido');
+    const venda = await getVendaPaymentContext(saleId, tenantId);
+    if (!venda?.id) throw new HttpError(404, 'venda a dinheiro nao encontrada');
+    documentId = String(venda.id);
+    documentNumber = String(venda.document_number ?? '').trim();
+    currentStatus = String(venda.status ?? '');
+    docType = String(venda.doc_type ?? 'VD');
+    docPrefix = 'VD';
+  } else {
+    const order = await findOrderById(rawId, tenantId);
+    if (!order?.id) throw new HttpError(404, 'documento nao encontrado');
+    documentId = String(order.id);
+    documentNumber = String(order.document_number ?? '').trim();
+    currentStatus = String(order.status ?? '');
+    docPrefix = String(order.doc_prefix ?? '');
+    docType = String(order.doc_type ?? '');
+  }
+
+  if (!isVdDocument({ docPrefix, docType, documentNumber })) {
+    throw new HttpError(400, 'apenas documentos VD (venda a dinheiro) podem ser anulados aqui');
+  }
+  if (isCancelledStatus(currentStatus)) {
+    throw new HttpError(409, 'esta venda a dinheiro ja esta anulada');
+  }
+
+  const items = await listOrderItemsByDocumentId(documentId, tenantId);
+  const warehouseId = await resolveWarehouseId({
+    tenantId,
+    explicitWarehouseId: payload.warehouseId ?? payload.warehouse_id ?? null,
+  });
+
+  try {
+    await beginImmediateTransaction();
+
+    if (sourceType === 'venda') {
+      const result = await updateVendaStatus(saleId, 'cancelled', tenantId);
+      if (Number(result?.changes ?? 0) === 0) {
+        throw new HttpError(404, 'venda a dinheiro nao encontrada');
+      }
+    } else {
+      const result = await updateOrderPaymentStatus(documentId, 'cancelled', now, tenantId);
+      if (Number(result?.changes ?? 0) === 0) {
+        throw new HttpError(404, 'documento nao encontrado');
+      }
+    }
+
+    for (const item of items ?? []) {
+      const productId = item?.product_id != null ? String(item.product_id) : null;
+      const quantity = Number(item?.quantity ?? 0);
+      if (!productId || !Number.isFinite(quantity) || quantity <= 0) continue;
+      const productRow = await getProductForSync(productId, tenantId);
+      if (Number(productRow?.is_service ?? 0) !== 0) continue;
+      await applyWarehouseDelta({
+        tenantId,
+        warehouseId,
+        productId,
+        delta: quantity,
+        movementType: 'restock',
+        referenceId: `VD-VOID:${documentNumber || documentId}`,
+        allowNegative: true,
+      });
+    }
+
+    await commitTransaction();
+  } catch (error) {
+    try {
+      await rollbackTransaction();
+    } catch {
+      // ignore rollback errors
+    }
+    throw error;
+  }
+
+  await logAudit('VD_ANULAR', user, {
+    entity: 'document',
+    entity_id: sourceType === 'venda' ? `venda:${saleId}` : documentId,
+    description: `VD ${documentNumber || documentId} anulada`,
+    document_number: documentNumber,
+  });
+
+  return {
+    success: true,
+    id: sourceType === 'venda' ? `venda:${saleId}` : documentId,
+    documentNumber,
+    status: 'cancelled',
+    stockRestored: true,
   };
 }

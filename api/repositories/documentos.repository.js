@@ -61,6 +61,16 @@ export function updateOrderPaymentStatus(orderId, nextStatus, updatedAt, tenantI
   );
 }
 
+export function updateVendaStatus(saleId, nextStatus, tenantId) {
+  return run(
+    `UPDATE vendas
+     SET status = ?
+     WHERE id = ?
+       AND tenant_id = ?`,
+    [nextStatus, Number(saleId), tenantId]
+  );
+}
+
 export function updateOrderNotes(orderId, notes, isWaste, updatedAt, tenantId) {
   return run(
     `UPDATE orders
@@ -75,7 +85,14 @@ export function updateOrderNotes(orderId, notes, isWaste, updatedAt, tenantId) {
 
 export function findOrderById(orderId, tenantId) {
   return get(
-    `SELECT id
+    `SELECT
+       CAST(id AS TEXT) AS id,
+       doc_type,
+       doc_prefix,
+       document_number,
+       status,
+       payment_method,
+       total
      FROM orders
      WHERE CAST(id AS TEXT) = ?
        AND tenant_id = ?
@@ -450,6 +467,20 @@ export async function sumDebitNotesForSource(documentNumber, tenantId) {
   return Number(row?.total ?? 0);
 }
 
+/** Soma das notas de crédito (NC) já emitidas contra uma fatura de cliente (FT). */
+export async function sumCreditNotesForSource(documentNumber, tenantId) {
+  const row = await get(
+    `SELECT COALESCE(SUM(COALESCE(total, 0)), 0) AS total
+     FROM orders
+     WHERE tenant_id = ?
+       AND UPPER(COALESCE(doc_prefix, '')) = 'NC'
+       AND UPPER(TRIM(COALESCE(approved_document_type, ''))) = 'FT'
+       AND UPPER(TRIM(COALESCE(approved_document_number, ''))) = UPPER(TRIM(?))`,
+    [tenantId, documentNumber]
+  );
+  return Number(row?.total ?? 0);
+}
+
 /** Soma dos recibos (RC) já emitidos contra uma fatura de cliente (FT). */
 export async function sumReceiptsForSource(documentNumber, tenantId) {
   const row = await get(
@@ -476,6 +507,32 @@ export async function sumDebitNoteQuantitiesByProductForSource(documentNumber, t
      WHERE o.tenant_id = ?
        AND UPPER(COALESCE(o.doc_prefix, '')) = 'ND'
        AND UPPER(TRIM(COALESCE(o.approved_document_type, ''))) = 'FTF'
+       AND UPPER(TRIM(COALESCE(o.approved_document_number, ''))) = UPPER(TRIM(?))
+       AND oi.product_id IS NOT NULL
+     GROUP BY CAST(oi.product_id AS TEXT)`,
+    [tenantId, documentNumber]
+  );
+  const map = {};
+  for (const row of rows ?? []) {
+    const pid = row?.product_id != null ? String(row.product_id) : '';
+    if (!pid) continue;
+    map[pid] = Number(row?.quantity ?? 0) || 0;
+  }
+  return map;
+}
+
+/** Quantidades já creditadas por produto em NCs ligadas à FT de origem. */
+export async function sumCreditNoteQuantitiesByProductForSource(documentNumber, tenantId) {
+  const rows = await all(
+    `SELECT CAST(oi.product_id AS TEXT) AS product_id,
+            COALESCE(SUM(COALESCE(oi.quantity, 0)), 0) AS quantity
+     FROM order_items oi
+     INNER JOIN orders o
+       ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
+      AND o.tenant_id = oi.tenant_id
+     WHERE o.tenant_id = ?
+       AND UPPER(COALESCE(o.doc_prefix, '')) = 'NC'
+       AND UPPER(TRIM(COALESCE(o.approved_document_type, ''))) = 'FT'
        AND UPPER(TRIM(COALESCE(o.approved_document_number, ''))) = UPPER(TRIM(?))
        AND oi.product_id IS NOT NULL
      GROUP BY CAST(oi.product_id AS TEXT)`,
@@ -625,6 +682,7 @@ export function getVendaPaymentContext(saleId, tenantId) {
        v.user_name,
        v.total,
        v.doc_type,
+       v.status,
        (
          UPPER(COALESCE(v.doc_type, 'VD')) || '/' ||
          CAST(strftime('%Y', v.data) AS TEXT) || '/' ||

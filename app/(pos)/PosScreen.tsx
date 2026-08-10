@@ -73,6 +73,7 @@ import { ReceiptPreview } from '@/app/pos/components/ReceiptPreview';
 import { AdminPanel } from '@/app/pos/components/AdminPanel';
 import { EndOfDayModal } from '@/app/pos/components/EndOfDayModal';
 import { ensureCashSession } from '@/lib/cashSession';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { SalesHistoryModal } from '@/app/pos/components/SalesHistoryModal';
 import { QuotationModal } from '@/app/pos/components/QuotationModal';
 import { StockZeroModal } from '@/app/pos/components/StockZeroModal';
@@ -503,7 +504,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     (methodCode: PaymentMethod | null) => {
       if (!methodCode) return 'N/A';
       const method = paymentMethods.find((item) => item.code === methodCode);
-      return method?.name ?? String(methodCode);
+      return formatPaymentMethodLabel(method?.name ?? methodCode, String(methodCode));
     },
     [paymentMethods]
   );

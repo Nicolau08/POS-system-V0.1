@@ -1,6 +1,7 @@
 import type { CompanyProfile } from '@/app/pos/types';
 import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 import {
   formatCompanyBankDetailsForFooter,
@@ -223,7 +224,7 @@ function buildVendaBody(sale: SalesDocumentSale, items: SalesDocumentItem[]) {
   const tax = Number(sale.tax ?? 0);
   const total = Number(sale.total ?? 0);
   const docNumber = String(sale.document_number ?? sale.id ?? '-');
-  const payment = String(sale.payment_method ?? '-');
+  const payment = formatPaymentMethodLabel(sale.payment_method);
   const sourceReference = formatDocumentSourceReferenceLabel(sale);
   const notes = String(sale.notes ?? '').trim();
 
@@ -308,7 +309,7 @@ function buildReciboBody(sale: SalesDocumentSale) {
         <div class="meta-item"><div class="meta-label">Valor do pagamento</div><div>${escapeHtml(formatA4Amount(total))}</div></div>
       </div>
       <div>
-        <div class="meta-item"><div class="meta-label">Formas de pagamento</div><div>${escapeHtml(sale.payment_method || 'Pagamento manual')}</div></div>
+        <div class="meta-item"><div class="meta-label">Formas de pagamento</div><div>${escapeHtml(formatPaymentMethodLabel(sale.payment_method, 'Pagamento manual'))}</div></div>
         <div class="meta-item"><div class="meta-label">Referência</div><div>${escapeHtml(sourceReference || (invoiceRef ? `Referente à ${invoiceLabel.toLowerCase()} ${invoiceRef}` : docNumber))}</div></div>
       </div>
     </div>

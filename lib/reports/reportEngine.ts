@@ -1,3 +1,5 @@
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
+
 export type ReportKey =
   | 'products'
   | 'customers'
@@ -434,8 +436,9 @@ async function fetchDocuments(ctx: ReportBuildContext) {
       if (!customerId || !selectedIds.has(customerId)) return false;
     }
     if (ctx.selectedPaymentMethod !== 'all') {
-      const payment = String(doc.payment_method ?? '').trim();
-      if (payment && payment !== ctx.selectedPaymentMethod) return false;
+      const payment = formatPaymentMethodLabel(doc.payment_method).toLowerCase();
+      const selected = formatPaymentMethodLabel(ctx.selectedPaymentMethod).toLowerCase();
+      if (payment !== selected) return false;
     }
     if (ctx.selectedStatus !== 'all') {
       const status = String(doc.status ?? '').trim().toLowerCase();
@@ -469,7 +472,7 @@ function mapDocumentRows(docs: DocumentRow[]) {
       Data: formatDate(doc.created_at),
       Cliente: doc.client_name || 'Consumidor final',
       Utilizador: doc.user_name || '-',
-      Pagamento: doc.payment_method || '-',
+      Pagamento: formatPaymentMethodLabel(doc.payment_method),
       Subtotal: formatCurrency(Number(doc.subtotal ?? (Number(doc.total ?? 0) - Number(doc.tax ?? 0)))),
       IVA: formatCurrency(Number(doc.tax ?? 0)),
       Total: formatCurrency(Number(doc.total ?? 0)),
@@ -608,7 +611,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
     const docs = await fetchRevenueDocuments(ctx);
     const grouped = new Map<string, { count: number; total: number }>();
     docs.forEach((doc) => {
-      const key = String(doc.payment_method || 'Não definido').trim() || 'Não definido';
+      const key = formatPaymentMethodLabel(doc.payment_method, 'Não definido');
       const current = grouped.get(key) || { count: 0, total: 0 };
       current.count += 1;
       current.total += Number(doc.total || 0);
@@ -803,7 +806,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
     const docs = await fetchRevenueDocuments(ctx);
     const grouped = new Map<string, number>();
     docs.forEach((doc) => {
-      const key = String(doc.payment_method || 'Outro').trim() || 'Outro';
+      const key = formatPaymentMethodLabel(doc.payment_method, 'Outro');
       grouped.set(key, (grouped.get(key) || 0) + Number(doc.total || 0));
     });
     const rows = Array.from(grouped.entries()).map(([method, total]) => ({
@@ -907,7 +910,7 @@ export async function buildReport(reportKey: ReportKey, ctx: ReportBuildContext)
         Data: formatDate(doc.created_at),
         Tipo: resolveDocCode(doc),
         Número: doc.document_number || '-',
-        Pagamento: doc.payment_method || '-',
+        Pagamento: formatPaymentMethodLabel(doc.payment_method),
         Estado: resolveStatusLabel(doc.status, resolveDocCode(doc)),
         Total: formatCurrency(Number(doc.total || 0)),
       }));

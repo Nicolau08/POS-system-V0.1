@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Banknote, CreditCard, Lock, Monitor, Printer, Save, Smartphone, User, X } from 'lucide-react';
 import type { CartItem, Customer, Discount, PaymentEntry, PaymentMethod, PaymentMethodOption } from '@/app/pos/types';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 
 /** Terminal POS portátil (recibo + ecrã + teclado), alinhado ao estilo Lucide. */
@@ -343,7 +344,7 @@ export function PaymentModal({
                         active={paymentMethod === method.code}
                         onClick={() => setPaymentMethod(method.code)}
                         icon={paymentIconForCode(method.code, 26)}
-                        label={method.name}
+                        label={formatPaymentMethodLabel(method.name, method.name).toLocaleUpperCase('pt-PT')}
                       />
                     ))}
                   </div>
@@ -356,7 +357,7 @@ export function PaymentModal({
                           active={multiplePaymentMethod === method.code}
                           onClick={() => setMultiplePaymentMethod(method.code)}
                           icon={paymentIconForCode(method.code, 22)}
-                          label={method.name}
+                          label={formatPaymentMethodLabel(method.name, method.name).toLocaleUpperCase('pt-PT')}
                         />
                       ))}
                     </div>
@@ -494,7 +495,7 @@ function paymentIconForCode(code: string, size: number) {
 
 function paymentLabelForCode(code: string, methods: PaymentMethodOption[]) {
   const method = methods.find((item) => item.code === code);
-  return method?.name ?? code;
+  return formatPaymentMethodLabel(method?.name ?? code, code).toLocaleUpperCase('pt-PT');
 }
 
 function isCashMethod(methodCode: string | null, methods: PaymentMethodOption[]) {

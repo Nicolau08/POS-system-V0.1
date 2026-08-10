@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   approveCotacaoController,
+  anularVendaDinheiroController,
   getDashboardSummaryController,
   getDocumentosController,
   getDocumentosItensController,
@@ -11,6 +12,7 @@ import {
   previewDocumentPaymentController,
   registerDocumentPaymentController,
 } from '../controllers/documentos.controller.js';
+import { requirePermission } from '../middlewares/auth.js';
 import { validateRequest } from '../middlewares/validation.middleware.js';
 import {
   validateApproveCotacaoBody,
@@ -33,6 +35,11 @@ router.post(
   '/documentos/registar-pagamento',
   validateRequest({ body: validateRegisterDocumentPaymentBody }),
   registerDocumentPaymentController
+);
+router.post(
+  '/documentos/:id/anular',
+  requirePermission('vendas.anular_vd', 5),
+  anularVendaDinheiroController
 );
 router.patch('/documentos/:id/payment-status', patchDocumentoPaymentStatusController);
 router.get('/documentos-itens', getDocumentosItensController);

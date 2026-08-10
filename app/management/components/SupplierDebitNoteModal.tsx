@@ -66,17 +66,87 @@ function isFtfOrder(order: DebitNoteSourceOrder) {
   );
 }
 
+function isFtOrder(order: DebitNoteSourceOrder) {
+  const number = String(order.document_number ?? '').trim().toUpperCase();
+  const docType = String(order.doc_type ?? '').trim().toUpperCase();
+  if (isFtfOrder(order)) return false;
+  return number.startsWith('FT/') || docType === 'FT' || docType === 'FATURA';
+}
+
 function isNdOrder(order: DebitNoteSourceOrder) {
   const number = String(order.document_number ?? '').trim().toUpperCase();
   const docType = String(order.doc_type ?? '').trim().toUpperCase();
   return number.startsWith('ND/') || docType === 'ND' || docType.includes('DÉBITO') || docType.includes('DEBITO');
 }
 
-function computeMaxQty(ftfQty: number, alreadyReturned: number, stockQty: number, physicalReturn: boolean) {
-  const remainingOnFtf = Math.max(0, ftfQty - alreadyReturned);
-  if (!physicalReturn) return remainingOnFtf;
-  return Math.max(0, Math.min(remainingOnFtf, stockQty));
+function isNcOrder(order: DebitNoteSourceOrder) {
+  const number = String(order.document_number ?? '').trim().toUpperCase();
+  const docType = String(order.doc_type ?? '').trim().toUpperCase();
+  return (
+    number.startsWith('NC/') ||
+    docType === 'NC' ||
+    docType.includes('CRÉDITO') ||
+    docType.includes('CREDITO')
+  );
 }
+
+function computeMaxQty(
+  sourceQty: number,
+  alreadyReturned: number,
+  stockQty: number,
+  physicalReturn: boolean,
+  limitByStock: boolean,
+) {
+  const remaining = Math.max(0, sourceQty - alreadyReturned);
+  if (!physicalReturn || !limitByStock) return remaining;
+  return Math.max(0, Math.min(remaining, stockQty));
+}
+
+export type NoteDocumentMode = 'debit' | 'credit';
+
+const NOTE_MODE_CONFIG = {
+  debit: {
+    title: 'Criar nota de débito',
+    subtitle:
+      'Devolução / correcção contra uma fatura de fornecedor (FTF). Com devolução física o stock baixa — só é possível se ainda houver existências no armazém.',
+    sourceLabel: 'Fatura de fornecedor (origem)',
+    sourceEmpty: 'Sem faturas de fornecedor…',
+    sourcePlaceholder: 'Seleccione a FTF…',
+    partyLabel: 'Fornecedor',
+    partyFallback: 'Fornecedor',
+    qtyHeader: 'FTF',
+    returnedLabel: 'já ND',
+    documentType: 'Nota de débito',
+    prefix: 'ND' as const,
+    sourceDocType: 'FTF',
+    saveLabel: 'Emitir ND',
+    physicalReturnLabel: 'Devolução física (baixa stock)',
+    limitByStock: true,
+    selectSourceError: 'Seleccione a fatura de fornecedor (FTF) de origem.',
+    noStockError:
+      'Não há stock disponível para devolver nesta FTF (já foi vendido ou sem existências).',
+  },
+  credit: {
+    title: 'Criar nota de crédito',
+    subtitle:
+      'Devolução / correcção contra uma fatura de cliente (FT). Com devolução física o stock volta a entrar no armazém.',
+    sourceLabel: 'Fatura de cliente (origem)',
+    sourceEmpty: 'Sem faturas de cliente…',
+    sourcePlaceholder: 'Seleccione a FT…',
+    partyLabel: 'Cliente',
+    partyFallback: 'Cliente',
+    qtyHeader: 'FT',
+    returnedLabel: 'já NC',
+    documentType: 'Nota de crédito',
+    prefix: 'NC' as const,
+    sourceDocType: 'FT',
+    saveLabel: 'Emitir NC',
+    physicalReturnLabel: 'Devolução física (entra stock)',
+    limitByStock: false,
+    selectSourceError: 'Seleccione a fatura de cliente (FT) de origem.',
+    noStockError: 'Não há quantidades restantes nesta fatura para creditar.',
+  },
+} as const;
 
 export function SupplierDebitNoteModal({
   isOpen,
@@ -87,6 +157,7 @@ export function SupplierDebitNoteModal({
   initialSourceOrderId,
   initialSourceItems,
   onSaved,
+  mode = 'debit',
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -96,7 +167,11 @@ export function SupplierDebitNoteModal({
   initialSourceOrderId?: string | null;
   initialSourceItems?: DebitNoteSourceItem[];
   onSaved?: (result: { documentNumber: string }) => void;
+  /** debit = ND (fornecedor/FTF); credit = NC (cliente/FT) */
+  mode?: NoteDocumentMode;
 }) {
+  const cfg = NOTE_MODE_CONFIG[mode] ?? NOTE_MODE_CONFIG.debit;
+  const isCredit = mode === 'credit';
   const [sourceId, setSourceId] = useState('');
   const [lines, setLines] = useState<EditableLine[]>([]);
   const [physicalReturn, setPhysicalReturn] = useState(true);
@@ -109,20 +184,20 @@ export function SupplierDebitNoteModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const ftfOrders = useMemo(
+  const eligibleOrders = useMemo(
     () =>
       sourceOrders
-        .filter(isFtfOrder)
+        .filter((order) => (isCredit ? isFtOrder(order) : isFtfOrder(order)))
         .slice()
         .sort((a, b) =>
           String(b.document_number ?? '').localeCompare(String(a.document_number ?? ''), 'pt'),
         ),
-    [sourceOrders],
+    [sourceOrders, isCredit],
   );
 
   const selectedSource = useMemo(
-    () => ftfOrders.find((row) => String(row.id) === String(sourceId)) ?? null,
-    [ftfOrders, sourceId],
+    () => eligibleOrders.find((row) => String(row.id) === String(sourceId)) ?? null,
+    [eligibleOrders, sourceId],
   );
 
   const effectiveSource = initialSourceOrderId ? initialSourceOrder ?? selectedSource : selectedSource;
@@ -132,11 +207,11 @@ export function SupplierDebitNoteModal({
     if (!sourceNumber) return {} as Record<string, number>;
     const map: Record<string, number> = {};
     for (const order of sourceOrders) {
-      if (!isNdOrder(order)) continue;
+      if (isCredit ? !isNcOrder(order) : !isNdOrder(order)) continue;
       const linked = String(order.approved_document_number ?? '').trim().toUpperCase();
       const linkedType = String(order.approved_document_type ?? '').trim().toUpperCase();
       if (linked !== sourceNumber) continue;
-      if (linkedType && linkedType !== 'FTF') continue;
+      if (linkedType && linkedType !== cfg.sourceDocType) continue;
       const items = itemsByOrderId[String(order.id)] ?? [];
       for (const item of items) {
         const pid = item.product_id != null ? String(item.product_id) : '';
@@ -145,7 +220,7 @@ export function SupplierDebitNoteModal({
       }
     }
     return map;
-  }, [effectiveSource?.document_number, itemsByOrderId, sourceOrders]);
+  }, [cfg.sourceDocType, effectiveSource?.document_number, isCredit, itemsByOrderId, sourceOrders]);
 
   const taxRatio = useMemo(() => {
     if (!effectiveSource) return 0;
@@ -173,9 +248,14 @@ export function SupplierDebitNoteModal({
   }, [lines, taxRatio]);
 
   const noReturnableStock = useMemo(() => {
-    if (!physicalReturn || lines.length === 0) return false;
+    if (lines.length === 0) return false;
+    if (cfg.limitByStock && !physicalReturn) return false;
+    if (!cfg.limitByStock) {
+      return lines.every((line) => line.maxQty <= 0);
+    }
+    if (!physicalReturn) return false;
     return lines.every((line) => line.maxQty <= 0);
-  }, [lines, physicalReturn]);
+  }, [cfg.limitByStock, lines, physicalReturn]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -199,11 +279,12 @@ export function SupplierDebitNoteModal({
         setLoadingMeta(false);
       }
     })();
-  }, [initialSourceOrderId, isOpen]);
+  }, [initialSourceOrderId, isOpen, mode]);
 
   useEffect(() => {
-    if (!isOpen || !warehouseId || !physicalReturn) {
-      setStockByProductId({});
+    if (!isOpen || !warehouseId || !physicalReturn || !cfg.limitByStock) {
+      if (!cfg.limitByStock) setStockByProductId({});
+      if (!physicalReturn) setStockByProductId({});
       return;
     }
     let cancelled = false;
@@ -224,7 +305,7 @@ export function SupplierDebitNoteModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, physicalReturn, warehouseId]);
+  }, [cfg.limitByStock, isOpen, physicalReturn, warehouseId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -240,16 +321,22 @@ export function SupplierDebitNoteModal({
         .filter((item) => Number(item.quantity ?? 0) > 0)
         .map((item, index) => {
           const productId = item.product_id != null ? String(item.product_id) : null;
-          const ftfQty = Math.max(0, Number(item.quantity ?? 0));
+          const sourceQty = Math.max(0, Number(item.quantity ?? 0));
           const alreadyReturned = productId ? Number(returnedQtyByProduct[productId] ?? 0) || 0 : 0;
           const stockQty = productId ? Number(stockByProductId[productId] ?? 0) || 0 : 0;
-          const maxQty = computeMaxQty(ftfQty, alreadyReturned, stockQty, physicalReturn);
+          const maxQty = computeMaxQty(
+            sourceQty,
+            alreadyReturned,
+            stockQty,
+            physicalReturn,
+            cfg.limitByStock,
+          );
           return {
             key: String(item.id ?? `line-${index}`),
             productId,
             name: String(item.product_name ?? `Item ${index + 1}`),
             unit: String(item.unit ?? 'un'),
-            ftfQty,
+            ftfQty: sourceQty,
             alreadyReturned,
             stockQty,
             maxQty,
@@ -260,6 +347,7 @@ export function SupplierDebitNoteModal({
         }),
     );
   }, [
+    cfg.limitByStock,
     effectiveSource,
     initialSourceItems,
     initialSourceOrderId,
@@ -298,14 +386,14 @@ export function SupplierDebitNoteModal({
     if (saving) return;
     setError('');
     if (!effectiveSource?.document_number) {
-      setError('Seleccione a fatura de fornecedor (FTF) de origem.');
+      setError(cfg.selectSourceError);
       return;
     }
     const activeLines = lines.filter((line) => line.selected && line.quantity > 0);
     if (activeLines.length === 0) {
       setError(
         physicalReturn && noReturnableStock
-          ? 'Não há stock disponível para devolver nesta FTF (já foi vendido ou sem existências).'
+          ? cfg.noStockError
           : 'Seleccione pelo menos um produto e indique a quantidade.',
       );
       return;
@@ -318,11 +406,11 @@ export function SupplierDebitNoteModal({
       setError('Seleccione o armazém da devolução.');
       return;
     }
-    if (physicalReturn && activeLines.some((line) => !line.productId)) {
+    if (physicalReturn && cfg.limitByStock && activeLines.some((line) => !line.productId)) {
       setError('Há linhas sem produto ligado — não é possível baixar stock.');
       return;
     }
-    if (physicalReturn) {
+    if (physicalReturn && cfg.limitByStock) {
       const overStock = activeLines.find((line) => line.quantity > line.stockQty + 1e-6);
       if (overStock) {
         setError(
@@ -352,14 +440,14 @@ export function SupplierDebitNoteModal({
       });
 
       const payload = {
-        documentType: 'Nota de débito',
-        prefix: 'ND',
+        documentType: cfg.documentType,
+        prefix: cfg.prefix,
         paid: true,
         physicalReturn,
         sourceDocumentNumber: String(effectiveSource.document_number).trim(),
         externalDocument: String(effectiveSource.document_number).trim(),
         customerId: effectiveSource.customer_id != null ? String(effectiveSource.customer_id) : null,
-        customerName: String(effectiveSource.client_name ?? 'Fornecedor'),
+        customerName: String(effectiveSource.client_name ?? cfg.partyFallback),
         warehouseId: physicalReturn ? warehouseId : null,
         total: totals.gross,
         subtotal: totals.net,
@@ -378,7 +466,9 @@ export function SupplierDebitNoteModal({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(extractApiErrorMessage(body, `Falha ao criar ND (${res.status})`));
+        throw new Error(
+          extractApiErrorMessage(body, `Falha ao criar ${cfg.prefix} (${res.status})`),
+        );
       }
       const data = unwrapApiSuccessPayload<{ documentNumber?: string }>(body) ?? body;
       const documentNumber = String(
@@ -387,7 +477,7 @@ export function SupplierDebitNoteModal({
       onSaved?.({ documentNumber });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao criar nota de débito.');
+      setError(err instanceof Error ? err.message : `Falha ao criar ${cfg.documentType.toLowerCase()}.`);
     } finally {
       setSaving(false);
     }
@@ -408,11 +498,8 @@ export function SupplierDebitNoteModal({
       >
         <div className="flex items-start justify-between gap-3 border-b border-zinc-800 px-5 py-4">
           <div>
-            <h2 className="text-base font-bold text-white">Criar nota de débito</h2>
-            <p className="mt-1 text-xs text-zinc-400">
-              Devolução / correcção contra uma fatura de fornecedor (FTF). Com devolução física o stock
-              baixa — só é possível se ainda houver existências no armazém.
-            </p>
+            <h2 className="text-base font-bold text-white">{cfg.title}</h2>
+            <p className="mt-1 text-xs text-zinc-400">{cfg.subtitle}</p>
           </div>
           <button
             type="button"
@@ -430,7 +517,7 @@ export function SupplierDebitNoteModal({
             {initialSourceOrderId ? (
               <div className="rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-sm md:col-span-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                  Fatura de fornecedor (origem)
+                  {cfg.sourceLabel}
                 </p>
                 <p className="mt-1 font-medium text-zinc-100">
                   {effectiveSource?.document_number || '—'}
@@ -439,23 +526,21 @@ export function SupplierDebitNoteModal({
             ) : (
               <label className="block space-y-1.5 md:col-span-2">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                  Fatura de fornecedor (origem)
+                  {cfg.sourceLabel}
                 </span>
                 <PosSelect
                   value={sourceId}
                   onChange={setSourceId}
-                  disabled={saving || loadingMeta || ftfOrders.length === 0}
+                  disabled={saving || loadingMeta || eligibleOrders.length === 0}
                   size="md"
                   placeholder={
-                    ftfOrders.length === 0
-                      ? 'Sem faturas de fornecedor…'
-                      : 'Seleccione a FTF…'
+                    eligibleOrders.length === 0 ? cfg.sourceEmpty : cfg.sourcePlaceholder
                   }
                   options={[
-                    { value: '', label: 'Seleccione a FTF…' },
-                    ...ftfOrders.map((order) => ({
+                    { value: '', label: cfg.sourcePlaceholder },
+                    ...eligibleOrders.map((order) => ({
                       value: String(order.id),
-                      label: `${order.document_number ?? 'FTF'} — ${order.client_name ?? 'Fornecedor'} (${formatMoneyMt(Number(order.total ?? 0))})`,
+                      label: `${order.document_number ?? cfg.sourceDocType} — ${order.client_name ?? cfg.partyFallback} (${formatMoneyMt(Number(order.total ?? 0))})`,
                     })),
                   ]}
                 />
@@ -463,7 +548,9 @@ export function SupplierDebitNoteModal({
             )}
 
             <div className="rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-sm">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Fornecedor</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                {cfg.partyLabel}
+              </p>
               <p className="mt-1 font-medium text-zinc-100">
                 {effectiveSource?.client_name || '—'}
               </p>
@@ -491,13 +578,14 @@ export function SupplierDebitNoteModal({
             checked={physicalReturn}
             onChange={setPhysicalReturn}
             disabled={saving || isWaste}
-            label="Devolução física (baixa stock)"
+            label={cfg.physicalReturnLabel}
           />
 
           {physicalReturn && noReturnableStock && effectiveSource ? (
             <p className="rounded border border-amber-700/50 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
-              Não há o que devolver: o stock desta FTF já foi vendido ou não existe no armazém seleccionado.
-              Desactive a devolução física para uma correcção apenas comercial, se aplicável.
+              {isCredit
+                ? 'Não há quantidades restantes nesta fatura para creditar.'
+                : 'Não há o que devolver: o stock desta FTF já foi vendido ou não existe no armazém seleccionado. Desactive a devolução física para uma correcção apenas comercial, se aplicável.'}
             </p>
           ) : null}
 
@@ -539,14 +627,16 @@ export function SupplierDebitNoteModal({
             <div className="grid grid-cols-[48px_minmax(0,1.4fr)_72px_72px_88px_100px] gap-2 border-b border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
               <span className="text-center">Incluir</span>
               <span>Produto</span>
-              <span className="text-right">FTF</span>
-              <span className="text-right">{physicalReturn ? 'Stock' : 'Rest.'}</span>
+              <span className="text-right">{cfg.qtyHeader}</span>
+              <span className="text-right">
+                {cfg.limitByStock && physicalReturn ? 'Stock' : 'Rest.'}
+              </span>
               <span className="text-right">Devolver</span>
               <span className="text-right">Total</span>
             </div>
             {!effectiveSource ? (
               <p className="px-3 py-8 text-center text-xs text-zinc-500">
-                Escolha uma FTF para carregar as linhas.
+                Escolha uma {cfg.sourceDocType} para carregar as linhas.
               </p>
             ) : lines.length === 0 ? (
               <p className="px-3 py-8 text-center text-xs text-zinc-500">
@@ -558,7 +648,7 @@ export function SupplierDebitNoteModal({
                   const lineNet = line.selected ? roundMoney(line.unitPrice * line.quantity) : 0;
                   const lineTax = roundMoney(lineNet * taxRatio);
                   const lineGross = roundMoney(lineNet + lineTax);
-                  const blocked = physicalReturn && line.maxQty <= 0;
+                  const blocked = cfg.limitByStock && physicalReturn && line.maxQty <= 0;
                   return (
                     <div
                       key={line.key}
@@ -570,9 +660,9 @@ export function SupplierDebitNoteModal({
                         <input
                           type="checkbox"
                           checked={line.selected}
-                          disabled={saving || blocked}
+                          disabled={saving || blocked || line.maxQty <= 0}
                           onChange={(event) => toggleLine(line.key, event.target.checked)}
-                          aria-label={`Incluir ${line.name} na nota de débito`}
+                          aria-label={`Incluir ${line.name} na ${cfg.documentType.toLowerCase()}`}
                           className="h-4 w-4 accent-[#0001fb]"
                         />
                       </div>
@@ -581,7 +671,7 @@ export function SupplierDebitNoteModal({
                         <p className="text-[10px] text-zinc-500">
                           {formatMoneyMt(line.unitPrice)} / {line.unit}
                           {line.alreadyReturned > 0
-                            ? ` · já ND: ${line.alreadyReturned}`
+                            ? ` · ${cfg.returnedLabel}: ${line.alreadyReturned}`
                             : ''}
                           {blocked ? ' · sem stock' : ''}
                         </p>
@@ -590,7 +680,7 @@ export function SupplierDebitNoteModal({
                         {line.ftfQty}
                       </span>
                       <span className="text-right text-xs text-zinc-400 tabular-nums">
-                        {physicalReturn
+                        {cfg.limitByStock && physicalReturn
                           ? line.stockQty
                           : Math.max(0, line.ftfQty - line.alreadyReturned)}
                       </span>
@@ -641,12 +731,18 @@ export function SupplierDebitNoteModal({
           </button>
           <button
             type="button"
-            disabled={saving || loadingMeta || (physicalReturn && noReturnableStock)}
+            disabled={
+              saving ||
+              loadingMeta ||
+              (physicalReturn && cfg.limitByStock && noReturnableStock) ||
+              (!physicalReturn && noReturnableStock) ||
+              (isCredit && noReturnableStock)
+            }
             onClick={() => void handleSave()}
             className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1aff] disabled:opacity-40"
           >
             {saving ? <Loader2 size={16} className="animate-spin" /> : <FileMinus2 size={16} />}
-            Emitir ND
+            {cfg.saveLabel}
           </button>
         </div>
       </div>
