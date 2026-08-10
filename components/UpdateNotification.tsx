@@ -48,10 +48,8 @@ export function UpdateNotification() {
 
   const visible = useMemo(() => {
     const status = state.status ?? 'idle';
-    if (status === 'idle') return false;
-    if (state.dismissed && status === 'idle') return false;
     return status === 'available' || status === 'downloading' || status === 'downloaded' || status === 'error';
-  }, [state.dismissed, state.status]);
+  }, [state.status]);
 
   const percent = Math.max(0, Math.min(100, Math.round(Number(state.percent) || 0)));
   const versionLabel = state.version ? `v${state.version}` : 'nova versão';
