@@ -70,7 +70,7 @@ function tenderLabel(paymentMethod) {
   const raw = String(paymentMethod ?? '').trim();
   if (!raw) return 'OUTROS';
   const lower = raw.toLowerCase();
-  if (isCashTender(raw)) return 'DINHEIRO';
+  if (isCashTender(raw)) return 'Dinheiro';
   if (lower.includes('conta corrente') || lower.includes('conta-corrente') || lower === 'account') {
     return 'CONTA CORRENTE';
   }

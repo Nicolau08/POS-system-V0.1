@@ -641,7 +641,7 @@ export default function InventoryManager() {
           title={!selectedProductId ? 'Selecione um produto primeiro' : undefined}
         />
         <div className="ml-auto flex min-w-[200px] items-center gap-2 px-2">
-          <span className="whitespace-nowrap text-[10px] font-bold uppercase text-zinc-500">Armazém</span>
+          <span className="whitespace-nowrap text-[10px] font-bold uppercase text-zinc-400">Armazém</span>
           <PosSelect
             value={filterWarehouseId}
             onChange={(value) => {
@@ -653,7 +653,7 @@ export default function InventoryManager() {
               label: w.isDefault ? `${w.name} (principal)` : w.name,
             }))}
             size="sm"
-            triggerClassName="!h-8 !bg-[#171717] !border-zinc-700"
+            triggerClassName="!h-8"
           />
         </div>
         <ManagementToolbarDivider />
@@ -781,7 +781,7 @@ export default function InventoryManager() {
             className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]"
             onClick={() => setSelectedProductId(null)}
           >
-            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
+            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-[color:var(--pos-border)] [&_td]:border-[color:var(--pos-border)]">
               <thead className="sticky top-0 z-10 bg-[#141414]">
                 <tr className="border-b border-[#0001fb]/70">
                   <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Código</th>
@@ -893,7 +893,7 @@ export default function InventoryManager() {
           <div className="h-auto min-h-20 bg-[#141414] border-t border-zinc-800 flex items-center justify-end px-8 py-3 gap-14">
             {canSeeCost ? (
               <div className="min-w-[200px] text-right text-white tabular-nums">
-                <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-400">
                   Preço de custo
                 </p>
                 <div className="inline-grid grid-cols-[auto_auto] items-baseline gap-x-3 gap-y-0.5 text-right">
@@ -910,7 +910,7 @@ export default function InventoryManager() {
               </div>
             ) : null}
             <div className="min-w-[200px] text-right text-white tabular-nums">
-              <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+              <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-400">
                 Preço de venda
               </p>
               <div className="inline-grid grid-cols-[auto_auto] items-baseline gap-x-3 gap-y-0.5 text-right">

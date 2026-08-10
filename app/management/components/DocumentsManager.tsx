@@ -1,15 +1,18 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Banknote, Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileMinus2, FileSpreadsheet, PackagePlus, Printer, RefreshCcw, X } from 'lucide-react';
+import { Ban, Banknote, Calendar, CalendarDays, Check, ChevronLeft, ChevronRight, FileMinus2, FileSpreadsheet, PackagePlus, Printer, RefreshCcw, X } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { extractApiErrorMessage, unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
 import { formatDocumentReferenceDisplay } from '@/lib/documents/documentReference';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { saveSalesDocumentAsPdf } from '@/lib/documents/salesDocumentPrint';
 import { printSalesDocumentThermalSecondCopy } from '@/lib/documents/thermalReceiptPrint';
 import { fetchCompanyProfile, fetchPaymentMethods } from '@/lib/services/posService';
 import { getPosTaxPercentLabel, getPosTaxRate } from '@/lib/taxConfig';
+import { usePermissions } from '@/hooks/usePermissions';
+import { ConfirmDialog } from '@/app/pos/components/ConfirmDialog';
 import type {
   CartItem,
   CompanyProfile,
@@ -23,8 +26,35 @@ import type { DocumentsPartyKind } from '@/app/management/documentsMenu';
 import { PaymentModal } from '@/app/pos/components/PaymentModal';
 import { SupplierDebitNoteModal } from '@/app/management/components/SupplierDebitNoteModal';
 import PurchaseStockModal, {
+  type DocumentCreatePrefix,
   type PurchaseProductOption,
 } from '@/app/management/components/PurchaseStockModal';
+
+const CREATE_DOC_BUTTONS: Record<
+  DocumentCreatePrefix,
+  { label: string; title: string; successMessage: string }
+> = {
+  FTF: {
+    label: 'Criar Fatura de Fornecedor',
+    title: 'Registar compra (mesma função do Stock)',
+    successMessage: 'Fatura de Fornecedor registada.',
+  },
+  FP: {
+    label: 'Criar Cotação',
+    title: 'Criar cotação de cliente',
+    successMessage: 'Cotação registada.',
+  },
+  FT: {
+    label: 'Criar Fatura',
+    title: 'Criar fatura de cliente',
+    successMessage: 'Fatura registada.',
+  },
+  VD: {
+    label: 'Criar Venda a Dinheiro',
+    title: 'Criar venda a dinheiro',
+    successMessage: 'Venda a dinheiro registada.',
+  },
+};
 
 type OrderRow = {
   id: number | string;
@@ -200,7 +230,12 @@ function supplierInvoiceOutstanding(row: OrderRow | null | undefined) {
 
 function customerInvoiceOutstanding(row: OrderRow | null | undefined) {
   if (!row) return 0;
-  return Math.max(0, Number(row.total ?? 0) - Number(row.receipt_total ?? 0));
+  return Math.max(
+    0,
+    Number(row.total ?? 0) -
+      Number(row.receipt_total ?? 0) -
+      Number(row.credit_note_total ?? 0),
+  );
 }
 
 function customerInvoiceIsFullyPaid(row: OrderRow | null | undefined) {
@@ -324,6 +359,8 @@ export default function DocumentsManager({
   externalDocType?: string | null;
   externalPartyKind?: DocumentsPartyKind | null;
 } = {}) {
+  const { can } = usePermissions();
+  const canAnularVd = can('vendas.anular_vd', 5);
   const initialViewState = useMemo(() => loadDocumentsViewState(), []);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, OrderItemRow[]>>({});
@@ -354,8 +391,12 @@ export default function DocumentsManager({
   const [actionMessage, setActionMessage] = useState('');
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isDebitNoteModalOpen, setIsDebitNoteModalOpen] = useState(false);
+  const [isCreditNoteModalOpen, setIsCreditNoteModalOpen] = useState(false);
   const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
+  const [isAnullingVd, setIsAnullingVd] = useState(false);
+  const [isAnularConfirmOpen, setIsAnularConfirmOpen] = useState(false);
   const [purchaseProducts, setPurchaseProducts] = useState<PurchaseProductOption[]>([]);
+  const [saleProducts, setSaleProducts] = useState<PurchaseProductOption[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodOption[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [receivedAmount, setReceivedAmount] = useState('');
@@ -413,9 +454,9 @@ export default function DocumentsManager({
       if (!ordersRes.ok) throw new Error(`Falha ao carregar documentos (${ordersRes.status})`);
       if (!salesRes.ok) throw new Error(`Falha ao carregar vendas (${salesRes.status})`);
       if (!itemsRes.ok) throw new Error(`Falha ao carregar itens (${itemsRes.status})`);
-      if (!usersRes.ok) throw new Error(`Falha ao carregar usuários (${usersRes.status})`);
       if (!clientsRes.ok) throw new Error(`Falha ao carregar clientes (${clientsRes.status})`);
       if (!productsRes.ok) throw new Error(`Falha ao carregar produtos (${productsRes.status})`);
+      // /users exige admin — sem isso o filtro de utilizador fica vazio, mas os documentos carregam.
 
       const docsOrders = (unwrapApiSuccessPayload<OrderRow[]>(await ordersRes.json()) ?? []) as OrderRow[];
       const salesOrders = (unwrapApiSuccessPayload<OrderRow[]>(await salesRes.json()) ?? []) as OrderRow[];
@@ -449,7 +490,15 @@ export default function DocumentsManager({
       });
       setOrders(safeOrders);
 
-      const usersData = (unwrapApiSuccessPayload<Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>>(await usersRes.json()) ?? []);
+      const usersData = usersRes.ok
+        ? (unwrapApiSuccessPayload<
+            Array<{ name?: string | null; surname?: string | null; active?: boolean | number | null }>
+          >(await usersRes.json()) ?? [])
+        : [];
+      if (!usersRes.ok) {
+        // Descarta o body de erro para não bloquear o resto do fluxo.
+        void usersRes.json().catch(() => null);
+      }
       const clientsData = (unwrapApiSuccessPayload<Array<{ name?: string | null }>>(await clientsRes.json()) ?? []);
       const productsData = (unwrapApiSuccessPayload<
         Array<{
@@ -457,6 +506,7 @@ export default function DocumentsManager({
           name?: string | null;
           code?: number | null;
           cost?: number | null;
+          price?: number | null;
           unit?: string | null;
           stock_quantity?: number | null;
           track_lot?: boolean | number | null;
@@ -489,6 +539,24 @@ export default function DocumentsManager({
             name: String(p.name ?? '').trim() || 'Produto',
             code: p.code != null ? Number(p.code) : undefined,
             cost: Number(p.cost ?? 0) || 0,
+            price: Number(p.price ?? 0) || 0,
+            unit: p.unit != null ? String(p.unit) : undefined,
+            stock_quantity: Number(p.stock_quantity ?? 0) || 0,
+            track_lot: Boolean(p.track_lot),
+            tax_rate_id: p.tax_rate_id != null ? String(p.tax_rate_id) : null,
+          }))
+          .filter((p) => Boolean(p.id)),
+      );
+
+      setSaleProducts(
+        productsData
+          .filter((p) => p?.active !== 0 && p?.active !== false)
+          .map((p) => ({
+            id: String(p.id ?? ''),
+            name: String(p.name ?? '').trim() || 'Produto',
+            code: p.code != null ? Number(p.code) : undefined,
+            cost: Number(p.cost ?? 0) || 0,
+            price: Number(p.price ?? 0) || 0,
             unit: p.unit != null ? String(p.unit) : undefined,
             stock_quantity: Number(p.stock_quantity ?? 0) || 0,
             track_lot: Boolean(p.track_lot),
@@ -595,7 +663,8 @@ export default function DocumentsManager({
       const customerName = String(getCustomerName(order));
       const userName = String(getUserName(order));
       const docType = String(order.doc_type || '').trim();
-      const paymentMethod = String(order.payment_method || '-');
+      const paymentMethod = formatPaymentMethodLabel(order.payment_method);
+      const paymentMethodRaw = String(order.payment_method || '-');
       const createdAt = String(order.created_at || '');
       const status = String(order.status || '-');
 
@@ -627,6 +696,7 @@ export default function DocumentsManager({
         documentNumber.toLowerCase().includes(normalizedQuery) ||
         customerName.toLowerCase().includes(normalizedQuery) ||
         paymentMethod.toLowerCase().includes(normalizedQuery) ||
+        paymentMethodRaw.toLowerCase().includes(normalizedQuery) ||
         docType.toLowerCase().includes(normalizedQuery) ||
         userName.toLowerCase().includes(normalizedQuery) ||
         orderId.toLowerCase().includes(normalizedQuery)
@@ -674,7 +744,17 @@ export default function DocumentsManager({
 
   const showPayToolbarAction = selectedDocType === 'FTF' || selectedDocType === 'FT';
   const showCreateDebitNoteAction = selectedDocType === 'FTF';
-  const showCreateSupplierInvoiceAction = selectedDocType === 'FTF';
+  const showCreateCreditNoteAction = selectedDocType === 'FT';
+  const showAnularVdAction = selectedDocType === 'VD' && canAnularVd;
+  const createDocPrefix =
+    selectedDocType === 'FTF' ||
+    selectedDocType === 'FP' ||
+    selectedDocType === 'FT' ||
+    selectedDocType === 'VD'
+      ? (selectedDocType as DocumentCreatePrefix)
+      : null;
+  const showCreateDocumentAction = Boolean(createDocPrefix);
+  const createDocButton = createDocPrefix ? CREATE_DOC_BUTTONS[createDocPrefix] : null;
 
   const outstandingTotal = useMemo(() => {
     if (selectedDocType !== 'FTF' && selectedDocType !== 'FT') return 0;
@@ -792,6 +872,48 @@ export default function DocumentsManager({
   const handleRefresh = () => {
     setActionMessage('');
     void fetchData();
+  };
+
+  const selectedOrderIsAnullableVd = useMemo(() => {
+    if (!showAnularVdAction || !selectedOrder) return false;
+    const status = String(selectedOrder.status ?? '').toLowerCase();
+    if (status === 'cancelled' || status === 'canceled' || status === 'void' || status === 'anulado') {
+      return false;
+    }
+    return resolveOrderDocTypeFilterCode(selectedOrder) === 'VD';
+  }, [selectedOrder, showAnularVdAction]);
+
+  const handleAnularVd = async () => {
+    if (!selectedOrder || !selectedOrderIsAnullableVd || isAnullingVd) return;
+    const docNumber = String(selectedOrder.document_number ?? selectedOrder.id).trim();
+
+    setIsAnularConfirmOpen(false);
+    setIsAnullingVd(true);
+    setActionMessage('');
+    try {
+      const res = await fetch(
+        `${getPosApiBase()}/documentos/${encodeURIComponent(String(selectedOrder.id))}/anular`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getPosUserAuthHeaders(),
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(extractApiErrorMessage(payload, `Falha ao anular VD (${res.status})`));
+      }
+      setActionMessage(`VD ${docNumber} anulada.`);
+      setSelectedOrderId(null);
+      await fetchData();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : 'Falha ao anular VD.');
+    } finally {
+      setIsAnullingVd(false);
+    }
   };
 
   const handleOpenPayment = () => {
@@ -1045,26 +1167,28 @@ export default function DocumentsManager({
           <ManagementToolbarButton icon={<RefreshCcw size={20} />} label="Atualizar" onClick={handleRefresh} />
           <ManagementToolbarButton icon={<Printer size={20} />} label="Imprimir" onClick={handlePrint} />
           <ManagementToolbarButton icon={<FileSpreadsheet size={20} />} label="Salvar como PDF" onClick={handleSavePdf} />
-          {showCreateSupplierInvoiceAction ? (
+          {showCreateDocumentAction && createDocButton && createDocPrefix ? (
             <>
               <ManagementToolbarDivider />
               <ManagementToolbarButton
                 icon={<PackagePlus size={20} />}
-                label="Criar Fatura de Fornecedor"
+                label={createDocButton.label}
                 onClick={() => {
                   setActionMessage('');
                   setIsPurchaseOpen(true);
                 }}
-                title="Registar compra (mesma função do Stock)"
+                title={createDocButton.title}
               />
             </>
           ) : null}
           {showPayToolbarAction ? (
             <>
-              {!showCreateSupplierInvoiceAction ? <ManagementToolbarDivider /> : null}
+              {!showCreateDocumentAction ? <ManagementToolbarDivider /> : null}
               <ManagementToolbarButton
                 icon={<Banknote size={20} />}
-                label={selectedDocType === 'FTF' ? 'Pagar Fatura de Fornecedor' : 'Pagar'}
+                label={
+                  selectedDocType === 'FTF' ? 'Pagar Fatura de Fornecedor' : 'Pagar Fatura'
+                }
                 disabled={!selectedOrderIsPayable}
                 onClick={handleOpenPayment}
                 title={
@@ -1075,7 +1199,7 @@ export default function DocumentsManager({
                     : selectedOrderIsPayable
                       ? selectedDocType === 'FTF'
                         ? 'Registar pagamento da Fatura de Fornecedor'
-                        : 'Registar pagamento'
+                        : 'Registar pagamento da fatura'
                       : 'Documento já pago'
                 }
               />
@@ -1092,6 +1216,41 @@ export default function DocumentsManager({
                   setIsDebitNoteModalOpen(true);
                 }}
                 title="Emitir nota de débito contra uma fatura de fornecedor"
+              />
+            </>
+          ) : null}
+          {showCreateCreditNoteAction ? (
+            <>
+              <ManagementToolbarDivider />
+              <ManagementToolbarButton
+                icon={<FileMinus2 size={20} />}
+                label="Emitir Nota de Crédito"
+                onClick={() => {
+                  setActionMessage('');
+                  setIsCreditNoteModalOpen(true);
+                }}
+                title="Emitir nota de crédito contra uma fatura de cliente"
+              />
+            </>
+          ) : null}
+          {showAnularVdAction ? (
+            <>
+              <ManagementToolbarDivider />
+              <ManagementToolbarButton
+                icon={<Ban size={20} />}
+                label="Anular"
+                disabled={!selectedOrderIsAnullableVd || isAnullingVd}
+                onClick={() => {
+                  setActionMessage('');
+                  setIsAnularConfirmOpen(true);
+                }}
+                title={
+                  !selectedOrder
+                    ? 'Selecione uma venda a dinheiro para anular'
+                    : selectedOrderIsAnullableVd
+                      ? 'Anular venda a dinheiro e devolver stock'
+                      : 'Esta VD já está anulada'
+                }
               />
             </>
           ) : null}
@@ -1114,20 +1273,21 @@ export default function DocumentsManager({
         </div>
       ) : null}
 
-      {isPurchaseOpen && showCreateSupplierInvoiceAction ? (
+      {isPurchaseOpen && createDocPrefix && createDocButton ? (
         <PurchaseStockModal
           isOpen={isPurchaseOpen}
           onClose={() => setIsPurchaseOpen(false)}
-          products={purchaseProducts}
+          documentPrefix={createDocPrefix}
+          products={createDocPrefix === 'FTF' ? purchaseProducts : saleProducts}
           onSaved={async () => {
-            setActionMessage('Fatura de Fornecedor registada.');
+            setActionMessage(createDocButton.successMessage);
             setIsPurchaseOpen(false);
             await fetchData();
           }}
         />
       ) : (
       <>
-      <div className="relative z-30 border-b border-zinc-800 bg-[#181818] px-3 py-2 overflow-visible">
+      <div className="relative z-30 border-b border-zinc-800 bg-[#1a1a1a] px-3 py-2 overflow-visible">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2 max-w-[980px]">
           <FilterSelect label="Cliente" value={selectedClient} onChange={setSelectedClient} options={['all', ...clientOptions]} />
           <FilterSelect
@@ -1210,7 +1370,9 @@ export default function DocumentsManager({
                     const docFilterCode = resolveOrderDocTypeFilterCode(row);
                     const referenceLabel = formatDocumentReferenceDisplay(row, docFilterCode);
                     const creditNoteTotal =
-                      docFilterCode === 'FTF' ? Number(row.credit_note_total ?? 0) : 0;
+                      docFilterCode === 'FTF' || docFilterCode === 'FT'
+                        ? Number(row.credit_note_total ?? 0)
+                        : 0;
                     const receiptTotal =
                       docFilterCode === 'FT' ? Number(row.receipt_total ?? 0) : 0;
                     const rowOutstanding =
@@ -1220,9 +1382,14 @@ export default function DocumentsManager({
                           ? customerInvoiceOutstanding(row)
                           : Math.max(0, Number(row.total ?? 0));
                     const fullyCredited =
-                      docFilterCode === 'FTF' && creditNoteTotal > 0 && rowOutstanding <= 0.009;
+                      (docFilterCode === 'FTF' || docFilterCode === 'FT') &&
+                      creditNoteTotal > 0 &&
+                      rowOutstanding <= 0.009 &&
+                      (docFilterCode === 'FTF' || receiptTotal <= 0.009);
                     const partiallyCredited =
-                      docFilterCode === 'FTF' && creditNoteTotal > 0 && !fullyCredited;
+                      (docFilterCode === 'FTF' || docFilterCode === 'FT') &&
+                      creditNoteTotal > 0 &&
+                      !fullyCredited;
                     const fullyPaidFt =
                       docFilterCode === 'FT' && customerInvoiceIsFullyPaid(row);
                     const partiallyPaidFt =
@@ -1239,7 +1406,14 @@ export default function DocumentsManager({
                         : due.tone === 'warning'
                           ? 'text-amber-300'
                           : 'text-zinc-300';
-                    const statusLabel = fullyCredited
+                    const cancelled =
+                      rowStatus === 'cancelled' ||
+                      rowStatus === 'canceled' ||
+                      rowStatus === 'void' ||
+                      rowStatus === 'anulado';
+                    const statusLabel = cancelled
+                      ? 'Anulado'
+                      : fullyCredited
                       ? 'Creditada'
                       : partiallyCredited
                         ? 'Crédito parcial'
@@ -1254,7 +1428,9 @@ export default function DocumentsManager({
                         : isQuotationOrProforma
                           ? 'Lançado'
                           : 'Não pago';
-                    const statusClass = fullyCredited
+                    const statusClass = cancelled
+                      ? 'bg-zinc-600 text-white'
+                      : fullyCredited
                       ? 'bg-green-600 text-white'
                       : partiallyCredited
                         ? 'bg-amber-600 text-white'
@@ -1528,9 +1704,33 @@ export default function DocumentsManager({
         setPaymentAmount={setPartialPaymentAmount}
       />
 
+      <ConfirmDialog
+        isOpen={isAnularConfirmOpen}
+        title="Anular VD"
+        message={
+          <>
+            <p>
+              Anular a venda a dinheiro{' '}
+              <span className="font-semibold text-white">
+                {String(selectedOrder?.document_number ?? selectedOrder?.id ?? '').trim()}
+              </span>
+              ?
+            </p>
+            <p className="text-zinc-400">O stock dos produtos será devolvido ao armazém.</p>
+          </>
+        }
+        confirmLabel="Anular"
+        cancelLabel="Cancelar"
+        tone="danger"
+        icon={<Ban size={22} />}
+        onCancel={() => setIsAnularConfirmOpen(false)}
+        onConfirm={() => void handleAnularVd()}
+      />
+
       <SupplierDebitNoteModal
         isOpen={isDebitNoteModalOpen}
         onClose={() => setIsDebitNoteModalOpen(false)}
+        mode="debit"
         sourceOrders={orders}
         itemsByOrderId={itemsByOrderId}
         initialSourceOrder={selectedOrder}
@@ -1541,6 +1741,33 @@ export default function DocumentsManager({
             result.documentNumber
               ? `Nota de débito ${result.documentNumber} criada.`
               : 'Nota de débito criada.',
+          );
+          void fetchData();
+        }}
+      />
+
+      <SupplierDebitNoteModal
+        isOpen={isCreditNoteModalOpen}
+        onClose={() => setIsCreditNoteModalOpen(false)}
+        mode="credit"
+        sourceOrders={orders}
+        itemsByOrderId={itemsByOrderId}
+        initialSourceOrder={selectedOrder}
+        initialSourceOrderId={
+          selectedOrder && resolveOrderDocTypeFilterCode(selectedOrder) === 'FT'
+            ? String(selectedOrder.id)
+            : null
+        }
+        initialSourceItems={
+          selectedOrder && resolveOrderDocTypeFilterCode(selectedOrder) === 'FT'
+            ? itemsByOrderId[String(selectedOrder.id)] ?? []
+            : []
+        }
+        onSaved={(result) => {
+          setActionMessage(
+            result.documentNumber
+              ? `Nota de crédito ${result.documentNumber} criada.`
+              : 'Nota de crédito criada.',
           );
           void fetchData();
         }}

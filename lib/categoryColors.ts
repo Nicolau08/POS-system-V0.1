@@ -81,3 +81,14 @@ export function hexToRgba(hex: string, alpha: number): string {
   const b = parseInt(normalized.slice(5, 7), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
+
+/** Texto legível sobre fundo colorido (luminância relativa). */
+export function contrastingTextOnHex(hex: string): '#111827' | '#ffffff' {
+  const normalized = normalizeHex(hex) ?? '#2563eb';
+  const r = parseInt(normalized.slice(1, 3), 16) / 255;
+  const g = parseInt(normalized.slice(3, 5), 16) / 255;
+  const b = parseInt(normalized.slice(5, 7), 16) / 255;
+  const toLinear = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  return luminance > 0.45 ? '#111827' : '#ffffff';
+}

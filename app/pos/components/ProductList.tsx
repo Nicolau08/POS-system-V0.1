@@ -4,15 +4,28 @@ import React from 'react';
 import { Search } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Product } from '@/app/pos/types';
-import { hexToRgba, resolveCategoryColor } from '@/lib/categoryColors';
+import { contrastingTextOnHex, hexToRgba, resolveCategoryColor } from '@/lib/categoryColors';
+import { usePosTheme } from '@/hooks/usePosTheme';
 
 // Product search, families and grid section extracted from the POS page.
-function familyChipStyle(family: string, selected: boolean, familyColors?: Record<string, string>) {
+function familyChipStyle(
+  family: string,
+  selected: boolean,
+  light: boolean,
+  familyColors?: Record<string, string>,
+) {
   const color = resolveCategoryColor(familyColors?.[family], family);
+  if (light) {
+    return {
+      backgroundColor: hexToRgba(color, selected ? 0.38 : 0.22),
+      color: '#111827',
+      border: `1px solid ${hexToRgba(color, selected ? 0.55 : 0.35)}`,
+    };
+  }
   if (selected) {
     return {
       backgroundColor: hexToRgba(color, 0.45),
-      color: '#ffffff',
+      color: contrastingTextOnHex(color),
     };
   }
   return {
@@ -54,6 +67,9 @@ export function ProductList({
   onFamiliesPointerRelease: (event: React.PointerEvent<HTMLDivElement>) => void;
   onFamiliesClickCapture: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
+  const theme = usePosTheme();
+  const light = theme === 'light';
+
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-[#121212]">
       <div className="h-14 p-2 flex items-center gap-2 bg-[#1a1a1a] border-b border-zinc-800">
@@ -64,7 +80,7 @@ export function ProductList({
           <input
             type="text"
             placeholder="Pesquisar produto por nome"
-            className="w-full bg-transparent py-2 px-2 outline-none text-sm placeholder:text-zinc-600"
+            className="w-full bg-transparent py-2 px-2 outline-none text-sm text-zinc-200 placeholder:text-zinc-500"
             value={searchQuery ?? ''}
             autoFocus
             onChange={(e) => onSearchChange(e.target.value)}
@@ -94,8 +110,12 @@ export function ProductList({
               onClick={() => onSelectCategory(null)}
               className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded text-sm font-semibold tracking-tight transition-all ${
                 !selectedCategory
-                  ? 'bg-zinc-800/70 text-white'
-                  : 'bg-zinc-900/50 text-zinc-300 hover:bg-zinc-800/70 hover:text-white'
+                  ? light
+                    ? 'bg-zinc-300 text-zinc-900 border border-zinc-400'
+                    : 'bg-zinc-800/70 text-white'
+                  : light
+                    ? 'bg-zinc-200/80 text-zinc-700 border border-zinc-300 hover:bg-zinc-300 hover:text-zinc-900'
+                    : 'bg-zinc-900/50 text-zinc-300 hover:bg-zinc-800/70 hover:text-white'
               }`}
             >
               Todas
@@ -103,16 +123,16 @@ export function ProductList({
             {productFamilies.map((family) => {
               const selected = selectedCategory === family;
               return (
-              <button
-                key={family}
-                onClick={() => onSelectCategory(family)}
-                style={familyChipStyle(family, selected, familyColors)}
-                className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded text-sm font-semibold tracking-tight transition-all ${
-                  selected ? '' : 'hover:brightness-110'
-                }`}
-              >
-                {family}
-              </button>
+                <button
+                  key={family}
+                  onClick={() => onSelectCategory(family)}
+                  style={familyChipStyle(family, selected, light, familyColors)}
+                  className={`shrink-0 w-[180px] md:w-[190px] lg:w-[210px] xl:w-[220px] h-14 rounded text-sm font-semibold tracking-tight transition-all ${
+                    selected ? '' : 'hover:brightness-110'
+                  }`}
+                >
+                  {family}
+                </button>
               );
             })}
           </div>
@@ -131,7 +151,8 @@ export function ProductList({
                 key={product.id}
                 onClick={() => onAddToCart(product)}
                 style={{
-                  backgroundColor: hexToRgba(cardColor, 0.2),
+                  backgroundColor: hexToRgba(cardColor, light ? 0.28 : 0.2),
+                  border: light ? `1px solid ${hexToRgba(cardColor, 0.4)}` : undefined,
                 }}
                 className="relative flex flex-col items-start justify-between h-28 p-4 rounded transition-all group text-left hover:brightness-110"
               >
@@ -139,26 +160,26 @@ export function ProductList({
                   <span
                     className={`absolute top-2 right-2 text-xs font-bold ${
                       product.stock_quantity <= 0
-                        ? 'text-red-500/80'
+                        ? 'text-red-600'
                         : product.min_stock !== undefined &&
                             product.min_stock > 0 &&
                             product.stock_quantity <= product.min_stock
-                          ? 'text-amber-400'
-                          : 'text-emerald-500/80'
+                          ? 'text-amber-600'
+                          : 'text-emerald-600'
                     }`}
                   >
                     {product.stock_quantity}
                   </span>
                 )}
                 <div className={hasImage ? 'pr-20' : 'pr-8'}>
-                  <span className="block text-sm font-medium text-zinc-100 group-hover:text-white transition-colors">
+                  <span className="block text-sm font-semibold text-zinc-100 group-hover:text-white transition-colors">
                     {product.name}
                   </span>
                   <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-400">
                     {product.category || 'Sem familia'}
                   </span>
                 </div>
-                <span className="text-sm font-mono font-medium text-zinc-200 group-hover:text-white transition-colors">
+                <span className="text-sm font-mono font-semibold text-zinc-200 group-hover:text-white transition-colors">
                   {formatPrice(product.price)}
                 </span>
 
@@ -174,7 +195,7 @@ export function ProductList({
         </div>
 
         {visibleProducts.length === 0 && (
-          <div className="h-full flex items-center justify-center text-zinc-600 text-sm">
+          <div className="h-full flex items-center justify-center text-zinc-500 text-sm">
             Nenhum item encontrado
           </div>
         )}

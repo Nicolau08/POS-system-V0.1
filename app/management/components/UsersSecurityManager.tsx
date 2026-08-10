@@ -81,6 +81,7 @@ const PERMISSION_RULES_KEYS = [
   'vendas.dividir_pedido',
   'vendas.aplicar_desconto',
   'vendas.apagar_documento',
+  'vendas.anular_vd',
   'vendas.devolucao',
   'vendas.override_taxes',
 
@@ -126,6 +127,7 @@ const OP_LABELS: Record<string, string> = {
   'vendas.dividir_pedido': 'Dividir pedido',
   'vendas.aplicar_desconto': 'Aplicar desconto',
   'vendas.apagar_documento': 'Apagar documento',
+  'vendas.anular_vd': 'Anular venda a dinheiro (VD)',
   'vendas.devolucao': 'Devolução',
   'vendas.override_taxes': 'Override taxes',
 
@@ -167,6 +169,7 @@ const SECURITY_GROUPS: SecurityGroup[] = [
       'vendas.dividir_pedido',
       'vendas.aplicar_desconto',
       'vendas.apagar_documento',
+      'vendas.anular_vd',
       'vendas.devolucao',
       'vendas.override_taxes',
     ],

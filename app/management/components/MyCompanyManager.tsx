@@ -153,12 +153,11 @@ export default function MyCompanyManager() {
   };
 
   const inputCls = (invalid?: boolean) =>
-    `w-full rounded border bg-[#111] px-2.5 py-1.5 text-xs text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-[#0001fb] ${
-      invalid ? 'border-rose-500 ring-1 ring-rose-500/30' : 'border-zinc-700'
+    `pos-field px-2.5 py-1.5 text-xs ${
+      invalid ? '!border-rose-500 ring-1 ring-rose-500/30' : ''
     }`;
 
-  const readOnlyCls =
-    'w-full cursor-default rounded border border-zinc-800 bg-[#0d0d0d] px-2.5 py-1.5 text-xs text-zinc-400 outline-none';
+  const readOnlyCls = 'pos-field px-2.5 py-1.5 text-xs';
 
   const resetBankDraft = () => {
     setBankDraft(createEmptyBankAccountDraft());
@@ -367,7 +366,7 @@ export default function MyCompanyManager() {
               if (innerTab === 'dados') void handleSaveDados();
             }}
             disabled={saving || loading || innerTab !== 'dados'}
-            className="inline-flex items-center gap-1.5 rounded bg-[#0001fb] px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-40"
+            className="pos-on-accent inline-flex items-center gap-1.5 rounded bg-[#0001fb] px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Check size={14} />
             Salvar

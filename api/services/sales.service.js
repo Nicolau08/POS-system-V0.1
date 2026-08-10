@@ -41,8 +41,8 @@ function isAccountReceivablePaymentMethod(rawMethod) {
 function resolveStoredPaymentMethod(rawMethod) {
   const raw = String(rawMethod ?? '').trim();
   if (!raw) return null;
-  const normalized = raw.toLowerCase().replace(/-/g, ' ');
-  if (normalized === 'cash' || normalized === 'dinheiro') return 'dinheiro';
+  const normalized = raw.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+  if (normalized === 'cash' || normalized === 'dinheiro') return 'Dinheiro';
   if (isAccountReceivablePaymentMethod(raw)) return 'conta corrente';
   return raw;
 }
@@ -293,7 +293,7 @@ export async function updateSalePaymentStatus(saleIdRaw, paidRaw, actorUser = nu
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
 
   const paid = Boolean(paidRaw);
-  const paymentMethod = paid ? 'dinheiro' : 'conta corrente';
+  const paymentMethod = paid ? 'Dinheiro' : 'conta corrente';
   const result = await runDb(
     `UPDATE vendas
      SET payment_method = ?,

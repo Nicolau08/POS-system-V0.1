@@ -1,5 +1,6 @@
 import type { CompanyProfile } from '@/app/pos/types';
 import { buildReceiptHeader, safeReceiptLogoSrc } from '@/lib/receiptCompanyHeader';
+import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 import type { SalesDocumentItem, SalesDocumentSale } from '@/lib/documents/salesDocumentPrint';
 import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
@@ -53,7 +54,7 @@ export function buildThermalReceiptMarkup(
   const docNumber = String(sale.document_number ?? sale.id ?? '-');
   const customerLabel = sale.client_name?.trim() || 'Consumidor Final';
   const attendant = sale.user_name?.trim() || 'Admin';
-  const paymentMethod = String(sale.payment_method ?? '-');
+  const paymentMethod = formatPaymentMethodLabel(sale.payment_method);
   const subtotal = Number(sale.subtotal ?? (Number(sale.total ?? 0) - Number(sale.tax ?? 0)));
   const tax = Number(sale.tax ?? 0);
   const total = Number(sale.total ?? 0);

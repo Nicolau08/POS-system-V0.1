@@ -1,7 +1,7 @@
 /** Meios de pagamento essenciais do POS (Dinheiro + Conta Corrente / dívida). */
 export const DEFAULT_PAYMENT_METHOD_SPECS = [
   {
-    name: 'DINHEIRO',
+    name: 'Dinheiro',
     code: 'cash',
     shortcut: '',
     position: 1,

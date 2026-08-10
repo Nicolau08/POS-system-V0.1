@@ -1,5 +1,6 @@
 import {
   approveCotacao,
+  anularVendaDinheiro,
   getDashboardSummary,
   getDocumentos,
   getDocumentosItens,
@@ -96,6 +97,15 @@ export async function previewDocumentPaymentController(req, res) {
 export async function registerDocumentPaymentController(req, res) {
   try {
     const payload = await registerDocumentPayment(req.body ?? {}, req.user ?? null);
+    return sendSuccess(res, payload);
+  } catch (error) {
+    return handleControllerError(res, error);
+  }
+}
+
+export async function anularVendaDinheiroController(req, res) {
+  try {
+    const payload = await anularVendaDinheiro(req.params?.id, req.body ?? {}, req.user ?? null);
     return sendSuccess(res, payload);
   } catch (error) {
     return handleControllerError(res, error);

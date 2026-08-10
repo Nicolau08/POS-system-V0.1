@@ -390,14 +390,13 @@ const parseLicenseInput = (rawInput) => {
   if (isReactivationTokenInput(rawInput)) {
     return {
       payload: null,
-      error:
-        'Token de 12 dígitos: reinicie a app POS (fecha e volta a abrir o Electron) ou use «Revalidar» após prolongar na consola. Confirme POS_LICENSE_ISSUER_BASE_URL no .env.local.',
+      error: 'Token errado.',
     };
   }
 
   return {
     payload: null,
-    error: 'Formato de licença inválido. Use JSON ou base64(JSON), ou o token de 12 dígitos da consola.',
+    error: 'Token errado.',
   };
 };
 
@@ -601,6 +600,7 @@ const tryOfflineReactivationInElectron = async (
     expectedMachineId: machineId,
     licenseMachineId: localPayload.machine_id,
     voucherNonce: localPayload.voucher_nonce,
+    currentExpirationIso: localPayload.expiration || localPayload.expires_at,
   });
   if (!verified.ok) {
     return { ok: false, offlineInvalid: true, error: verified.error || 'Token offline inválido.' };
@@ -627,66 +627,90 @@ const activateLicenseInternal = async (rawLicenseKey) => {
   const expectedTenantId = await resolveExpectedTenantId();
 
   if (isReactivationTokenInput(rawLicenseKey)) {
-    const offline = await tryOfflineReactivationInElectron(
-      rawLicenseKey,
-      machineId,
-      licensePath,
-      expectedTenantId,
-    );
-    if (offline.ok) {
+    // Preferir consola (marca used_at); offline só se rede/issuer indisponível.
+    const redeem = await redeemReactivationTokenFromIssuer(rawLicenseKey, machineId);
+    if (redeem.ok) {
+      const parsedInput = parseLicenseInput(redeem.licenseKey);
+      if (!parsedInput.payload) {
+        return {
+          success: false,
+          machineId,
+          activationCode,
+          licensePath,
+          error: parsedInput.error || 'Licença devolvida pela consola inválida.',
+        };
+      }
+      const validation = validateLicensePayload({
+        payload: parsedInput.payload,
+        expectedTenantId,
+      });
+      if (!validation.ok) {
+        return {
+          success: false,
+          machineId,
+          activationCode,
+          licensePath,
+          error: validation.reason || 'Licença inválida.',
+        };
+      }
+      const licenseToWrite =
+        redeem.license && typeof redeem.license === 'object'
+          ? redeem.license
+          : { ...parsedInput.payload, activated_at: new Date().toISOString() };
+      await ensureDir(path.dirname(licensePath));
+      await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
       return {
         success: true,
         machineId,
         activationCode,
         licensePath,
-        offline: true,
       };
     }
 
-    const redeem = await redeemReactivationTokenFromIssuer(rawLicenseKey, machineId);
-    if (!redeem.ok) {
-      const offlineHint = offline.offlineInvalid && offline.error ? `${offline.error} ` : '';
+    const issuerMsg = String(redeem.error ?? '');
+    const isTokenLifecycleError =
+      /já foi utilizado|Token expirado|não encontrado|não corresponde|não autorizada|Token inválido|Token errado/i.test(
+        issuerMsg,
+      );
+    const issuerUnavailable =
+      !issuerMsg ||
+      /POS_LICENSE_ISSUER_BASE_URL|fetch failed|Failed to fetch|ECONN|ENOTFOUND|ETIMEDOUT|aborted|network|timeout|503|502/i.test(
+        issuerMsg,
+      );
+
+    if (!isTokenLifecycleError && issuerUnavailable) {
+      const offline = await tryOfflineReactivationInElectron(
+        rawLicenseKey,
+        machineId,
+        licensePath,
+        expectedTenantId,
+      );
+      if (offline.ok) {
+        // Melhor esforço: consumir na consola quando voltar a rede.
+        void redeemReactivationTokenFromIssuer(rawLicenseKey, machineId).catch(() => null);
+        return {
+          success: true,
+          machineId,
+          activationCode,
+          licensePath,
+          offline: true,
+        };
+      }
       return {
         success: false,
         machineId,
         activationCode,
         licensePath,
-        error: `${offlineHint}${redeem.error || 'Token de reativação inválido.'}`.trim(),
+        error: offline.error || issuerMsg || 'Token de reativação inválido.',
       };
     }
-    const parsedInput = parseLicenseInput(redeem.licenseKey);
-    if (!parsedInput.payload) {
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: parsedInput.error || 'Licença devolvida pela consola inválida.',
-      };
-    }
-    const validation = validateLicensePayload({
-      payload: parsedInput.payload,
-      expectedTenantId,
-    });
-    if (!validation.ok) {
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: validation.reason || 'Licença inválida.',
-      };
-    }
-    const licenseToWrite = redeem.license && typeof redeem.license === 'object'
-      ? redeem.license
-      : { ...parsedInput.payload, activated_at: new Date().toISOString() };
-    await ensureDir(path.dirname(licensePath));
-    await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
+
     return {
-      success: true,
+      success: false,
       machineId,
       activationCode,
       licensePath,
+      error: issuerMsg || 'Token de reativação inválido.',
     };
   }
 

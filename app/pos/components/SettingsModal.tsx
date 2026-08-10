@@ -10,6 +10,7 @@ import {
   type PosSettings,
   type PosSettingsSection,
 } from '@/lib/posSettings';
+import { applyPosTheme } from '@/components/ThemeProvider';
 import { listCustomerDisplayPorts, writeCustomerDisplay, type SerialPortOption } from '@/lib/customerDisplayClient';
 import { PrintOptionsPanel } from './PrintOptionsPanel';
 import { LocationsSettingsPanel } from './LocationsSettingsPanel';
@@ -21,6 +22,7 @@ import { useCommerceProfile } from '@/lib/useCommerceProfile';
 import { commerceTypeLabel, type CommerceFeatures } from '@/lib/commerceProfile';
 import { formatDateTime24h } from '@/lib/formatDateTime';
 import DatabaseBackupPanel from '@/app/management/components/DatabaseBackupPanel';
+import SystemLogsManager from '@/app/management/components/SystemLogsManager';
 import DatabaseResetPanel from './DatabaseResetPanel';
 
 const ALL_SECTIONS: Array<{
@@ -42,6 +44,7 @@ const ALL_SECTIONS: Array<{
   { id: 'email', label: 'Configurações de email' },
   { id: 'impressao', label: 'Opções de impressão' },
   { id: 'banco', label: 'Banco de dados' },
+  { id: 'logs', label: 'Logs do sistema' },
   { id: 'licenca', label: 'Licença' },
   { id: 'sobre', label: 'Sobre' },
 ];
@@ -145,7 +148,7 @@ const CUSTOMER_DISPLAY_PORT_DEFAULTS = {
 export function SettingsModal({
   isOpen,
   onClose,
-  initialSection = 'display',
+  initialSection = 'basicas',
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -216,6 +219,11 @@ export function SettingsModal({
 
   const update = <K extends keyof PosSettings>(key: K, value: PosSettings[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const handleClose = () => {
+    applyPosTheme(loadPosSettings().theme);
+    onClose();
   };
 
   const handleSave = async () => {
@@ -325,7 +333,7 @@ export function SettingsModal({
                 </div>
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="rounded p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white"
                   aria-label="Fechar"
                 >
@@ -355,6 +363,20 @@ export function SettingsModal({
                           { value: 'MT', label: 'Metical (MT)' },
                           { value: 'USD', label: 'Dólar (USD)' },
                           { value: 'EUR', label: 'Euro (EUR)' },
+                        ]}
+                      />
+                    </FieldRow>
+                    <FieldRow label="Tema">
+                      <SelectField
+                        value={draft.theme}
+                        onChange={(value) => {
+                          const theme = value === 'light' ? 'light' : 'dark';
+                          update('theme', theme);
+                          applyPosTheme(theme);
+                        }}
+                        options={[
+                          { value: 'dark', label: 'Dark' },
+                          { value: 'light', label: 'Light' },
                         ]}
                       />
                     </FieldRow>
@@ -669,6 +691,8 @@ export function SettingsModal({
                   </div>
                 )}
 
+                {activeSection === 'logs' ? <SystemLogsManager embedded /> : null}
+
                 {activeSection === 'licenca' && (
                   <div className="max-w-2xl space-y-1">
                     <p className="mb-3 text-sm text-zinc-400">
@@ -714,25 +738,27 @@ export function SettingsModal({
                 )}
               </div>
 
-              <div className="flex items-center justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] px-6 py-4">
-                {saveMessage ? <span className="mr-auto text-sm text-[#a5b4fc]">{saveMessage}</span> : null}
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1a1bff]"
-                >
-                  <Check size={16} />
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="inline-flex items-center gap-2 rounded bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-500"
-                >
-                  <X size={16} />
-                  Cancelar
-                </button>
-              </div>
+              {activeSection !== 'logs' ? (
+                <div className="flex items-center justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] px-6 py-4">
+                  {saveMessage ? <span className="mr-auto text-sm text-[#a5b4fc]">{saveMessage}</span> : null}
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1a1bff]"
+                  >
+                    <Check size={16} />
+                    Salvar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="inline-flex items-center gap-2 rounded bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-500"
+                  >
+                    <X size={16} />
+                    Cancelar
+                  </button>
+                </div>
+              ) : null}
             </div>
         </motion.div>
       )}

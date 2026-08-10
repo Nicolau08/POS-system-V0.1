@@ -174,7 +174,7 @@ function parseLicenseToken(rawToken) {
     // ignored
   }
 
-  return { payload: null, error: 'Formato da chave de licença inválido.' };
+  return { payload: null, error: 'Token errado.' };
 }
 
 export function validateMachineBoundLicense(payload, expectedTenantId = null) {

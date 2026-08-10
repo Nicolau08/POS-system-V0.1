@@ -34,6 +34,7 @@ export const PERMISSION_KEYS = [
   'vendas.dividir_pedido',
   'vendas.aplicar_desconto',
   'vendas.apagar_documento',
+  'vendas.anular_vd',
   'vendas.devolucao',
   'vendas.override_taxes',
   'vendas.ver_historico_vendas',

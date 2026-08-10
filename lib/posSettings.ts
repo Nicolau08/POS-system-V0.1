@@ -12,6 +12,7 @@ export type PosSettingsSection =
   | 'email'
   | 'impressao'
   | 'banco'
+  | 'logs'
   | 'licenca'
   | 'sobre';
 
@@ -22,6 +23,8 @@ export type PrintJobKey =
   | 'kitchen'
   | 'serviceMessages';
 
+export type PosTheme = 'dark' | 'light';
+
 export type PrintJobSettings = {
   enabled: boolean;
   printer: string;
@@ -30,6 +33,7 @@ export type PrintJobSettings = {
 export type PosSettings = {
   language: string;
   currency: string;
+  theme: PosTheme;
   roundCash: boolean;
   askTable: boolean;
   autoPrintReceipt: boolean;
@@ -93,6 +97,7 @@ export const DEFAULT_PRINT_JOBS: Record<PrintJobKey, PrintJobSettings> = {
 export const DEFAULT_POS_SETTINGS: PosSettings = {
   language: 'pt-MZ',
   currency: 'MT',
+  theme: 'dark',
   roundCash: false,
   askTable: false,
   autoPrintReceipt: true,
@@ -179,6 +184,7 @@ export function loadPosSettings(): PosSettings {
     const merged: PosSettings = {
       ...cloneDefaults(),
       ...parsed,
+      theme: parsed.theme === 'light' ? 'light' : 'dark',
       printJobs: normalizePrintJobs(parsed.printJobs),
     };
     if (parsed.printJobs?.receipt == null && typeof parsed.autoPrintReceipt === 'boolean') {
