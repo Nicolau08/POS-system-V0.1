@@ -2159,6 +2159,29 @@ const resolveAutoUpdaterChannel = () => {
   return { allowPrerelease: false, label: 'stable' };
 };
 
+/** Estado partilhado com o renderer (UI embutida). */
+let updateUiState = {
+  status: 'idle', // idle | available | downloading | downloaded | error
+  version: null,
+  percent: 0,
+  transferred: 0,
+  total: 0,
+  error: null,
+  dismissed: false,
+};
+
+const broadcastUpdateStatus = (patch = {}) => {
+  updateUiState = { ...updateUiState, ...patch };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send('update:status', updateUiState);
+    } catch {
+      /* ignore */
+    }
+  }
+};
+
 const safeCheckForUpdates = () => {
   void autoUpdater.checkForUpdates().catch((error) => {
     if (isBenignUpdateCheckFailure(error)) {
@@ -2169,6 +2192,10 @@ const safeCheckForUpdates = () => {
       return;
     }
     console.warn('[autoUpdater]', error);
+    broadcastUpdateStatus({
+      status: 'error',
+      error: String(error?.message ?? error ?? 'Erro ao verificar atualização'),
+    });
   });
 };
 
@@ -2187,51 +2214,99 @@ const setupAutoUpdates = () => {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('update-available', async (info) => {
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['Atualizar agora', 'Depois'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Atualização disponível',
-      message: `Nova versão disponível (${info.version}).`,
-      detail: 'Deseja baixar e instalar agora?',
-    });
-
-    if (result.response === 0) {
-      autoUpdater.downloadUpdate();
-    }
-  });
-
-  autoUpdater.on('update-downloaded', async () => {
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['Reiniciar e instalar', 'Mais tarde'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Atualização pronta',
-      message: 'A atualização foi baixada com sucesso.',
-      detail: 'Reiniciar o app agora para concluir a instalação?',
-    });
-
-    if (result.response === 0) {
-      autoUpdater.quitAndInstall();
-    }
-  });
-
-  autoUpdater.on('error', async (error) => {
-    if (isBenignUpdateCheckFailure(error)) {
-      console.warn('[autoUpdater]', String(error?.message ?? error ?? ''));
+  autoUpdater.on('update-available', (info) => {
+    const version = String(info?.version ?? '').trim() || null;
+    console.log('[autoUpdater] update-available', version);
+    if (updateUiState.dismissed && updateUiState.version === version) {
       return;
     }
-    await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      buttons: ['OK'],
-      defaultId: 0,
-      title: 'Erro ao atualizar',
-      message: 'Não foi possível verificar/baixar atualização.',
-      detail: String(error?.message ?? error ?? 'Erro desconhecido'),
+    broadcastUpdateStatus({
+      status: 'available',
+      version,
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      error: null,
+      dismissed: false,
     });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Math.max(0, Math.min(100, Number(progress?.percent) || 0));
+    broadcastUpdateStatus({
+      status: 'downloading',
+      percent,
+      transferred: Number(progress?.transferred) || 0,
+      total: Number(progress?.total) || 0,
+      error: null,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    const version = String(info?.version ?? updateUiState.version ?? '').trim() || null;
+    console.log('[autoUpdater] update-downloaded', version);
+    broadcastUpdateStatus({
+      status: 'downloaded',
+      version,
+      percent: 100,
+      error: null,
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    const message = String(error?.message ?? error ?? 'Erro desconhecido');
+    if (isBenignUpdateCheckFailure(error) && updateUiState.status === 'idle') {
+      console.warn('[autoUpdater]', message);
+      return;
+    }
+    console.warn('[autoUpdater] error', message);
+    broadcastUpdateStatus({
+      status: 'error',
+      error: message,
+    });
+  });
+
+  ipcMain.handle('update:getStatus', async () => updateUiState);
+
+  ipcMain.handle('update:dismiss', async () => {
+    broadcastUpdateStatus({ dismissed: true, status: 'idle', error: null });
+    return { ok: true };
+  });
+
+  ipcMain.handle('update:download', async () => {
+    try {
+      broadcastUpdateStatus({
+        status: 'downloading',
+        percent: Math.max(1, Number(updateUiState.percent) || 1),
+        error: null,
+        dismissed: false,
+      });
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (error) {
+      const message = String(error?.message ?? error ?? 'Falha ao baixar atualização');
+      console.warn('[autoUpdater] download failed', message);
+      broadcastUpdateStatus({ status: 'error', error: message });
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle('update:install', async () => {
+    try {
+      // isSilent=false, isForceRunAfter=true — reinicia de imediato no Windows.
+      setImmediate(() => {
+        try {
+          autoUpdater.quitAndInstall(false, true);
+        } catch (error) {
+          console.warn('[autoUpdater] quitAndInstall', error);
+        }
+      });
+      return { ok: true };
+    } catch (error) {
+      const message = String(error?.message ?? error ?? 'Falha ao instalar atualização');
+      broadcastUpdateStatus({ status: 'error', error: message });
+      return { ok: false, error: message };
+    }
   });
 
   safeCheckForUpdates();

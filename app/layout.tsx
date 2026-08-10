@@ -3,6 +3,7 @@ import './globals.css';
 import { LicenseGuardProvider } from '@/components/LicenseGuardProvider';
 import { StationModeGate } from '@/components/StationModeGate';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { UpdateNotification } from '@/components/UpdateNotification';
 
 export const metadata: Metadata = {
   title: 'POSly',
@@ -43,6 +44,7 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
       </head>
       <body className="bg-[var(--pos-bg)] text-[var(--pos-fg)] antialiased font-sans" suppressHydrationWarning>
         <ThemeProvider>
+          <UpdateNotification />
           <StationModeGate>
             <LicenseGuardProvider>{children}</LicenseGuardProvider>
           </StationModeGate>
