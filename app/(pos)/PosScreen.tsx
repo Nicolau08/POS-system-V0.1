@@ -114,6 +114,7 @@ import {
 import { resolveCategoryColor } from '@/lib/categoryColors';
 import { isSupplierPartyRecord, readPartyMetaById, type PartyMeta } from '@/lib/partyMeta';
 import {
+  clearPosCatalogCache,
   clearPosSessionCache,
   getCachedActivationState,
   getCachedLocationsTables,
