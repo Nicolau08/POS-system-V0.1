@@ -608,7 +608,7 @@ export default function InventoryManager() {
           </>
         ) : (
           <>
-        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchData()} />
         <ManagementToolbarDivider />
         <ManagementToolbarButton
           icon={<History size={20} />}
