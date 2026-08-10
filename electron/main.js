@@ -137,6 +137,121 @@ const getRuntimePaths = () => {
   };
 };
 
+/** Pasta canónica em %APPDATA%\POSly (ou POS_APP_USERDATA_SUBDIR). Deve correr ANTES de app.ready. */
+const configureCanonicalUserDataPath = () => {
+  try {
+    const override = String(process.env.POS_APP_USERDATA_SUBDIR ?? '').trim();
+    const subdir = override || 'POSly';
+    const appDataRoot =
+      typeof app.getPath === 'function'
+        ? app.getPath('appData')
+        : process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    const target = path.join(appDataRoot, subdir);
+    app.setPath('userData', target);
+    console.log('[electron] userData canónico:', target);
+    return target;
+  } catch (error) {
+    console.warn('[electron] Falha a fixar userData canónico:', error?.message ?? error);
+    return null;
+  }
+};
+
+const userDataHasBusinessPayload = async (dir) => {
+  if (!dir) return false;
+  const checks = [
+    path.join(dir, 'license.json'),
+    path.join(dir, 'db-encryption.key'),
+    path.join(dir, 'data', 'database.db'),
+    path.join(dir, 'data', 'pos.db'),
+  ];
+  for (const candidate of checks) {
+    if (await fileExists(candidate)) return true;
+  }
+  return false;
+};
+
+const copyIfExists = async (fromPath, toPath) => {
+  if (!(await fileExists(fromPath))) return false;
+  await ensureDir(path.dirname(toPath));
+  await fs.cp(fromPath, toPath, { recursive: true, force: true });
+  return true;
+};
+
+/**
+ * Se a pasta actual estiver vazia (pós-update / rename), recupera licença+BD+chave
+ * de pastas legadas em AppData / LocalAppData.
+ */
+const migrateLegacyUserDataIfNeeded = async () => {
+  const current = app.getPath('userData');
+  await ensureDir(current);
+
+  const markerPath = path.join(current, '.userdata-migrated');
+  if (await fileExists(markerPath)) return { migrated: false, reason: 'already-migrated' };
+  if (await userDataHasBusinessPayload(current)) {
+    return { migrated: false, reason: 'current-has-data' };
+  }
+
+  const appDataRoot = app.getPath('appData');
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const legacyNames = [
+    'POSly',
+    'posly',
+    'NINO POS',
+    'Nino POS',
+    'nino-pos',
+    'NINO-POS',
+    'POS system',
+    'pos system',
+    'POS-system',
+  ];
+
+  const candidates = [];
+  for (const name of legacyNames) {
+    candidates.push(path.join(appDataRoot, name));
+    candidates.push(path.join(localAppData, name));
+  }
+
+  const currentNorm = path.normalize(current).toLowerCase();
+  for (const candidate of candidates) {
+    const candidateNorm = path.normalize(candidate).toLowerCase();
+    if (candidateNorm === currentNorm) continue;
+    if (!(await userDataHasBusinessPayload(candidate))) continue;
+
+    electronLogInfo(
+      'electron.userdata_migrate',
+      `A recuperar dados de pasta legada: ${candidate} → ${current}`,
+      { module: 'main', from: candidate, to: current },
+    );
+
+    const files = [
+      'license.json',
+      'db-encryption.key',
+      'config.json',
+      'station-runtime.json',
+    ];
+    for (const fileName of files) {
+      await copyIfExists(path.join(candidate, fileName), path.join(current, fileName));
+    }
+    await copyIfExists(path.join(candidate, 'data'), path.join(current, 'data'));
+    await copyIfExists(path.join(candidate, 'backups'), path.join(current, 'backups'));
+
+    try {
+      await fs.writeFile(
+        markerPath,
+        JSON.stringify({ from: candidate, at: new Date().toISOString() }, null, 2),
+        'utf8',
+      );
+    } catch {
+      /* ignore */
+    }
+
+    return { migrated: true, from: candidate, to: current };
+  }
+
+  return { migrated: false, reason: 'no-legacy-found' };
+};
+
+
 const readStationRuntimeConfig = async () => {
   const { stationRuntimePath } = getRuntimePaths();
   try {
@@ -2317,6 +2432,8 @@ const setupAutoUpdates = () => {
 
 // Windows: tem de ser ANTES do ready — caso contrário a taskbar fica com o
 // ícone Atom em cache associado ao AppUserModelId antigo.
+// userData canónico também ANTES do ready (senão AppData pode divergir após updates).
+configureCanonicalUserDataPath();
 if (typeof app.setName === 'function') {
   app.setName('POSly');
 }
@@ -2351,6 +2468,20 @@ app.whenReady().then(async () => {
   });
   createSplashWindow();
   try {
+    const migration = await migrateLegacyUserDataIfNeeded();
+    if (migration?.migrated) {
+      electronLogInfo('electron.userdata_migrated', 'Dados/licença recuperados de pasta anterior', {
+        module: 'main',
+        from: migration.from,
+        to: migration.to,
+      });
+    } else {
+      electronLogInfo('electron.userdata_path', 'Pasta de dados da instalação', {
+        module: 'main',
+        userDataPath: app.getPath('userData'),
+        reason: migration?.reason ?? 'ok',
+      });
+    }
     await startBackend();
     electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
       module: 'main',
