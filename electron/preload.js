@@ -97,4 +97,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanLanStations: async () => {
     return ipcRenderer.invoke('station:scanLan');
   },
+  getUpdateStatus: async () => {
+    return ipcRenderer.invoke('update:getStatus');
+  },
+  downloadUpdate: async () => {
+    return ipcRenderer.invoke('update:download');
+  },
+  installUpdate: async () => {
+    return ipcRenderer.invoke('update:install');
+  },
+  dismissUpdate: async () => {
+    return ipcRenderer.invoke('update:dismiss');
+  },
+  onUpdateStatus: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('update:status', listener);
+    return () => {
+      ipcRenderer.removeListener('update:status', listener);
+    };
+  },
 });
