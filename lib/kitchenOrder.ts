@@ -26,7 +26,7 @@ export async function submitKitchenOrder(
     .map((item) => ({
       name: String(item.name ?? 'Item'),
       quantity: Number(item.quantity) || 0,
-      category_id: item.category_id ?? item.categoryId ?? null,
+      category_id: item.category_id ?? (item as { categoryId?: string | null }).categoryId ?? null,
       category: item.category ?? null,
       notes: item.notes != null ? String(item.notes).trim().slice(0, 500) || null : null,
       productId: (item as { id?: string }).id ?? null,
