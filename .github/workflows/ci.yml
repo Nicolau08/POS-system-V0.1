@@ -17,6 +17,15 @@ jobs:
           node-version: '20'
           cache: npm
 
+      # @journeyapps/sqlcipher (SQLCipher, usado por api/utils/dbEncryption.js e
+      # exercitado em tests/unit/db-encryption.test.mjs) traz um binário nativo
+      # pré-compilado contra OpenSSL 1.1 — o ubuntu-latest actual já não inclui
+      # essa biblioteca por omissão (só tem OpenSSL 3).
+      - name: Install libssl1.1 (required by @journeyapps/sqlcipher prebuilt binary)
+        run: |
+          curl -sSL -o /tmp/libssl1.1.deb http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb
+          sudo dpkg -i /tmp/libssl1.1.deb
+
       - run: npm ci
 
       - name: Typecheck (tsc --noEmit)
