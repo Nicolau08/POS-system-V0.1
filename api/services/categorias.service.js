@@ -4,6 +4,7 @@ import { parsePagination, parseSearchTerm, withPaginationPayload } from './query
 import { HttpError } from '../utils/response.js';
 import { requireTenantId } from '../utils/tenant.js';
 import { normalizeHex, pickCategoryColor } from '../utils/categoryColors.js';
+import { logWarn } from '../utils/logger.js';
 import {
   countActiveProductsByCategory,
   countCategories,
@@ -132,7 +133,13 @@ export async function createCategoria(payload = {}, user = null) {
       deleted: false,
     });
   } catch (queueErr) {
-    console.warn('[categorias] falha ao enfileirar criacao para sync:', queueErr?.message || queueErr);
+    logWarn('categorias_sync_enqueue_failed', {
+      module: 'categorias',
+      action: 'create',
+      reason: 'Falha ao enfileirar criação de categoria para sync',
+      tenant_id: tenantId,
+      error: queueErr,
+    });
   }
 
   return {
@@ -210,7 +217,14 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
       [color, now, categoryId, tenantId]
     );
   } catch (propagateErr) {
-    console.warn('[categorias] falha ao propagar cor aos produtos:', propagateErr?.message || propagateErr);
+    logWarn('categorias_color_propagate_failed', {
+      module: 'categorias',
+      action: 'update',
+      reason: 'Falha ao propagar cor da categoria aos produtos',
+      tenant_id: tenantId,
+      category_id: categoryId,
+      error: propagateErr,
+    });
   }
 
   try {
@@ -225,7 +239,14 @@ export async function updateCategoria(categoryIdRaw, payload = {}, user = null) 
       deleted: false,
     });
   } catch (queueErr) {
-    console.warn('[categorias] falha ao enfileirar edicao para sync:', queueErr?.message || queueErr);
+    logWarn('categorias_sync_enqueue_failed', {
+      module: 'categorias',
+      action: 'update',
+      reason: 'Falha ao enfileirar edição de categoria para sync',
+      tenant_id: tenantId,
+      category_id: categoryId,
+      error: queueErr,
+    });
   }
 
   return {
@@ -277,7 +298,13 @@ export async function deleteCategoria(categoryIdRaw, user = null) {
       await run('ROLLBACK');
     } catch {}
     if (!(err instanceof HttpError)) {
-      console.warn('[categorias] falha ao gravar tombstone:', err?.message || err);
+      logWarn('categorias_tombstone_write_failed', {
+        module: 'categorias',
+        action: 'delete',
+        reason: 'Falha ao gravar tombstone de categoria eliminada',
+        tenant_id: tenantId,
+        error: err,
+      });
     }
     throw err;
   }
@@ -292,7 +319,14 @@ export async function deleteCategoria(categoryIdRaw, user = null) {
       deleted: true,
     });
   } catch (queueErr) {
-    console.warn('[categorias] falha ao enfileirar remocao para sync:', queueErr?.message || queueErr);
+    logWarn('categorias_sync_enqueue_failed', {
+      module: 'categorias',
+      action: 'delete',
+      reason: 'Falha ao enfileirar remoção de categoria para sync',
+      tenant_id: tenantId,
+      category_id: categoryId,
+      error: queueErr,
+    });
   }
 
   return {

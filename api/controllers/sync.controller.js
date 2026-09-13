@@ -1,11 +1,21 @@
 import { all, get } from '../dbUtils.js';
-import { processFullSyncCycle, fullSyncFromCloud } from '../syncService.js';
+import {
+  processFullSyncCycle,
+  fullSyncFromCloud,
+  isCloudSyncConfigured,
+  isInternetAvailable,
+  isSyncServiceActive,
+} from '../syncService.js';
 import { parsePagination, parseSearchTerm, withPaginationPayload } from '../services/queryOptions.service.js';
 import { logAudit, logError } from '../utils/logger.js';
 import { sendError, sendSuccess } from '../utils/response.js';
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'sync',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return sendError(res, 500, 'Erro interno do servidor', 'INTERNAL_ERROR');
 }
 
@@ -52,16 +62,38 @@ export async function getSyncStatus(req, res) {
       lastSyncedAt = pullLast;
     }
 
+    const cloudConfigured = isCloudSyncConfigured();
+    const syncActive = isSyncServiceActive();
+    const online = cloudConfigured ? await isInternetAvailable() : false;
+    const pending = Number(totals.find((r) => r.status === 'pending')?.count ?? 0);
+    const failed = Number(totals.find((r) => r.status === 'failed')?.count ?? 0);
+    let mode = 'online';
+    let reason = null;
+    if (!cloudConfigured) {
+      mode = 'offline_only';
+      reason = 'supabase_not_configured';
+    } else if (!online) {
+      mode = 'offline';
+      reason = 'no_internet';
+    } else if (!syncActive) {
+      mode = 'idle';
+      reason = 'sync_service_inactive';
+    }
+
     return sendSuccess(res, {
-      total_pending: Number(totals.find((r) => r.status === 'pending')?.count ?? 0),
-      total_failed: Number(totals.find((r) => r.status === 'failed')?.count ?? 0),
+      total_pending: pending,
+      total_failed: failed,
       total_synced: Number(totals.find((r) => r.status === 'synced')?.count ?? 0),
       total_retries: Number(totalRetriesRow?.total_retries ?? 0),
       last_synced_at: lastSyncedAt,
       lastSync: lastSyncedAt,
-      online: true,
-      pending: Number(totals.find((r) => r.status === 'pending')?.count ?? 0),
-      failed: Number(totals.find((r) => r.status === 'failed')?.count ?? 0),
+      online,
+      cloud_configured: cloudConfigured,
+      sync_active: syncActive,
+      mode,
+      reason,
+      pending,
+      failed,
       pull_sync_state: pullStates ?? [],
       last_error: lastErrorRow ?? null,
     });

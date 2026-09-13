@@ -2,10 +2,32 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Check, Minus, Plus, X } from 'lucide-react';
+import {
+  Check,
+  Database,
+  FileText,
+  Info,
+  KeyRound,
+  Mail,
+  MapPin,
+  Minus,
+  Monitor,
+  Package,
+  Plus,
+  Printer,
+  Scale,
+  ScrollText,
+  ShoppingCart,
+  Sliders,
+  Tv,
+  Warehouse,
+  X,
+} from 'lucide-react';
 import {
   DEFAULT_POS_SETTINGS,
   loadPosSettings,
+  parsePosTheme,
+  POS_THEME_OPTIONS,
   savePosSettings,
   type PosSettings,
   type PosSettingsSection,
@@ -24,29 +46,33 @@ import { formatDateTime24h } from '@/lib/formatDateTime';
 import DatabaseBackupPanel from '@/app/management/components/DatabaseBackupPanel';
 import SystemLogsManager from '@/app/management/components/SystemLogsManager';
 import DatabaseResetPanel from './DatabaseResetPanel';
+import packageJson from '../../../package.json';
+import { PosSidebarNavItem } from '@/components/PosMenuButton';
+
+const SETTINGS_NAV_ICON = 16;
 
 const ALL_SECTIONS: Array<{
   id: PosSettingsSection;
   label: string;
+  icon: React.ReactNode;
   /** Se definido, só mostra quando a feature da licença está activa */
   requireFeature?: keyof CommerceFeatures;
 }> = [
-  { id: 'basicas', label: 'Configurações básicas' },
-  { id: 'postos', label: 'Postos' },
-  { id: 'locais', label: 'Locais', requireFeature: 'locations' },
-  { id: 'armazens', label: 'Armazéns' },
-  { id: 'pedidos', label: 'Pedidos & Pagamentos' },
-  { id: 'produtos', label: 'Configurações de produtos' },
-  // Farmácia: secção oculta até módulos (lotes/validade/receita) estarem prontos
-  { id: 'documentos', label: 'Documents' },
-  { id: 'balanca', label: 'Balança' },
-  { id: 'display', label: 'Display do cliente' },
-  { id: 'email', label: 'Configurações de email' },
-  { id: 'impressao', label: 'Opções de impressão' },
-  { id: 'banco', label: 'Banco de dados' },
-  { id: 'logs', label: 'Logs do sistema' },
-  { id: 'licenca', label: 'Licença' },
-  { id: 'sobre', label: 'Sobre' },
+  { id: 'basicas', label: 'Configurações básicas', icon: <Sliders size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'postos', label: 'Postos', icon: <Monitor size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'locais', label: 'Locais', icon: <MapPin size={SETTINGS_NAV_ICON} strokeWidth={2} />, requireFeature: 'locations' },
+  { id: 'armazens', label: 'Armazéns', icon: <Warehouse size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'pedidos', label: 'Pedidos e pagamentos', icon: <ShoppingCart size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'produtos', label: 'Produtos', icon: <Package size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'documentos', label: 'Documentos', icon: <FileText size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'balanca', label: 'Balança', icon: <Scale size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'display', label: 'Ecrã do cliente', icon: <Tv size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'email', label: 'Configurações de email', icon: <Mail size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'impressao', label: 'Opções de impressão', icon: <Printer size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'banco', label: 'Banco de dados', icon: <Database size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'logs', label: 'Logs do sistema', icon: <ScrollText size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'licenca', label: 'Licença', icon: <KeyRound size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
+  { id: 'sobre', label: 'Sobre', icon: <Info size={SETTINGS_NAV_ICON} strokeWidth={2} /> },
 ];
 
 function FieldRow({
@@ -80,7 +106,7 @@ function SelectField({
       options={options}
       size="md"
       className="max-w-[280px]"
-      triggerClassName="!bg-[#171717] !border-zinc-600"
+      triggerClassName="!bg-pos-surface !border-zinc-600"
     />
   );
 }
@@ -100,7 +126,7 @@ function TextField({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb]"
+      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb]"
     />
   );
 }
@@ -121,7 +147,7 @@ function NumberStepper({
       <button
         type="button"
         onClick={() => onChange(Math.max(min, value - 1))}
-        className="flex h-8 w-8 items-center justify-center rounded border border-zinc-600 bg-[#171717] text-zinc-300 hover:text-white"
+        className="flex h-8 w-8 items-center justify-center rounded border border-zinc-600 bg-pos-surface text-zinc-300 hover:text-white"
       >
         <Minus size={14} />
       </button>
@@ -129,7 +155,7 @@ function NumberStepper({
       <button
         type="button"
         onClick={() => onChange(Math.min(max, value + 1))}
-        className="flex h-8 w-8 items-center justify-center rounded border border-zinc-600 bg-[#171717] text-zinc-300 hover:text-white"
+        className="flex h-8 w-8 items-center justify-center rounded border border-zinc-600 bg-pos-surface text-zinc-300 hover:text-white"
       >
         <Plus size={14} />
       </button>
@@ -162,6 +188,7 @@ export function SettingsModal({
   const [testMessage, setTestMessage] = useState('');
   const [availablePorts, setAvailablePorts] = useState<SerialPortOption[]>([]);
   const [portsError, setPortsError] = useState('');
+  const [appVersion, setAppVersion] = useState('');
   const {
     commerceType,
     features,
@@ -194,6 +221,19 @@ export function SettingsModal({
     setPortsError('');
     void refreshPorts();
     void refreshCommerceProfile();
+    void (async () => {
+      try {
+        const info = await window.electronAPI?.getRuntimeInfo?.();
+        const fromElectron = String(info?.version ?? '').trim();
+        if (fromElectron) {
+          setAppVersion(fromElectron);
+          return;
+        }
+      } catch {
+        // fallback abaixo
+      }
+      setAppVersion(String(packageJson?.version ?? '').trim() || '—');
+    })();
     // refreshCommerceProfile é estável; features muda só com commerceType
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só reabrir / secção / perfil
   }, [isOpen, initialSection, commerceType]);
@@ -291,40 +331,32 @@ export function SettingsModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[110] flex bg-[#141414]"
+          className="fixed inset-0 z-[110] flex bg-pos-bg"
           role="dialog"
           aria-modal="true"
           aria-label="Configurações"
         >
-          <aside className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800 bg-[#171717]">
-              <div className="flex h-14 shrink-0 items-center border-b border-zinc-800 px-5">
-                <h2 className="text-base font-semibold text-white">Configurações</h2>
+          <aside className="pos-chrome flex w-[260px] shrink-0 flex-col border-r border-pos-border bg-pos-surface">
+              <div className="flex h-10 shrink-0 items-center border-b border-pos-border px-4">
+                <h2 className="text-sm font-semibold text-white">Configurações</h2>
               </div>
-              <nav className="flex-1 overflow-y-auto py-2 custom-scrollbar">
-                {SECTIONS.map((section) => {
-                  const active = activeSection === section.id;
-                  return (
-                    <button
-                      key={section.id}
-                      type="button"
-                      onClick={() => setActiveSection(section.id)}
-                      className={`w-full px-5 py-2.5 text-left text-sm transition-colors ${
-                        active
-                          ? 'bg-[#0001fb] text-white'
-                          : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
-                      }`}
-                    >
-                      {section.label}
-                    </button>
-                  );
-                })}
+              <nav className="flex-1 overflow-y-auto custom-scrollbar">
+                {SECTIONS.map((section) => (
+                  <PosSidebarNavItem
+                    key={section.id}
+                    icon={section.icon}
+                    label={section.label}
+                    active={activeSection === section.id}
+                    onClick={() => setActiveSection(section.id)}
+                  />
+                ))}
               </nav>
             </aside>
 
-            <div className="flex min-w-0 flex-1 flex-col bg-[#1e1e1e]">
-              <div className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
+            <div className="flex min-w-0 flex-1 flex-col bg-pos-bg">
+              <div className="flex h-10 shrink-0 items-center justify-between border-b border-pos-border px-6">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-base font-semibold text-white">{sectionTitle}</h3>
+                  <h3 className="text-base font-semibold text-pos-fg">{sectionTitle}</h3>
                   {activeSection === 'display' || activeSection === 'impressao' ? (
                     <button type="button" className="text-xs font-medium text-[#0001fb] hover:underline">
                       Saiba mais
@@ -334,14 +366,20 @@ export function SettingsModal({
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="rounded p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white"
+                  className="rounded p-2 text-pos-muted transition-colors hover:bg-pos-surface-3 hover:text-pos-fg"
                   aria-label="Fechar"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5 custom-scrollbar">
+              <div
+                className={`flex-1 custom-scrollbar ${
+                  activeSection === 'logs'
+                    ? 'flex min-h-0 flex-col overflow-hidden px-6 py-5'
+                    : 'overflow-y-auto px-6 py-5'
+                }`}
+              >
                 {activeSection === 'basicas' && (
                   <div className="max-w-2xl space-y-1">
                     <FieldRow label="Idioma">
@@ -370,14 +408,11 @@ export function SettingsModal({
                       <SelectField
                         value={draft.theme}
                         onChange={(value) => {
-                          const theme = value === 'light' ? 'light' : 'dark';
+                          const theme = parsePosTheme(value);
                           update('theme', theme);
                           applyPosTheme(theme);
                         }}
-                        options={[
-                          { value: 'dark', label: 'Dark' },
-                          { value: 'light', label: 'Light' },
-                        ]}
+                        options={POS_THEME_OPTIONS}
                       />
                     </FieldRow>
                     <FieldRow label="Arredondar dinheiro">
@@ -517,7 +552,7 @@ export function SettingsModal({
                     </FieldRow>
 
                     {showPortSettings ? (
-                      <div className="ml-[180px] space-y-1 border-l border-zinc-800 pl-4">
+                      <div className="ml-[180px] space-y-1 border-l border-pos-border pl-4">
                         <FieldRow label="Bits por segundo">
                           <SelectField
                             value={draft.customerDisplayBaud}
@@ -598,7 +633,7 @@ export function SettingsModal({
                       />
                     </FieldRow>
 
-                    <div className="mt-6 border-t border-zinc-800 pt-4">
+                    <div className="mt-6 border-t border-pos-border pt-4">
                       <h4 className="mb-3 text-sm font-semibold text-white">Mensagem de boas-vindas</h4>
                       <FieldRow label="Linha superior">
                         <TextField
@@ -618,7 +653,7 @@ export function SettingsModal({
                           <button
                             type="button"
                             onClick={() => void handleTestDisplay()}
-                            className="rounded border border-zinc-600 bg-[#171717] px-4 py-2 text-sm text-zinc-200 hover:border-[#0001fb] hover:text-white"
+                            className="rounded border border-zinc-600 bg-pos-surface px-4 py-2 text-sm text-zinc-200 hover:border-[#0001fb] hover:text-white"
                           >
                             Tela de teste
                           </button>
@@ -658,7 +693,7 @@ export function SettingsModal({
 
                 {activeSection === 'banco' && (
                   <div className="max-w-3xl space-y-4 pt-4">
-                    <div className="flex flex-wrap gap-1 border-b border-zinc-800/50 pb-2">
+                    <div className="flex flex-wrap gap-1 border-b border-pos-border/50 pb-2">
                       <button
                         type="button"
                         onClick={() => setDbTab('backups')}
@@ -730,21 +765,55 @@ export function SettingsModal({
                 )}
 
                 {activeSection === 'sobre' && (
-                  <div className="max-w-2xl space-y-2 text-sm text-zinc-300">
-                    <p className="text-base font-semibold text-white">POSly</p>
-                    <p className="text-zinc-400">Sistema de ponto de venda para Moçambique.</p>
-                    <p className="text-zinc-500">Versão desktop / web local</p>
+                  <div className="max-w-xl space-y-8">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src="/posly-p-mark.svg"
+                        alt="POSly"
+                        className="h-11 w-auto"
+                      />
+                      <span className="text-2xl font-semibold tracking-tight text-pos-fg">POSly</span>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <div className="grid grid-cols-[140px_minmax(0,1fr)] gap-x-6 gap-y-3">
+                        <span className="text-pos-muted">Edição</span>
+                        <span className="text-pos-fg">POSly Desktop</span>
+
+                        <span className="text-pos-muted">Versão</span>
+                        <span className="text-pos-fg">{appVersion || '—'}</span>
+
+                        <span className="text-pos-muted">Nome da loja</span>
+                        <span className="text-pos-fg">
+                          {licenseLoading ? '…' : license.name && license.name !== '—' ? license.name : '—'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <a
+                        href={
+                          process.env.NEXT_PUBLIC_POSLY_TERMS_URL?.trim() ||
+                          'https://posly.app/termos'
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block text-sm font-medium text-[#6ea8ff] hover:underline"
+                      >
+                        Termos de Uso
+                      </a>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {activeSection !== 'logs' ? (
-                <div className="flex items-center justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] px-6 py-4">
+              {activeSection !== 'logs' && activeSection !== 'sobre' ? (
+                <div className="flex items-center justify-end gap-3 border-t border-pos-border bg-pos-surface px-6 py-4">
                   {saveMessage ? <span className="mr-auto text-sm text-[#a5b4fc]">{saveMessage}</span> : null}
                   <button
                     type="button"
                     onClick={handleSave}
-                    className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1a1bff]"
+                    className="pos-on-accent inline-flex items-center gap-2 rounded bg-[#0001fb] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1a1bff]"
                   >
                     <Check size={16} />
                     Salvar
@@ -752,7 +821,7 @@ export function SettingsModal({
                   <button
                     type="button"
                     onClick={handleClose}
-                    className="inline-flex items-center gap-2 rounded bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-500"
+                    className="pos-on-accent inline-flex items-center gap-2 rounded bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-500"
                   >
                     <X size={16} />
                     Cancelar

@@ -330,6 +330,8 @@ export function listDashboardOrderRows(tenantId) {
         o.total,
         o.created_at,
         o.customer_id,
+        o.user_id,
+        o.user_name,
         COALESCE(c.name, 'Consumidor final') AS client_name
       FROM orders o
       LEFT JOIN clientes c
@@ -381,6 +383,8 @@ export function listDashboardSaleRows(tenantId) {
         v.total AS total,
         v.data AS created_at,
         v.customer_id AS customer_id,
+        v.user_id AS user_id,
+        v.user_name AS user_name,
         COALESCE(c.name, v.customer_name, 'Consumidor final') AS client_name
       FROM vendas v
       LEFT JOIN clientes c
@@ -397,13 +401,12 @@ export function listDashboardOrderItems(tenantId) {
   return all(
     `
       SELECT
-        oi.order_id,
+        CAST(oi.order_id AS TEXT) AS order_id,
         oi.product_name,
         oi.quantity,
         oi.price
       FROM order_items oi
-      INNER JOIN orders o ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
-      WHERE o.tenant_id = ?
+      WHERE oi.tenant_id = ?
       ORDER BY datetime(oi.created_at) DESC, oi.id DESC
     `,
     [tenantId]

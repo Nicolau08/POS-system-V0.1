@@ -60,7 +60,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
         setSelectedStore(null);
         return;
       }
-      if (result.redeemed) {
+      if (result.redeemed && !result.stores.length) {
         showLicenseConflict(
           'Esta licença já está a ser usada noutra máquina ou base de dados.',
         );
@@ -120,9 +120,9 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] bg-[#121212] text-zinc-100">
+    <div className="fixed inset-0 z-[9999] bg-pos-bg text-zinc-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl items-center justify-center px-4 py-10">
-        <div className="w-full rounded-2xl border border-zinc-800 bg-zinc-900/95 p-6 shadow-2xl">
+        <div className="w-full rounded-2xl border border-pos-border bg-pos-surface/95 p-6 shadow-2xl">
           <h1 className="text-2xl font-bold">Licenciamento do programa</h1>
           <p className="mt-2 text-sm text-zinc-400">Introduza o número de série.</p>
 
@@ -140,14 +140,14 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
 
           <div className="mt-6 space-y-4">
             {step === 1 ? (
-              <div className="space-y-3 rounded-xl border border-zinc-700 bg-zinc-950/50 p-4">
+              <div className="space-y-3 rounded border border-pos-border bg-pos-bg/50 p-4">
                 <h2 className="text-lg font-semibold text-white">Número de Série</h2>
                 <p className="text-sm text-zinc-400">Insira o número de série do seu software:</p>
                 <label className="block text-sm">
                   <input
                     value={serial}
                     onChange={(event) => setSerial(event.target.value.toUpperCase())}
-                    className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 font-mono text-lg tracking-wider outline-none focus:border-[#0001fb]"
+                    className="mt-1 w-full rounded border border-pos-border bg-zinc-800 px-3 py-2 font-mono text-lg tracking-wider outline-none focus:border-[#0001fb]"
                     placeholder="Ex.: D_9L6WAKYU"
                     autoFocus
                     onKeyDown={(event) => {
@@ -174,10 +174,10 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                         key={store.tenant_id}
                         type="button"
                         onClick={() => setSelectedStore(store)}
-                        className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
+                        className={`w-full rounded border px-4 py-3 text-left transition-colors ${
                           selected
                             ? 'border-[#0001fb] bg-[#0001fb]/15 text-blue-100'
-                            : 'border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-[#0001fb]'
+                            : 'border-pos-border bg-zinc-800 text-zinc-200 hover:border-[#0001fb]'
                         }`}
                       >
                         <p className="font-semibold">{store.name}</p>
@@ -214,7 +214,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
               type="button"
               onClick={handleBack}
               disabled={step === 1 || isSubmitting || isLookingUp}
-              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 transition-colors hover:border-[#0001fb] disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded border border-pos-border px-4 py-2 text-sm text-zinc-200 transition-colors hover:border-[#0001fb] disabled:cursor-not-allowed disabled:opacity-40"
             >
               Voltar
             </button>
@@ -223,7 +223,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                 type="button"
                 onClick={() => void handleLookupSerial()}
                 disabled={isLookingUp}
-                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isLookingUp ? 'A consultar...' : 'Seguinte'}
               </button>
@@ -232,7 +232,7 @@ export default function SetupWizard({ onCompleted }: SetupWizardProps) {
                 type="button"
                 onClick={() => void handleConfirmStore()}
                 disabled={!selectedStore || isSubmitting}
-                className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded bg-[#0001fb] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? 'A concluir...' : 'Confirmar loja'}
               </button>

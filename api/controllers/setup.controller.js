@@ -11,6 +11,7 @@ import {
 import {
   lookupSerialStores,
   readFirstRunStatus,
+  resetLocalLicenseForReactivation,
   runInitialSetup,
   runInitializeFromSerial,
 } from '../services/setup.service.js';
@@ -303,6 +304,23 @@ export async function reactivateLicenseToken(req, res) {
       500,
       error instanceof Error ? error.message : 'Falha na reativação da licença.',
       'LICENSE_REACTIVATE_FAILED',
+    );
+  }
+}
+
+export async function resetLocalLicense(req, res) {
+  try {
+    if (!isLocalRequest(req)) {
+      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
+    }
+    const result = await resetLocalLicenseForReactivation();
+    return sendSuccess(res, result);
+  } catch (error) {
+    return sendError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Falha ao limpar licença local.',
+      'LICENSE_RESET_FAILED',
     );
   }
 }

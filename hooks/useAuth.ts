@@ -86,7 +86,6 @@ export function useAuth() {
       });
 
       if (response.status === 401) {
-        window.alert('PIN incorreto');
         setLoginError(true);
         window.setTimeout(() => setLoginError(false), 500);
         return false;
@@ -112,11 +111,31 @@ export function useAuth() {
       }
 
       const payload = await response.json();
+      const token = String(payload?.token ?? payload?.data?.token ?? '').trim();
+      if (!token) {
+        window.alert(
+          'Login aceite mas a sessão não foi criada (token em falta). Reinicie a aplicação e tente de novo.',
+        );
+        setLoginError(true);
+        window.setTimeout(() => setLoginError(false), 500);
+        return false;
+      }
+
       const loggedUser: User = {
         ...selectedUser,
-        ...(payload?.user ?? {}),
-        accessLevel: Number(payload?.user?.access_level ?? payload?.user?.accessLevel ?? selectedUser.accessLevel ?? 0),
-        active: payload?.user?.active === false ? false : Boolean(payload?.user?.active ?? selectedUser.active ?? true),
+        ...(payload?.user ?? payload?.data?.user ?? {}),
+        accessLevel: Number(
+          payload?.user?.access_level ??
+            payload?.user?.accessLevel ??
+            payload?.data?.user?.access_level ??
+            payload?.data?.user?.accessLevel ??
+            selectedUser.accessLevel ??
+            0,
+        ),
+        active:
+          (payload?.user ?? payload?.data?.user)?.active === false
+            ? false
+            : Boolean((payload?.user ?? payload?.data?.user)?.active ?? selectedUser.active ?? true),
       };
 
       markPosSessionActive();
@@ -126,7 +145,7 @@ export function useAuth() {
       setLoginPassword('');
       localStorage.setItem(LOGIN_KEY, 'true');
       localStorage.setItem(USER_KEY, JSON.stringify(loggedUser));
-      setStoredAuthToken(payload?.token ?? null);
+      setStoredAuthToken(token);
       window.dispatchEvent(new Event('pos-auth-changed'));
       return true;
     } catch {

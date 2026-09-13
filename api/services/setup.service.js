@@ -1,7 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import machineIdModule from 'node-machine-id';
 import db from '../database.js';
 import { ensureHashedPin } from '../pinAuth.js';
 import { uuidv4 } from '../cloudIdUtils.js';
@@ -18,11 +17,17 @@ import {
 } from '../../lib/licensing/signMachineLicense.js';
 import { LICENSE_IN_USE_MESSAGE } from '../../lib/licensing/licenseConflict.js';
 import {
+  readLicenseFileSealed,
+  writeSealedLicenseFile,
+} from '../../lib/licensing/sealedLocalLicense.js';
+import {
   normalizeCapabilities,
   normalizeVertical,
 } from '../utils/tenantCapabilities.js';
 
-const { machineIdSync } = machineIdModule;
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
 
 const runDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -39,10 +44,6 @@ const getDb = (sql, params = []) =>
       resolve(row ?? null);
     });
   });
-
-function normalizeText(value) {
-  return String(value ?? '').trim();
-}
 
 function normalizeOptionalVertical(value, fallbackCommerceType = null) {
   const raw = normalizeText(value);
@@ -68,6 +69,12 @@ export function resolveLicenseHmacSecret() {
 }
 
 function allowUnsignedLicenseFallback() {
+  // Produção empacotada: nunca aceitar licença sem assinatura HMAC.
+  const nodeEnv = String(process.env.NODE_ENV ?? '').toLowerCase();
+  const appMode = normalizeText(process.env.POS_APP_MODE).toLowerCase();
+  if (nodeEnv === 'production' || appMode === 'pos') {
+    return false;
+  }
   const raw = normalizeText(process.env.POS_LICENSE_ALLOW_UNSIGNED).toLowerCase();
   return ['1', 'true', 'yes', 'y'].includes(raw);
 }
@@ -84,6 +91,35 @@ function signCanonicalLicensePayload(canonicalPayload, secret) {
     .createHmac('sha256', secret)
     .update(JSON.stringify(canonicalPayload))
     .digest('hex');
+}
+
+/** Garante assinatura HMAC + gravação selada (opaca no disco). */
+async function writeLocalLicensePayload(licensePath, payload) {
+  const secret = resolveLicenseHmacSecret();
+  const machineId =
+    normalizeText(payload?.machine_id) || getLocalMachineId();
+  let toWrite = { ...(payload && typeof payload === 'object' ? payload : {}) };
+
+  if (secret) {
+    const canonical = buildCanonicalLicensePayload(toWrite);
+    if (canonical.tenant_id && canonical.machine_id && canonical.expiration) {
+      toWrite = {
+        ...toWrite,
+        tenant_id: canonical.tenant_id,
+        machine_id: canonical.machine_id,
+        expiration: canonical.expiration,
+        signature: signCanonicalLicensePayload(canonical, secret),
+      };
+    }
+    await writeSealedLicenseFile(licensePath, toWrite, { secret, machineId });
+    return;
+  }
+
+  if (String(process.env.NODE_ENV ?? '').toLowerCase() === 'production') {
+    throw new Error('POS_LICENSE_HMAC_SECRET obrigatório para gravar licença local.');
+  }
+  // Dev sem secret: JSON legado (não selado).
+  await fs.writeFile(licensePath, JSON.stringify(toWrite, null, 2), 'utf8');
 }
 
 function timingSafeEqualHex(a, b) {
@@ -203,7 +239,7 @@ export function validateMachineBoundLicense(payload, expectedTenantId = null) {
     };
   }
 
-  const localMachineId = machineIdSync({ original: true });
+  const localMachineId = getLocalMachineId();
   if (machineId !== localMachineId) {
     return {
       ok: false,
@@ -231,7 +267,54 @@ export function validateMachineBoundLicense(payload, expectedTenantId = null) {
 export async function readFirstRunStatus() {
   const dbPath = normalizeText(process.env.POS_DB_PATH);
   const dbExists = dbPath ? await fs.access(dbPath).then(() => true).catch(() => false) : false;
-  const tenantRow = await getDb(`SELECT id, name FROM tenants ORDER BY datetime(created_at) ASC, id ASC LIMIT 1`);
+
+  // Preferir o tenant da licença activa / ficheiro — NÃO o seed mais antigo (tenant-1),
+  // senão o Electron compara license.tenant_id (loja real) com tenant-1 e marca "em uso".
+  let tenantRow = null;
+  const activeLicense = await getDb(
+    `SELECT tenant_id FROM licenses
+     WHERE active = 1 AND tenant_id IS NOT NULL AND TRIM(tenant_id) != ''
+     ORDER BY datetime(COALESCE(activated_at, created_at)) DESC
+     LIMIT 1`,
+  );
+  if (activeLicense?.tenant_id) {
+    tenantRow = await getDb(`SELECT id, name FROM tenants WHERE id = ? LIMIT 1`, [
+      String(activeLicense.tenant_id),
+    ]);
+  }
+  if (!tenantRow) {
+    try {
+      const licensePath = resolveLicensePath();
+      const file = await readLicenseFileSealed(licensePath, {
+        secret: resolveLicenseHmacSecret(),
+        machineId: getLocalMachineId(),
+        migrate: true,
+      });
+      const fromFile = file.ok ? normalizeText(file.payload?.tenant_id) : '';
+      if (fromFile) {
+        tenantRow = await getDb(`SELECT id, name FROM tenants WHERE id = ? LIMIT 1`, [fromFile]);
+        if (!tenantRow) {
+          tenantRow = { id: fromFile, name: fromFile };
+        }
+      }
+    } catch {
+      // sem license.json
+    }
+  }
+  if (!tenantRow) {
+    tenantRow = await getDb(
+      `SELECT id, name FROM tenants
+       WHERE id IS NOT NULL AND TRIM(id) != '' AND lower(trim(id)) != 'tenant-1'
+       ORDER BY datetime(created_at) DESC, id DESC
+       LIMIT 1`,
+    );
+  }
+  if (!tenantRow) {
+    tenantRow = await getDb(
+      `SELECT id, name FROM tenants ORDER BY datetime(created_at) ASC, id ASC LIMIT 1`,
+    );
+  }
+
   const tenantExists = Boolean(tenantRow?.id);
 
   const setupRow = await getDb(
@@ -602,22 +685,14 @@ export async function runInitialSetup(payload) {
   );
 
   if (serialMode) {
-    await fs.writeFile(
-      licensePath,
-      JSON.stringify(
-        {
-          mode: 'serial',
-          serial_number: serialCandidate,
-          tenant_id: tenantId,
-          machine_id: licenseValidation.machineId,
-          expiration: licenseValidation.expiresAt,
-          activated_at: now,
-        },
-        null,
-        2
-      ),
-      'utf8'
-    );
+    await writeLocalLicensePayload(licensePath, {
+      mode: 'serial',
+      serial_number: serialCandidate,
+      tenant_id: tenantId,
+      machine_id: licenseValidation.machineId,
+      expiration: licenseValidation.expiresAt,
+      activated_at: now,
+    });
   } else {
     const toWrite = licenseFilePayload
       ? {
@@ -634,7 +709,7 @@ export async function runInitialSetup(payload) {
           expiration: licenseValidation.expiresAt,
           activated_at: now,
         };
-    await fs.writeFile(licensePath, JSON.stringify(toWrite, null, 2), 'utf8');
+    await writeLocalLicensePayload(licensePath, toWrite);
   }
 
   return {
@@ -742,7 +817,17 @@ export async function runInitializeFromSerial(payload) {
   }
 
   const status = await readFirstRunStatus();
-  if (status.isSetupComplete) {
+  const existingLicensePath = resolveLicensePath();
+  let existingLicensePresent = false;
+  try {
+    await fs.access(existingLicensePath);
+    existingLicensePresent = true;
+  } catch {
+    existingLicensePresent = false;
+  }
+  // Permitir reativar com o mesmo serial se o setup ficou “completo” na BD mas o
+  // license.json foi limpo (desvincular na consola + Limpar licença local).
+  if (status.isSetupComplete && existingLicensePresent) {
     return { error: 'Setup já foi concluído nesta instalação.', status: 409 };
   }
 
@@ -910,7 +995,7 @@ export async function runInitializeFromSerial(payload) {
     serial_number: serial,
     activated_at: licensePayload.activated_at || now,
   };
-  await fs.writeFile(licensePath, JSON.stringify(toWrite, null, 2), 'utf8');
+  await writeLocalLicensePayload(licensePath, toWrite);
 
   return {
     success: true,
@@ -922,5 +1007,54 @@ export async function runInitializeFromSerial(payload) {
     setupConfigPath,
     licensePath,
     setupCompletedAt: now,
+  };
+}
+
+/**
+ * Apaga license.json e reabre o fluxo de instalação/série.
+ * Usado após desvincular na consola + «Limpar licença local».
+ */
+export async function resetLocalLicenseForReactivation() {
+  const licensePath = resolveLicensePath();
+  const setupConfigPath = resolveSetupConfigPath();
+  const now = new Date().toISOString();
+
+  try {
+    await fs.unlink(licensePath);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+
+  await runDb(
+    `UPDATE app_setup_state
+     SET license_activated = 0,
+         license_token_hash = NULL,
+         license_expires_at = NULL,
+         setup_completed = 0,
+         setup_completed_at = NULL,
+         updated_at = ?
+     WHERE id = 1`,
+    [now],
+  );
+
+  try {
+    const raw = await fs.readFile(setupConfigPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      parsed.setupCompleted = false;
+      parsed.setupCompletedAt = null;
+      parsed.licenseActivated = false;
+      parsed.licenseClearedAt = now;
+      await fs.writeFile(setupConfigPath, JSON.stringify(parsed, null, 2), 'utf8');
+    }
+  } catch {
+    // config opcional
+  }
+
+  return {
+    success: true,
+    licensePath,
+    setupConfigPath,
+    requiresWizard: true,
   };
 }

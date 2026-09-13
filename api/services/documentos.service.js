@@ -51,7 +51,8 @@ import {
   updateOrderSourceReference,
 } from '../repositories/documentos.repository.js';
 
-import { filterCashInflowDocuments } from '../utils/revenueDocuments.js';
+import { filterCashInflowDocuments, isPendingContaCorrenteFt, resolveDocCode } from '../utils/revenueDocuments.js';
+import { formatPaymentMethodLabel } from '../utils/paymentMethodLabel.js';
 import {
   applyWarehouseDelta,
   getWarehouseQuantity,
@@ -61,8 +62,7 @@ import {
   createPartyCreditId,
   insertPartyCredit,
 } from '../repositories/partyCredits.repository.js';
-import { logAudit } from '../utils/logger.js';
-import { formatPaymentMethodLabel } from '../utils/paymentMethodLabel.js';
+import { logAudit, logError, logWarn } from '../utils/logger.js';
 
 const STOCK_IN_PREFIXES = new Set(['WH/IN', 'EN/ST', 'PUR', 'FTF', 'NC']);
 const STOCK_OUT_PREFIXES = new Set(['VD', 'TK', 'FT', 'DP', 'WH/LOSS', 'CP', 'ND']);
@@ -850,7 +850,14 @@ export async function postDocumento(payload = {}, user = null) {
               tenantId
             );
           } catch (linkErr) {
-            console.warn('[documentos] falha ao liquidar documento origem', linkErr?.message);
+            logWarn('documentos_link_source_failed', {
+              module: 'documentos',
+              reason: 'Falha ao liquidar documento origem',
+              tenant_id: tenantId,
+              order_id: linkedOrder.id,
+              document_number: documentNumber,
+              error: linkErr,
+            });
           }
         }
       }
@@ -862,7 +869,13 @@ export async function postDocumento(payload = {}, user = null) {
       await rollbackTransaction();
     } catch {}
     if (error instanceof HttpError) throw error;
-    console.error('[documentos] postDocumento falhou', error);
+    logError('documentos_post_failed', {
+      module: 'documentos',
+      action: 'postDocumento',
+      reason: 'Falha não tratada ao gravar documento',
+      tenant_id: tenantId,
+      error,
+    });
     throw new HttpError(500, error?.message || 'Falha ao salvar documento');
   }
 
@@ -889,9 +902,12 @@ export async function postDocumento(payload = {}, user = null) {
           updated_at: now,
         });
       } catch (queueErr) {
-        console.warn('[documentos] falha ao enfileirar sync de produto', {
-          localProductId,
-          error: queueErr?.message,
+        logWarn('documentos_product_sync_enqueue_failed', {
+          module: 'documentos',
+          reason: 'Falha ao enfileirar sync de produto tocado pelo documento',
+          tenant_id: tenantId,
+          local_product_id: localProductId,
+          error: queueErr,
         });
       }
     }
@@ -910,11 +926,334 @@ export async function postDocumento(payload = {}, user = null) {
   };
 }
 
+const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+function isCancelledDocument(doc) {
+  const status = String(doc?.status ?? '').trim().toLowerCase();
+  return (
+    status === 'cancelled' ||
+    status === 'cancelado' ||
+    status === 'canceled' ||
+    status === 'anulado' ||
+    status === 'void'
+  );
+}
+
+function isSaleDocument(doc) {
+  const code = resolveDocCode(doc);
+  return code === 'VD' || code === 'TK' || code === 'FT';
+}
+
+function isReturnDocument(doc) {
+  return resolveDocCode(doc) === 'NC';
+}
+
+/** Notas de crédito (NC) e vendas anuladas/canceladas contam como devoluções no dashboard. */
+function isDashboardReturnDocument(doc) {
+  if (isReturnDocument(doc)) {
+    return !isCancelledDocument(doc);
+  }
+  return isCancelledDocument(doc) && isSaleDocument(doc);
+}
+
+function sumDashboardReturnAmount(doc) {
+  return Math.abs(Number(doc?.total ?? 0));
+}
+
+function isCreditSaleDocument(doc) {
+  if (isCancelledDocument(doc) || !isSaleDocument(doc)) return false;
+  if (isPendingContaCorrenteFt(doc)) return true;
+  const payment = String(doc?.payment_method ?? '')
+    .toLowerCase()
+    .replace(/-/g, ' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return (
+    payment.includes('conta corrente') ||
+    payment.includes('credito') ||
+    payment.includes('a prazo')
+  );
+}
+
+function docInMonthYear(doc, monthIndex, year) {
+  const date = new Date(doc?.created_at ?? '');
+  if (Number.isNaN(date.getTime())) return false;
+  return date.getFullYear() === year && date.getMonth() === monthIndex;
+}
+
+function docInYear(doc, year) {
+  const date = new Date(doc?.created_at ?? '');
+  if (Number.isNaN(date.getTime())) return false;
+  return date.getFullYear() === year;
+}
+
+function aggregatePaymentTypes(docs) {
+  const map = {};
+  for (const doc of docs ?? []) {
+    if (isCancelledDocument(doc)) continue;
+    const label = formatPaymentMethodLabel(doc?.payment_method, 'Outro');
+    const amount = Math.abs(Number(doc?.total ?? 0));
+    if (amount <= 0) continue;
+    map[label] = (map[label] || 0) + amount;
+  }
+  const entries = Object.entries(map)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+  const grandTotal = entries.reduce((acc, row) => acc + row.value, 0);
+  return entries.map((row) => ({
+    ...row,
+    percent: grandTotal > 0 ? Math.round((row.value / grandTotal) * 100) : 0,
+  }));
+}
+
+function aggregateEmployeeSales(docs) {
+  const map = {};
+  for (const doc of docs ?? []) {
+    if (isCancelledDocument(doc) || !isSaleDocument(doc)) continue;
+    const amount = Number(doc?.total ?? 0);
+    if (amount <= 0) continue;
+    const name = String(doc?.user_name ?? '').trim() || 'Sem operador';
+    map[name] = (map[name] || 0) + amount;
+  }
+  return Object.entries(map)
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+}
+
+function formatLocalDateOnly(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalDateParts(isoDate) {
+  const match = String(isoDate ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+}
+
+function parseDocDateOnly(doc) {
+  return formatLocalDateOnly(new Date(doc?.created_at ?? ''));
+}
+
+function docInRange(doc, fromDate, toDate) {
+  const only = parseDocDateOnly(doc);
+  if (!only) return false;
+  return only >= fromDate && only <= toDate;
+}
+
+function formatPeriodLabel(from, to) {
+  if (from === to) {
+    const [y, m, d] = from.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  const fmt = (iso) => {
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  return `${fmt(from)} – ${fmt(to)}`;
+}
+
+function resolveDashboardPeriod(query = {}) {
+  const preset = String(query.period ?? 'month').trim().toLowerCase();
+  const now = new Date();
+  const today = formatLocalDateOnly(now) ?? now.toISOString().slice(0, 10);
+
+  if (preset === 'custom') {
+    const from = parseDateOnly(query.from) || today;
+    const toRaw = parseDateOnly(query.to) || from;
+    const to = toRaw >= from ? toRaw : from;
+    return {
+      preset: 'custom',
+      from,
+      to,
+      label: formatPeriodLabel(from, to),
+    };
+  }
+
+  if (preset === 'today') {
+    return { preset, from: today, to: today, label: 'Hoje' };
+  }
+
+  if (preset === 'yesterday') {
+    const y = new Date(now);
+    y.setDate(y.getDate() - 1);
+    const day = formatLocalDateOnly(y) ?? today;
+    return { preset, from: day, to: day, label: 'Ontem' };
+  }
+
+  if (preset === 'week') {
+    const start = new Date(now);
+    start.setDate(start.getDate() - 6);
+    return {
+      preset,
+      from: formatLocalDateOnly(start) ?? today,
+      to: today,
+      label: 'Últimos 7 dias',
+    };
+  }
+
+  if (preset === 'year') {
+    const year = now.getFullYear();
+    return {
+      preset,
+      from: `${year}-01-01`,
+      to: `${year}-12-31`,
+      label: `Ano ${year}`,
+    };
+  }
+
+  if (preset === 'month') {
+    const fromParsed = parseDateOnly(query.from);
+    if (fromParsed) {
+      const [yearStr, monthStr] = fromParsed.split('-');
+      const year = Number(yearStr);
+      const monthIndex = Number(monthStr) - 1;
+      if (Number.isFinite(year) && monthIndex >= 0 && monthIndex <= 11) {
+        const from = `${yearStr}-${monthStr}-01`;
+        const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+        const to = `${yearStr}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+        const nowYear = now.getFullYear();
+        const nowMonth = now.getMonth();
+        const isCurrentMonth = year === nowYear && monthIndex === nowMonth;
+        const label = isCurrentMonth
+          ? (MONTH_LABELS[monthIndex] ?? 'Mês actual')
+          : `${MONTH_LABELS[monthIndex] ?? monthStr} ${year}`;
+        return { preset: 'month', from, to, label };
+      }
+    }
+  }
+
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const from = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const to = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return {
+    preset: 'month',
+    from,
+    to,
+    label: MONTH_LABELS[month] ?? 'Mês actual',
+  };
+}
+
+function buildDashboardChartSeries(from, to, cashDocs, saleDocs) {
+  const fromParts = parseLocalDateParts(from);
+  const toParts = parseLocalDateParts(to);
+  if (!fromParts || !toParts) {
+    return [];
+  }
+
+  const fromDate = new Date(fromParts.year, fromParts.month - 1, fromParts.day);
+  const toDate = new Date(toParts.year, toParts.month - 1, toParts.day);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    return [];
+  }
+
+  const dayMs = 86400000;
+  const spanDays = Math.floor((toDate.getTime() - fromDate.getTime()) / dayMs) + 1;
+
+  const addToBucket = (bucketMap, key, label, doc, field) => {
+    if (!bucketMap.has(key)) {
+      bucketMap.set(key, { name: label, key, sales: 0, vendas: 0 });
+    }
+    const row = bucketMap.get(key);
+    row[field] += Number(doc?.total ?? 0);
+  };
+
+  if (spanDays <= 1) {
+    const bucketMap = new Map();
+    for (let hour = 0; hour < 24; hour += 1) {
+      const key = String(hour).padStart(2, '0');
+      bucketMap.set(key, { name: `${key}h`, key, sales: 0, vendas: 0 });
+    }
+    for (const doc of cashDocs ?? []) {
+      const date = new Date(doc?.created_at ?? '');
+      if (Number.isNaN(date.getTime())) continue;
+      const key = String(date.getHours()).padStart(2, '0');
+      addToBucket(bucketMap, key, `${key}h`, doc, 'sales');
+    }
+    for (const doc of saleDocs ?? []) {
+      if (isCancelledDocument(doc)) continue;
+      const date = new Date(doc?.created_at ?? '');
+      if (Number.isNaN(date.getTime())) continue;
+      const key = String(date.getHours()).padStart(2, '0');
+      addToBucket(bucketMap, key, `${key}h`, doc, 'vendas');
+    }
+    return Array.from(bucketMap.values());
+  }
+
+  if (spanDays <= 62) {
+    const bucketMap = new Map();
+    const cursorStart = new Date(fromDate);
+    while (cursorStart <= toDate) {
+      const key = formatLocalDateOnly(cursorStart);
+      if (!key) break;
+      const label = `${String(cursorStart.getDate()).padStart(2, '0')}/${String(cursorStart.getMonth() + 1).padStart(2, '0')}`;
+      bucketMap.set(key, { name: label, key, sales: 0, vendas: 0 });
+      cursorStart.setDate(cursorStart.getDate() + 1);
+    }
+    for (const doc of cashDocs ?? []) {
+      const key = parseDocDateOnly(doc);
+      if (!key || !bucketMap.has(key)) continue;
+      addToBucket(bucketMap, key, bucketMap.get(key).name, doc, 'sales');
+    }
+    for (const doc of saleDocs ?? []) {
+      if (isCancelledDocument(doc)) continue;
+      const key = parseDocDateOnly(doc);
+      if (!key || !bucketMap.has(key)) continue;
+      addToBucket(bucketMap, key, bucketMap.get(key).name, doc, 'vendas');
+    }
+    return Array.from(bucketMap.values());
+  }
+
+  const bucketMap = new Map();
+  let cursor = new Date(fromDate.getFullYear(), fromDate.getMonth(), 1);
+  const endMonth = new Date(toDate.getFullYear(), toDate.getMonth(), 1);
+  while (cursor <= endMonth) {
+    const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    bucketMap.set(key, {
+      name: MONTH_LABELS[cursor.getMonth()] ?? key,
+      key,
+      sales: 0,
+      vendas: 0,
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+
+  for (const doc of cashDocs ?? []) {
+    const date = new Date(doc?.created_at ?? '');
+    if (Number.isNaN(date.getTime())) continue;
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    if (!bucketMap.has(key)) continue;
+    addToBucket(bucketMap, key, bucketMap.get(key).name, doc, 'sales');
+  }
+  for (const doc of saleDocs ?? []) {
+    if (isCancelledDocument(doc)) continue;
+    const date = new Date(doc?.created_at ?? '');
+    if (Number.isNaN(date.getTime())) continue;
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    if (!bucketMap.has(key)) continue;
+    addToBucket(bucketMap, key, bucketMap.get(key).name, doc, 'vendas');
+  }
+  return Array.from(bucketMap.values());
+}
+
 export async function getDashboardSummary(query = {}, user = null) {
   const tenantId = resolveTenantIdStrict(user?.tenant_id);
+  const range = resolveDashboardPeriod(query);
   const yearFromQuery = Number(query.year);
-  const targetYear = Number.isFinite(yearFromQuery) ? yearFromQuery : new Date().getFullYear();
-  const cacheKey = `${tenantId}:${targetYear}:cash-v2`;
+  const targetYear = Number.isFinite(yearFromQuery)
+    ? yearFromQuery
+    : Number(range.from.slice(0, 4)) || new Date().getFullYear();
+  const cacheKey = `${tenantId}:${range.from}:${range.to}:${range.preset}:dash-v6`;
   const forceRefresh = String(query.refresh ?? '').toLowerCase() === 'true';
 
   if (!forceRefresh) {
@@ -928,29 +1267,35 @@ export async function getDashboardSummary(query = {}, user = null) {
   const saleRows = await listDashboardSaleRows(tenantId);
   const documents = [...(orderRows ?? []), ...(saleRows ?? [])];
   const cashInflowDocs = filterCashInflowDocuments(documents, 'all');
-  const currentYearDocs = cashInflowDocs.filter((doc) => {
-    const date = new Date(doc?.created_at ?? '');
-    return !Number.isNaN(date.getTime()) && date.getFullYear() === targetYear;
-  });
 
-  const monthNow = new Date().getMonth();
-  const currentMonthDocs = currentYearDocs.filter((doc) => {
-    const date = new Date(doc?.created_at ?? '');
-    return !Number.isNaN(date.getTime()) && date.getMonth() === monthNow;
-  });
+  const rangeCashDocs = cashInflowDocs.filter((doc) => docInRange(doc, range.from, range.to));
+  const rangeAllDocs = documents.filter((doc) => docInRange(doc, range.from, range.to));
+  const rangeSaleDocs = rangeAllDocs.filter((doc) => isSaleDocument(doc) && !isCancelledDocument(doc));
+  const rangeReturnDocs = rangeAllDocs.filter((doc) => isDashboardReturnDocument(doc));
 
-  const monthlySalesData = Array.from({ length: 12 }, (_, i) => ({
-    name: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][i],
-    sales: 0,
-  }));
-
-  for (const doc of currentYearDocs) {
+  const yearCashDocs = cashInflowDocs.filter((doc) => docInYear(doc, targetYear));
+  const monthlySalesData = MONTH_LABELS.map((name) => ({ name, sales: 0, vendas: 0 }));
+  for (const doc of yearCashDocs) {
     const date = new Date(doc?.created_at ?? '');
     if (Number.isNaN(date.getTime())) continue;
     monthlySalesData[date.getMonth()].sales += Number(doc?.total ?? 0);
   }
+  const yearAllDocs = documents.filter((doc) => docInYear(doc, targetYear));
+  for (const doc of yearAllDocs) {
+    if (isCancelledDocument(doc) || !isSaleDocument(doc)) continue;
+    const date = new Date(doc?.created_at ?? '');
+    if (Number.isNaN(date.getTime())) continue;
+    monthlySalesData[date.getMonth()].vendas += Number(doc?.total ?? 0);
+  }
 
-  const totalSales = currentYearDocs.reduce((acc, doc) => acc + Number(doc?.total ?? 0), 0);
+  const chartData = buildDashboardChartSeries(
+    range.from,
+    range.to,
+    rangeCashDocs,
+    rangeSaleDocs,
+  );
+
+  const totalSales = yearCashDocs.reduce((acc, doc) => acc + Number(doc?.total ?? 0), 0);
   let bestMonth = '---';
   let bestMonthValue = 0;
   for (const month of monthlySalesData) {
@@ -960,19 +1305,35 @@ export async function getDashboardSummary(query = {}, user = null) {
     }
   }
 
-  const validOrderIds = new Set(currentMonthDocs.map((doc) => String(doc?.id ?? '')));
-  for (const doc of currentMonthDocs) {
-    const id = String(doc?.id ?? '');
+  const period = {
+    preset: range.preset,
+    from: range.from,
+    to: range.to,
+    monthLabel: range.label,
+    totalVendas: rangeSaleDocs.reduce((acc, doc) => acc + Number(doc?.total ?? 0), 0),
+    totalCaixa: rangeCashDocs.reduce((acc, doc) => acc + Number(doc?.total ?? 0), 0),
+    creditSales: rangeSaleDocs
+      .filter(isCreditSaleDocument)
+      .reduce((acc, doc) => acc + Number(doc?.total ?? 0), 0),
+    returns: rangeReturnDocs.reduce((acc, doc) => acc + sumDashboardReturnAmount(doc), 0),
+  };
+
+  const validOrderIds = new Set();
+  for (const doc of rangeSaleDocs) {
+    const id = String(doc?.id ?? '').trim();
+    if (!id) continue;
+    validOrderIds.add(id);
     if (id.startsWith('venda:')) validOrderIds.add(id.slice('venda:'.length));
   }
   const itemRows = await listDashboardOrderItems(tenantId);
   const productMap = {};
   for (const item of itemRows ?? []) {
-    const orderId = String(item?.order_id ?? '');
+    const orderId = String(item?.order_id ?? '').trim();
     if (!orderId || !validOrderIds.has(orderId)) continue;
     const productName = String(item?.product_name ?? '').trim() || 'Sem nome';
     const qty = Number(item?.quantity ?? 0);
     const price = Number(item?.price ?? 0);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
     if (!productMap[productName]) {
       productMap[productName] = { sales: 0, price };
     }
@@ -996,7 +1357,7 @@ export async function getDashboardSummary(query = {}, user = null) {
   }
 
   const customerTotals = {};
-  for (const doc of currentMonthDocs) {
+  for (const doc of rangeSaleDocs) {
     const customerId = doc?.customer_id != null ? String(doc.customer_id) : '';
     const fallbackName = String(doc?.client_name ?? '').trim();
     const customerName =
@@ -1012,14 +1373,21 @@ export async function getDashboardSummary(query = {}, user = null) {
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
 
+  const topEmployees = aggregateEmployeeSales(rangeSaleDocs);
+  const paymentTypes = aggregatePaymentTypes(rangeSaleDocs);
+
   const payloadResult = {
     year: targetYear,
     totalSales,
-    monthlySalesData,
+    monthlySalesData: chartData.length > 0 ? chartData : monthlySalesData,
+    chartGranularity: chartData.length > 0 ? range.preset : 'year',
     bestMonth,
     bestMonthValue,
+    period,
     topProducts,
     topCustomers,
+    topEmployees,
+    paymentTypes,
     topGroups: [],
   };
 

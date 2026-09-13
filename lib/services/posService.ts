@@ -39,11 +39,14 @@ function unwrapApiPayload(payload: unknown): any {
 const fetchJSON = async (path: string, options?: RequestInit, didRetryAuth = false): Promise<any> => {
   const base = getPosApiBase().replace(/\/$/, '');
   const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  // `cache: 'no-store'` no fetch do Next pode ir pelo servidor sem Authorization.
+  const { cache: _cache, ...fetchOptions } = options ?? {};
+  const authHeaders = getPosUserAuthHeaders();
   const response = await fetch(url, {
-    ...options,
+    ...fetchOptions,
     headers: {
-      ...getPosUserAuthHeaders(),
-      ...(options?.headers ?? {}),
+      ...authHeaders,
+      ...(fetchOptions.headers ?? {}),
     },
   });
   const text = await response.text();
@@ -67,17 +70,22 @@ const fetchJSON = async (path: string, options?: RequestInit, didRetryAuth = fal
       'Erro API'
     );
     const code = errorObject?.code != null ? String(errorObject.code) : null;
+    const loggedIn =
+      typeof window !== 'undefined' && localStorage.getItem('isLoggedIn') === 'true';
     // Bearer obsoleto (restart API / secret novo): limpar token e tentar 1x com x-user-id.
-    if (
-      response.status === 401 &&
-      !didRetryAuth &&
-      typeof window !== 'undefined' &&
-      getStoredAuthToken()
-    ) {
-      setStoredAuthToken(null);
+    // Pedidos em paralelo não devem fazer logout no 1.º 401 — senão o seguinte fica Unauthorized.
+    if (response.status === 401 && !didRetryAuth && loggedIn) {
+      if (getStoredAuthToken()) setStoredAuthToken(null);
       return fetchJSON(path, options, true);
     }
-    if (response.status === 401 && typeof window !== 'undefined' && localStorage.getItem('isLoggedIn') === 'true') {
+    if (
+      loggedIn &&
+      didRetryAuth &&
+      (response.status === 401 ||
+        code === 'AUTH_FAILED' ||
+        code === 'UNAUTHORIZED' ||
+        code === 'TENANT_CONTEXT_REQUIRED')
+    ) {
       clearPosAuthSession();
     }
     if (response.status === 403 && isLicenseExpiredMessage(message)) {
@@ -100,41 +108,37 @@ const fetchJSON = async (path: string, options?: RequestInit, didRetryAuth = fal
   }
 };
 
+function isTransientApiFailure(error: unknown): boolean {
+  const status = error instanceof PosApiError ? error.status : 0;
+  const message = String(error instanceof Error ? error.message : error ?? '');
+  return (
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    /ECONNREFUSED|ECONNRESET|Failed to fetch|Internal Server Error|API HTTP 50/i.test(message)
+  );
+}
+
+async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 5, delayMs = 350): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientApiFailure(error) || attempt === attempts - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+import { normalizeCatalogProduct } from '@/lib/catalogLocalSync';
+
 export const fetchProducts = async () => {
   const rows = await fetchJSON('/produtos');
-  return (Array.isArray(rows) ? rows : []).map((row: any) => {
-    const basePrice = Number(row?.price ?? 0) || 0;
-    const finalPriceRaw = Number(row?.final_price);
-    const chargePrice = Number.isFinite(finalPriceRaw) ? finalPriceRaw : basePrice;
-    return {
-      ...row,
-      id: String(row?.id ?? ''),
-      // POS cobra sempre o preço final (com imposto já aplicado no modo “+ imposto”).
-      price: chargePrice,
-      category: String(row?.category ?? row?.categories?.name ?? ''),
-      category_id: row?.category_id != null ? String(row.category_id) : null,
-      tax_rate_id: row?.tax_rate_id != null ? String(row.tax_rate_id) : null,
-      tax_rate_name: row?.tax_rate_name != null ? String(row.tax_rate_name) : null,
-      tax_rate_code: row?.tax_rate_code != null ? String(row.tax_rate_code) : null,
-      tax_rate_percent: Number(row?.tax_rate_percent ?? 0),
-      tax_rate_is_fixed: Boolean(row?.tax_rate_is_fixed),
-      tax_rate_price_includes_tax:
-        row?.tax_rate_price_includes_tax == null
-          ? true
-          : Boolean(row.tax_rate_price_includes_tax),
-      stock_quantity:
-        row?.stock_quantity != null ? Number(row.stock_quantity) : undefined,
-      min_stock: row?.min_stock != null ? Number(row.min_stock) : undefined,
-      active: row?.active === false ? false : Boolean(row?.active ?? true),
-      is_service: Boolean(row?.is_service),
-      product_kind: row?.product_kind ?? 'simple',
-      cloud_id: row?.cloud_id != null ? String(row.cloud_id) : undefined,
-      color: row?.color != null ? String(row.color) : undefined,
-      image: row?.image != null ? String(row.image) : undefined,
-      barcode: row?.barcode != null ? String(row.barcode) : undefined,
-      name: String(row?.name ?? ''),
-    };
-  });
+  return (Array.isArray(rows) ? rows : []).map((row: any) => normalizeCatalogProduct(row));
 };
 
 export const fetchCategories = async () => {
@@ -163,7 +167,7 @@ export const fetchCustomers = async () => {
 };
 
 export const fetchLoginUsers = async () => {
-  const users = await fetchJSON('/auth/login-users', { cache: 'no-store' });
+  const users = await withTransientRetry(() => fetchJSON('/auth/login-users', { cache: 'no-store' }));
   return (users ?? []).map((user: any) => ({
     ...user,
     accessLevel: Number(user.access_level ?? user.accessLevel ?? 0),
@@ -374,6 +378,15 @@ export const redeemReactivationTokenOnServer = async (token: string) => {
   });
 };
 
+/** Apaga license.json e reabre o wizard de série (após desvincular na consola). */
+export const resetLocalLicenseOnServer = async () => {
+  return fetchJSON('/setup/license/reset-local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+};
+
 /** Após o Electron gravar license.json: marca licença como activa na BD local (127.0.0.1). */
 export const acknowledgeLicenseFileOnServer = async () => {
   return fetchJSON('/setup/license/ack-file', {
@@ -405,6 +418,7 @@ export const fetchPaymentMethods = async (options?: { includeDisabled?: boolean 
       markAsPaid: row.markAsPaid !== false && row.mark_as_paid !== 0 && row.mark_as_paid !== false,
       printReceipt: row.printReceipt !== false && row.print_receipt !== 0 && row.print_receipt !== false,
       openCashDrawer: Boolean(row.openCashDrawer ?? row.open_cash_drawer),
+      color: String(row.color ?? '').trim() || undefined,
     }))
     .filter((row) => options?.includeDisabled || row.enabled)
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
@@ -662,12 +676,16 @@ export const listDatabaseBackups = async (): Promise<{
   backups: DatabaseBackupRow[];
   backupsDir?: string;
   databasePath?: string;
+  intervalHours?: number;
+  retentionCount?: number;
 }> => {
   const data = await fetchJSON('/backup/list');
   return {
     backups: Array.isArray(data?.backups) ? data.backups : Array.isArray(data) ? data : [],
     backupsDir: data?.backupsDir ? String(data.backupsDir) : undefined,
     databasePath: data?.databasePath ? String(data.databasePath) : undefined,
+    intervalHours: Number.isFinite(Number(data?.intervalHours)) ? Number(data.intervalHours) : undefined,
+    retentionCount: Number.isFinite(Number(data?.retentionCount)) ? Number(data.retentionCount) : undefined,
   };
 };
 
@@ -739,6 +757,7 @@ export type PosLocationTable = {
   id: string;
   locationId: string;
   name: string;
+  displayName?: string;
   seats: number | null;
   sortOrder: number;
   active: boolean;
@@ -754,6 +773,8 @@ export type PosLocation = {
   allowCustomNames: boolean;
   /** null = usar armazém principal (default) do tenant */
   warehouseId: string | null;
+  /** Numeração no POS a partir deste número; o nome interno da mesa não muda */
+  displayStart?: number | null;
   tables: PosLocationTable[];
   tablesSummary?: string;
 };
@@ -781,6 +802,12 @@ export const fetchLocations = async (): Promise<PosLocation[]> => {
           : null,
     tables: Array.isArray(row?.tables) ? row.tables : [],
     tablesSummary: row?.tablesSummary != null ? String(row.tablesSummary) : undefined,
+    displayStart:
+      row?.displayStart != null && Number.isFinite(Number(row.displayStart))
+        ? Number(row.displayStart)
+        : row?.display_start != null && Number.isFinite(Number(row.display_start))
+          ? Number(row.display_start)
+          : null,
   }));
 };
 
@@ -793,6 +820,7 @@ export const createLocationApi = async (payload: {
   tablesSpec?: string;
   allowCustomNames?: boolean;
   warehouseId?: string | null;
+  displayStart?: number | null;
 }) => fetchJSON('/locations', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -809,6 +837,8 @@ export const updateLocationApi = async (
     sortOrder: number;
     allowCustomNames: boolean;
     warehouseId: string | null;
+    tablesSpec: string;
+    displayStart: number | null;
   }>,
 ) =>
   fetchJSON(`/locations/${id}`, {

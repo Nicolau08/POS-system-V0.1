@@ -8,6 +8,7 @@ import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { getCachedTaxRates, setCachedTaxRates } from '@/lib/posSessionCache';
+import { numberInputDisplayValue, parseNumberInput } from '@/lib/numberInput';
 
 type TaxRate = {
   id: string;
@@ -209,19 +210,19 @@ export default function TaxRatesManager() {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-[#1a1a1a] text-zinc-300">
-      <div className="flex h-16 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-[#1a1a1a] px-2">
+    <div className="flex h-full flex-col overflow-hidden bg-pos-surface text-zinc-300">
+      <div className="flex h-16 items-center gap-1 overflow-x-auto border-b border-pos-border bg-pos-surface px-2">
         <ManagementToolbarButton icon={<RefreshCw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
         <ManagementToolbarButton icon={<Plus size={22} />} label="Nova taxa de imposto" onClick={openNew} />
         <ManagementToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={() => openEditRow(selected)} disabled={!selected} />
-        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={() => void remove()} disabled={!selected} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Eliminar" onClick={() => void remove()} disabled={!selected} />
         <ManagementToolbarButton icon={<ArrowLeftRight size={22} />} label="Trocar impostos" onClick={openSwap} disabled={rows.length < 2} />
         <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
-      <div className="flex-1 overflow-auto bg-[#0f0f0f] custom-scrollbar">
-        <table className="w-full table-fixed border-collapse text-left [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
-          <thead className="sticky top-0 z-10 bg-[#141414]">
+      <div className="flex-1 overflow-auto bg-pos-bg custom-scrollbar">
+        <table className="w-full table-fixed border-collapse text-left [&_th]:border [&_td]:border [&_th]:border-pos-border/55 [&_td]:border-pos-border/55">
+          <thead className="sticky top-0 z-10 bg-pos-card">
             <tr className="border-b border-[#0001fb]/70">
               <th className="w-[24%] px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
               <th className="w-[12%] px-3 py-2 text-xs font-bold text-zinc-300">Taxa</th>
@@ -243,7 +244,7 @@ export default function TaxRatesManager() {
                   openEditRow(row);
                 }}
                 className={`cursor-pointer ${
-                  selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : index % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                  selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : index % 2 ? 'bg-pos-surface' : 'bg-pos-row'
                 } hover:bg-[var(--pos-brand-hover-bg)]`}
               >
                 <td className="px-3 py-2 text-xs text-zinc-200">{row.name}</td>
@@ -271,16 +272,18 @@ export default function TaxRatesManager() {
                   min="0"
                   max={100}
                   step="0.01"
-                  value={form.rate}
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={numberInputDisplayValue(form.rate)}
                   onChange={(event) => {
-                    const rate = Number(event.target.value);
+                    const rate = parseNumberInput(event.target.value);
                     setForm((prev) => ({
                       ...prev,
                       rate,
                       priceIncludesTax: resolveFormPriceIncludesTax(rate, prev.priceIncludesTax),
                     }));
                   }}
-                  className="w-full rounded border border-zinc-700 bg-[#141414] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-card px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb] placeholder:text-zinc-600"
                 />
               </div>
             </div>
@@ -288,7 +291,7 @@ export default function TaxRatesManager() {
               <label className="text-xs text-zinc-400">Modo do preço de venda</label>
               {isExemptRate(form.rate) ? (
                 <>
-                  <div className="rounded border border-zinc-700 bg-[#141414] px-3 py-2 text-sm text-zinc-300">
+                  <div className="rounded border border-pos-border bg-pos-card px-3 py-2 text-sm text-zinc-300">
                     Isento (sem imposto)
                   </div>
                   <p className="text-[10px] leading-relaxed text-zinc-500">
@@ -359,9 +362,9 @@ export default function TaxRatesManager() {
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-lg overflow-hidden rounded border border-zinc-700 bg-[#1a1a1a]" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center pos-modal-overlay p-4" onClick={onClose}>
+      <div className="w-full max-w-lg overflow-hidden rounded border border-pos-border bg-pos-surface" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-pos-border px-5 py-4">
           <h3 className="text-lg text-zinc-200">{title}</h3>
           <button type="button" onClick={onClose} className="text-zinc-500 hover:text-white"><X size={18} /></button>
         </div>
@@ -373,9 +376,9 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 
 function ModalActions({ form, onCancel }: { form: string; onCancel: () => void }) {
   return (
-    <div className="flex justify-end gap-3 border-t border-zinc-800 p-4">
+    <div className="flex justify-end gap-3 border-t border-pos-border p-4">
       <button type="submit" form={form} className="flex items-center gap-2 rounded bg-[#0001fb] px-6 py-2 text-xs font-medium text-white hover:bg-[#1a1bff]"><Check size={15} />Salvar</button>
-      <button type="button" onClick={onCancel} className="rounded border border-zinc-700 px-6 py-2 text-xs text-zinc-300 hover:bg-zinc-800">Cancelar</button>
+      <button type="button" onClick={onCancel} className="rounded border border-pos-border px-6 py-2 text-xs text-zinc-300 hover:bg-zinc-800">Cancelar</button>
     </div>
   );
 }
@@ -384,7 +387,7 @@ function Field({ label, value, onChange, required }: { label: string; value: str
   return (
     <div className="space-y-1">
       <label className="text-xs text-zinc-400">{label}</label>
-      <input required={required} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded border border-zinc-700 bg-[#141414] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]" />
+      <input required={required} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded border border-pos-border bg-pos-card px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]" />
     </div>
   );
 }

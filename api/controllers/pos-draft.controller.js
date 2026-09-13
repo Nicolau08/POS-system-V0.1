@@ -11,7 +11,11 @@ function controllerError(res, error) {
   if (status >= 400 && status < 500) {
     return sendError(res, status, error?.message || 'Pedido inválido', error?.code);
   }
-  console.error('❌ pos-draft controller error:', error);
+  logError('controller_error', {
+    module: 'pos-draft',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return sendError(res, 500, 'Erro interno do servidor', 'INTERNAL_ERROR');
 }
 

@@ -39,15 +39,36 @@ export type PosLocationsTablesSlice = {
   allowCustomNames: boolean;
 };
 
+export type DashboardPeriodPreset = 'today' | 'yesterday' | 'week' | 'month' | 'year' | 'custom';
+
+export type DashboardPeriodFilter = {
+  preset: DashboardPeriodPreset;
+  from: string;
+  to: string;
+};
+
 export type PosDashboardSlice = {
   year: number;
-  monthlySalesData: { name: string; sales: number }[];
+  monthlySalesData: { name: string; sales: number; vendas?: number }[];
   totalSales: number;
   bestMonth: string;
   bestMonthValue: number;
+  period?: {
+    preset?: DashboardPeriodPreset;
+    from?: string;
+    to?: string;
+    monthLabel: string;
+    totalVendas: number;
+    totalCaixa: number;
+    creditSales: number;
+    returns: number;
+  };
   topProducts: { name: string; sales: number; price: number }[];
   topGroups: { name: string; sales: number }[];
   topCustomers: { name: string; total: number }[];
+  topEmployees?: { name: string; total: number }[];
+  paymentTypes?: { name: string; value: number; percent: number }[];
+  periodFilter?: DashboardPeriodFilter;
 };
 
 export type PosActivationSlice = {

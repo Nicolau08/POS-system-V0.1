@@ -15,6 +15,7 @@ import {
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
+import { numberInputDisplayValue, parseNumberInput } from '@/lib/numberInput';
 import { computeTaxFromBasePrice } from '@/lib/taxMath';
 import { getCachedTaxRates, setCachedTaxRates } from '@/lib/posSessionCache';
 import PosSelect from '@/components/PosSelect';
@@ -945,7 +946,7 @@ export default function PurchaseStockModal({
 
   return (
     <>
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#0f0f0f] text-zinc-300">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-pos-bg text-zinc-300">
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar px-6 py-5">
           <div className="mx-auto w-full max-w-6xl">
           <div
@@ -1021,7 +1022,7 @@ export default function PurchaseStockModal({
             </label>
           </div>
 
-          <div className="mt-5 border-t border-zinc-800 pt-4">
+          <div className="mt-5 border-t border-pos-border pt-4">
             <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
               {cfg.productsLabel}
             </span>
@@ -1094,7 +1095,7 @@ export default function PurchaseStockModal({
 
             <div className="mt-3 overflow-hidden rounded-[0.4rem] border border-[#3f3f46]">
               <div
-                className={`grid items-center gap-2 border-b border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500 ${
+                className={`grid items-center gap-2 border-b border-pos-border bg-pos-card px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500 ${
                   cfg.useCostPrice
                     ? 'grid-cols-[minmax(0,1.2fr)_72px_90px_88px_120px_92px_40px]'
                     : 'grid-cols-[minmax(0,1.2fr)_72px_88px_120px_92px_40px]'
@@ -1137,14 +1138,16 @@ export default function PurchaseStockModal({
                           type="number"
                           min={0}
                           step="any"
-                          value={line.quantity}
+                          inputMode="decimal"
+                          placeholder="0"
+                          value={numberInputDisplayValue(line.quantity)}
                           onChange={(event) =>
                             updateLine(line.key, {
-                              quantity: Math.max(0, Number(event.target.value) || 0),
+                              quantity: Math.max(0, parseNumberInput(event.target.value)),
                             })
                           }
                           disabled={saving}
-                          className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm"
+                          className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm placeholder:text-zinc-600"
                         />
                         {cfg.useCostPrice ? (
                           line.trackLot ? (
@@ -1166,15 +1169,17 @@ export default function PurchaseStockModal({
                           type="number"
                           min={0}
                           step="any"
-                          value={line.unitPrice}
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={numberInputDisplayValue(line.unitPrice)}
                           onChange={(event) =>
                             updateLine(line.key, {
-                              unitPrice: Math.max(0, Number(event.target.value) || 0),
+                              unitPrice: Math.max(0, parseNumberInput(event.target.value)),
                             })
                           }
                           disabled={saving}
                           title="Valor pago por unidade (com imposto, se a taxa incluir IVA)"
-                          className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm"
+                          className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm placeholder:text-zinc-600"
                         />
                         <PosSelect
                           value={line.taxRateId}
@@ -1211,7 +1216,7 @@ export default function PurchaseStockModal({
               )}
             </div>
 
-            <div className="mt-3 flex justify-end border-t border-zinc-800 pt-3">
+            <div className="mt-3 flex justify-end border-t border-pos-border pt-3">
               <div className="inline-grid grid-cols-[auto_auto] items-baseline gap-x-8 gap-y-1 text-right text-white tabular-nums">
                 <span className="text-sm text-zinc-400">Valor sem imposto:</span>
                 <span className="text-sm font-semibold text-zinc-100">{formatMoneyMt(totals.net)}</span>
@@ -1228,7 +1233,7 @@ export default function PurchaseStockModal({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-zinc-800 bg-[#141414] px-6 py-4">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-pos-border bg-pos-card px-6 py-4">
           <button
             type="button"
             disabled={saving}

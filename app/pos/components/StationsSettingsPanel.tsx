@@ -235,7 +235,7 @@ export function StationsSettingsPanel() {
         fica no servidor; os postos herdam-na.
       </p>
 
-      <div className="space-y-3 rounded border border-zinc-800 bg-[#171717] p-4">
+      <div className="space-y-3 rounded border border-pos-border bg-pos-surface p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Modo desta instalação</p>
         <PosSelect
           value={client.stationMode === 'unset' ? 'server' : client.stationMode}
@@ -246,12 +246,12 @@ export function StationsSettingsPanel() {
           ]}
           size="md"
           className="max-w-[320px]"
-          triggerClassName="!bg-[#121212] !border-zinc-600"
+          triggerClassName="!bg-pos-bg !border-zinc-600"
         />
       </div>
 
       {(client.stationMode === 'server' || client.stationMode === 'unset') && (
-        <div className="space-y-4 rounded border border-zinc-800 bg-[#171717] p-4">
+        <div className="space-y-4 rounded border border-pos-border bg-pos-surface p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Servidor</p>
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -297,7 +297,7 @@ export function StationsSettingsPanel() {
             </div>
           ) : null}
 
-          <div className="border-t border-zinc-800 pt-4">
+          <div className="border-t border-pos-border pt-4">
             <p className="mb-2 text-zinc-200">Postos registados</p>
             <ul className="mb-3 space-y-1 text-xs text-zinc-400">
               {stations.length === 0 ? <li>Nenhum posto ainda — crie abaixo.</li> : null}
@@ -315,13 +315,13 @@ export function StationsSettingsPanel() {
                 value={draftStation.code}
                 onChange={(e) => setDraftStation((d) => ({ ...d, code: e.target.value }))}
                 placeholder="código (ex. caixa-2)"
-                className="h-9 rounded border border-zinc-600 bg-[#121212] px-2 text-sm text-white"
+                className="h-9 rounded border border-zinc-600 bg-pos-bg px-2 text-sm text-white"
               />
               <input
                 value={draftStation.name}
                 onChange={(e) => setDraftStation((d) => ({ ...d, name: e.target.value }))}
                 placeholder="nome"
-                className="h-9 rounded border border-zinc-600 bg-[#121212] px-2 text-sm text-white"
+                className="h-9 rounded border border-zinc-600 bg-pos-bg px-2 text-sm text-white"
               />
               <PosSelect
                 value={draftStation.role}
@@ -333,7 +333,7 @@ export function StationsSettingsPanel() {
                   { value: 'cozinha', label: 'Cozinha' },
                 ]}
                 size="md"
-                triggerClassName="!bg-[#121212] !border-zinc-600"
+                triggerClassName="!bg-pos-bg !border-zinc-600"
               />
             </div>
             <button
@@ -348,7 +348,7 @@ export function StationsSettingsPanel() {
       )}
 
       {client.stationMode === 'client' && (
-        <div className="space-y-4 rounded border border-zinc-800 bg-[#171717] p-4">
+        <div className="space-y-4 rounded border border-pos-border bg-pos-surface p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Posto remoto</p>
           <label className="block">
             <span className="text-zinc-300">IP da API do servidor</span>
@@ -358,7 +358,7 @@ export function StationsSettingsPanel() {
                 persistClient({ ...client, serverApiBaseUrl: e.target.value })
               }
               placeholder="192.168.1.20"
-              className="mt-1 h-9 w-full max-w-md rounded border border-zinc-600 bg-[#121212] px-3 font-mono text-sm text-white"
+              className="mt-1 h-9 w-full max-w-md rounded border border-zinc-600 bg-pos-bg px-3 font-mono text-sm text-white"
             />
             <span className="mt-1 block text-[11px] text-zinc-500">
               Basta o IP — acrescentamos http e a porta 3731. Em dev use IP:3001.
@@ -390,7 +390,7 @@ export function StationsSettingsPanel() {
                 });
                 setMessage('Ligação esquecida.');
               }}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+              className="rounded border border-pos-border px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200"
             >
               Esquecer ligação
             </button>
@@ -403,7 +403,7 @@ export function StationsSettingsPanel() {
                   <button
                     type="button"
                     onClick={() => connectTo(s.url)}
-                    className="w-full rounded border border-zinc-700 px-3 py-2 text-left text-xs hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)]"
+                    className="w-full rounded border border-pos-border px-3 py-2 text-left text-xs hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)]"
                   >
                     <span className="text-zinc-100">{s.store_name || 'POSly'}</span>
                     <span className="mt-0.5 block font-mono text-zinc-500">{s.url}</span>
@@ -418,7 +418,7 @@ export function StationsSettingsPanel() {
               <input
                 value={client.stationCode}
                 onChange={(e) => persistClient({ ...client, stationCode: e.target.value })}
-                className="mt-1 h-9 w-full rounded border border-zinc-600 bg-[#121212] px-2 font-mono text-sm text-white"
+                className="mt-1 h-9 w-full rounded border border-zinc-600 bg-pos-bg px-2 font-mono text-sm text-white"
               />
             </label>
             <label className="block text-xs text-zinc-400">
@@ -426,7 +426,7 @@ export function StationsSettingsPanel() {
               <input
                 value={client.stationName}
                 onChange={(e) => persistClient({ ...client, stationName: e.target.value })}
-                className="mt-1 h-9 w-full rounded border border-zinc-600 bg-[#121212] px-2 text-sm text-white"
+                className="mt-1 h-9 w-full rounded border border-zinc-600 bg-pos-bg px-2 text-sm text-white"
               />
             </label>
             <label className="block text-xs text-zinc-400">
@@ -444,7 +444,7 @@ export function StationsSettingsPanel() {
                     { value: 'cozinha', label: 'Cozinha' },
                   ]}
                   size="md"
-                  triggerClassName="!bg-[#121212] !border-zinc-600"
+                  triggerClassName="!bg-pos-bg !border-zinc-600"
                 />
               </div>
             </label>

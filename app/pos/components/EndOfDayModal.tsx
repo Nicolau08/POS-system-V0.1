@@ -72,10 +72,10 @@ function ActionTile({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`w-[108px] h-[108px] rounded-md border flex flex-col items-center justify-center gap-2 px-2 text-center transition-all ${
+      className={`w-[108px] h-[108px] rounded border flex flex-col items-center justify-center gap-2 px-2 text-center transition-all ${
         selected
-          ? 'bg-[#0001fb] border-[#0001fb] text-white shadow-[0_0_0_1px_rgba(0,1,251,0.35)]'
-          : 'bg-[#2a2a2a] border-zinc-700 text-zinc-200 hover:border-[#0001fb] hover:bg-[#333]'
+          ? 'pos-on-accent bg-[#0001fb] border-[#0001fb] text-white shadow-[0_0_0_1px_rgba(0,1,251,0.35)]'
+          : 'bg-pos-field border-pos-border text-pos-fg hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)]'
       } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
     >
       <span className={selected ? 'text-white' : 'text-[#0001fb]'}>{icon}</span>
@@ -88,11 +88,13 @@ export function EndOfDayModal({
   isOpen,
   onClose,
   companyName,
+  operatorName,
   onToast,
 }: {
   isOpen: boolean;
   onClose: () => void;
   companyName?: string | null;
+  operatorName?: string | null;
   onToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }) {
   const [mainTab, setMainTab] = useState<MainTab>('day');
@@ -165,7 +167,11 @@ export function EndOfDayModal({
   }, [snapshot?.session?.openedAt]);
 
   const totals = snapshot?.totals;
-  const canContinue = option != null && !busy;
+  const cashForOption =
+    option === 'user' ? Number(totals?.userCashAvailable || 0) : Number(totals?.cashAvailable || 0);
+  const saqueNeedsCash = option === 'user' || option === 'all';
+  const canContinue = option != null && !busy && (!saqueNeedsCash || cashForOption > 0);
+  const operatorLabel = String(operatorName || snapshot?.session?.openedByName || '').trim();
 
   const handlePrintX = async () => {
     setBusy(true);
@@ -218,7 +224,12 @@ export function EndOfDayModal({
       if (printZ || printItems) {
         await printCashReport(result.report, companyName || 'POSly');
       }
-      toast(`Caixa fechado — Relatório Z nº ${result.zNumber}`, 'success');
+      toast(
+        result.backup?.fileName
+          ? `Caixa fechado — Z nº ${result.zNumber} · backup ${result.backup.fileName}`
+          : `Caixa fechado — Relatório Z nº ${result.zNumber}`,
+        'success',
+      );
       setPrintModalOpen(false);
       onClose();
       // Reabrir sessão automaticamente para o próximo turno
@@ -256,7 +267,7 @@ export function EndOfDayModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 pos-modal-overlay"
           onClick={onClose}
         >
           <motion.div
@@ -264,16 +275,24 @@ export function EndOfDayModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-            className="w-full max-w-[1100px] max-h-[92vh] overflow-hidden rounded-lg border border-zinc-700 bg-[#1f1f1f] shadow-2xl flex flex-col"
+            className="w-full max-w-[1100px] max-h-[92vh] overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
-              <h2 className="text-lg font-semibold text-white tracking-tight">Fim do dia</h2>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-pos-border">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-pos-fg tracking-tight">Fim do dia</h2>
+                {operatorLabel ? (
+                  <p className="mt-0.5 truncate text-xs text-pos-muted">
+                    Operador: {operatorLabel}
+                    {snapshot?.session?.openedAt ? ` · Aberto ${formatDateTime(snapshot.session.openedAt)}` : ''}
+                  </p>
+                ) : null}
+              </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="p-2 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                className="p-2 rounded text-pos-muted hover:text-pos-fg hover:bg-pos-surface-3 transition-colors"
                 aria-label="Fechar"
               >
                 <X size={18} />
@@ -281,7 +300,7 @@ export function EndOfDayModal({
             </div>
 
             {/* Tabs */}
-            <div className="px-5 pt-2 border-b border-zinc-800 flex gap-6">
+            <div className="px-5 pt-2 border-b border-pos-border flex gap-6">
               {(
                 [
                   { id: 'day' as const, label: 'Fim do dia' },
@@ -294,8 +313,8 @@ export function EndOfDayModal({
                   onClick={() => setMainTab(tab.id)}
                   className={`pb-2.5 text-sm font-medium transition-colors border-b-2 ${
                     mainTab === tab.id
-                      ? 'text-white border-[#0001fb]'
-                      : 'text-zinc-500 border-transparent hover:text-zinc-300'
+                      ? 'text-pos-fg border-[#0001fb]'
+                      : 'text-pos-muted border-transparent hover:text-pos-fg'
                   }`}
                 >
                   {tab.label}
@@ -305,14 +324,14 @@ export function EndOfDayModal({
 
             <div className="flex-1 overflow-y-auto p-5">
               {error && (
-                <div className="mb-4 rounded border border-red-500/30 bg-red-500/10 text-red-300 text-sm px-3 py-2">
+                <div className="mb-4 rounded border border-red-500/30 bg-red-500/10 text-red-600 text-sm px-3 py-2">
                   {error}
                 </div>
               )}
 
               {mainTab === 'day' ? (
                 <div className="space-y-5">
-                  <p className="text-sm text-zinc-400">Selecione a opção de saque</p>
+                  <p className="text-sm text-pos-muted">Seleccione a opção de saque ou fecho</p>
 
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="flex flex-wrap gap-3">
@@ -325,7 +344,7 @@ export function EndOfDayModal({
                       <ActionTile
                         selected={option === 'all'}
                         icon={<Users size={28} strokeWidth={1.75} />}
-                        label="Efetuar saque de todos os usuários"
+                        label="Saque de todos os utilizadores"
                         onClick={() => setOption('all')}
                       />
                       <ActionTile
@@ -340,48 +359,47 @@ export function EndOfDayModal({
                       type="button"
                       onClick={() => void handlePrintX()}
                       disabled={busy || loading}
-                      className="w-[108px] h-[108px] rounded-md border border-zinc-700 bg-[#2a2a2a] hover:bg-[#333] text-white flex flex-col items-center justify-center gap-1 transition-all disabled:opacity-40"
+                      className="w-[108px] h-[108px] rounded border border-pos-border bg-pos-field hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] text-pos-fg flex flex-col items-center justify-center gap-1 transition-all disabled:opacity-40"
                       title="Imprimir Relatório X"
                     >
-                      <span className="text-4xl font-black leading-none tracking-tight">X</span>
-                      <span className="text-[10px] font-bold tracking-[0.12em] text-zinc-300">
+                      <span className="text-4xl font-black leading-none tracking-tight text-[#0001fb]">X</span>
+                      <span className="text-[10px] font-bold tracking-[0.12em] text-pos-muted">
                         RELATÓRIO
                       </span>
                     </button>
                   </div>
 
                   {loading ? (
-                    <div className="min-h-[240px] flex items-center justify-center text-zinc-500 gap-2">
+                    <div className="min-h-[240px] flex items-center justify-center text-pos-muted gap-2">
                       <Loader2 className="animate-spin" size={18} /> A carregar sessão…
                     </div>
                   ) : !option ? (
-                    <div className="min-h-[240px] flex items-center justify-center rounded-md border border-zinc-800 bg-[#242424] text-zinc-500 text-sm px-6 text-center">
-                      Opção de saque não selecionada. Escolha uma das opções listadas acima para
-                      continuar.
+                    <div className="min-h-[240px] flex items-center justify-center rounded border border-pos-border bg-pos-bg text-pos-muted text-sm px-6 text-center">
+                      Opção não seleccionada. Escolha saque, saque de todos ou fechar caixa para continuar.
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[260px]">
                       {/* Left summary */}
-                      <div className="rounded-md border border-zinc-700 bg-[#242424] overflow-hidden">
-                        <div className="flex border-b border-zinc-700">
+                      <div className="rounded border border-pos-border bg-pos-bg overflow-hidden">
+                        <div className="flex border-b border-pos-border">
                           <button
                             type="button"
                             onClick={() => setDetailTab('open')}
                             className={`flex-1 px-3 py-2.5 text-xs font-semibold ${
                               detailTab === 'open'
-                                ? 'text-white border-b-2 border-[#0001fb] bg-[#2b2b2b]'
-                                : 'text-zinc-500'
+                                ? 'text-pos-fg border-b-2 border-[#0001fb] bg-pos-field'
+                                : 'text-pos-muted'
                             }`}
                           >
-                            Transações abertas
+                            Sessão aberta
                           </button>
                           <button
                             type="button"
                             onClick={() => setDetailTab('dayTotal')}
                             className={`flex-1 px-3 py-2.5 text-xs font-semibold ${
                               detailTab === 'dayTotal'
-                                ? 'text-white border-b-2 border-[#0001fb] bg-[#2b2b2b]'
-                                : 'text-zinc-500'
+                                ? 'text-pos-fg border-b-2 border-[#0001fb] bg-pos-field'
+                                : 'text-pos-muted'
                             }`}
                           >
                             Total do dia ({dayLabel})
@@ -389,63 +407,69 @@ export function EndOfDayModal({
                         </div>
                         <div className="p-4 space-y-2">
                           {detailTab === 'dayTotal' && (
-                            <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-2">
-                              Tender types
+                            <div className="text-[11px] uppercase tracking-wide text-pos-muted mb-2">
+                              Meios de pagamento
                             </div>
                           )}
                           {(totals?.byTender || []).map((t) => (
                             <div
                               key={t.label}
-                              className="flex justify-between text-sm text-zinc-200"
+                              className="flex justify-between text-sm text-pos-fg"
                             >
                               <span className="font-semibold uppercase">{t.label}</span>
                               <span>{money(t.amount)}</span>
                             </div>
                           ))}
                           {(!totals?.byTender || totals.byTender.length === 0) && (
-                            <p className="text-sm text-zinc-500">Sem vendas nesta sessão.</p>
+                            <p className="text-sm text-pos-muted">Sem vendas nesta sessão.</p>
                           )}
-                          <div className="flex justify-between pt-3 mt-2 border-t border-zinc-700">
-                            <span className="font-bold text-white">TOTAL</span>
+                          <div className="flex justify-between pt-3 mt-2 border-t border-pos-border">
+                            <span className="font-bold text-pos-fg">TOTAL</span>
                             <span className="font-bold text-[#0001fb] text-lg">
                               {money(totals?.salesTotal || 0)}
                             </span>
                           </div>
-                          <div className="text-xs text-zinc-500 pt-1">
-                            Dinheiro disponível:{' '}
-                            <span className="text-zinc-300">
-                              {money(
-                                option === 'user'
-                                  ? totals?.userCashAvailable || 0
-                                  : totals?.cashAvailable || 0,
-                              )}
-                            </span>
+                          <div className="text-xs text-pos-muted pt-1 space-y-1">
+                            <div>
+                              Dinheiro disponível:{' '}
+                              <span className="text-pos-fg font-medium">
+                                {money(cashForOption)}
+                              </span>
+                            </div>
+                            {saqueNeedsCash && cashForOption <= 0 ? (
+                              <p className="text-amber-600">
+                                Não há dinheiro em caixa para este saque.
+                              </p>
+                            ) : null}
+                            {option === 'close' ? (
+                              <p>O fecho emite o Relatório Z e cria um backup automático.</p>
+                            ) : null}
                           </div>
                         </div>
                       </div>
 
                       {/* Right per-user */}
-                      <div className="rounded-md border border-zinc-700 bg-[#242424] overflow-hidden">
-                        <div className="px-4 py-2.5 border-b border-zinc-700 text-xs font-semibold text-zinc-400">
-                          Transações abertas
+                      <div className="rounded border border-pos-border bg-pos-bg overflow-hidden">
+                        <div className="px-4 py-2.5 border-b border-pos-border text-xs font-semibold text-pos-muted">
+                          Por operador
                         </div>
                         <div className="p-4 space-y-5 max-h-[320px] overflow-y-auto">
                           {(totals?.byUser || []).map((u) => (
                             <div key={u.userId}>
-                              <div className="font-bold text-white text-sm mb-2 tracking-wide">
+                              <div className="font-bold text-pos-fg text-sm mb-2 tracking-wide">
                                 {u.userName}
                               </div>
                               {u.byTender.map((t) => (
                                 <div
                                   key={`${u.userId}-${t.label}`}
-                                  className="flex justify-between text-sm text-zinc-300 py-0.5"
+                                  className="flex justify-between text-sm text-pos-muted py-0.5"
                                 >
                                   <span className="uppercase">{t.label}</span>
                                   <span>{money(t.amount)}</span>
                                 </div>
                               ))}
-                              <div className="flex justify-between pt-2 mt-1 border-t border-zinc-700/80">
-                                <span className="font-bold text-white text-sm">TOTAL</span>
+                              <div className="flex justify-between pt-2 mt-1 border-t border-pos-border/80">
+                                <span className="font-bold text-pos-fg text-sm">TOTAL</span>
                                 <span className="font-bold text-[#0001fb]">
                                   {money(u.total)}
                                 </span>
@@ -453,8 +477,21 @@ export function EndOfDayModal({
                             </div>
                           ))}
                           {(!totals?.byUser || totals.byUser.length === 0) && (
-                            <p className="text-sm text-zinc-500">Sem operadores com vendas.</p>
+                            <p className="text-sm text-pos-muted">Sem operadores com vendas.</p>
                           )}
+                          {(snapshot?.withdrawals || []).length > 0 ? (
+                            <div className="pt-2 border-t border-pos-border">
+                              <div className="text-xs font-semibold text-pos-muted mb-2">Saques desta sessão</div>
+                              {snapshot?.withdrawals.map((w) => (
+                                <div key={w.id} className="flex justify-between text-sm text-pos-fg py-0.5">
+                                  <span>
+                                    {w.scope === 'all' ? 'Todos' : w.userName || 'Operador'}
+                                  </span>
+                                  <span>-{money(w.amount)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -462,46 +499,46 @@ export function EndOfDayModal({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-start gap-3 rounded-md border border-[#0001fb]/35 bg-[#0001fb]/10 px-4 py-3">
+                  <div className="flex items-start gap-3 rounded border border-[#0001fb]/35 bg-[#0001fb]/10 px-4 py-3">
                     <Info className="text-[#0001fb] shrink-0 mt-0.5" size={18} />
-                    <p className="text-sm text-zinc-200">
-                      Use a lista abaixo para selecionar e imprimir uma cópia de qualquer relatório Z
+                    <p className="text-sm text-pos-fg">
+                      Use a lista abaixo para seleccionar e imprimir uma cópia de qualquer Relatório Z
                       gerado anteriormente.
                     </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 justify-between">
-                    <div className="flex items-center gap-2 text-sm text-zinc-300">
+                    <div className="flex items-center gap-2 text-sm text-pos-fg">
                       <input
                         type="date"
                         value={historyFrom}
                         onChange={(e) => setHistoryFrom(e.target.value)}
-                        className="h-9 rounded bg-zinc-900 border border-zinc-700 px-2 text-sm"
+                        className="h-9 rounded bg-pos-field border border-pos-border px-2 text-sm text-pos-fg"
                       />
-                      <span className="text-zinc-500">—</span>
+                      <span className="text-pos-muted">—</span>
                       <input
                         type="date"
                         value={historyTo}
                         onChange={(e) => setHistoryTo(e.target.value)}
-                        className="h-9 rounded bg-zinc-900 border border-zinc-700 px-2 text-sm"
+                        className="h-9 rounded bg-pos-field border border-pos-border px-2 text-sm text-pos-fg"
                       />
                     </div>
                     <button
                       type="button"
                       disabled={!selectedZId || busy}
                       onClick={() => void handleReprintZ()}
-                      className="h-10 px-4 rounded bg-zinc-800 border border-zinc-700 text-sm text-zinc-200 inline-flex items-center gap-2 disabled:opacity-40 hover:bg-zinc-700"
+                      className="h-10 px-4 rounded border border-pos-border bg-pos-field text-sm text-pos-fg inline-flex items-center gap-2 disabled:opacity-40 hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)]"
                     >
                       <Printer size={16} />
-                      Imprimir relatório selecionado
+                      Imprimir relatório seleccionado
                     </button>
                   </div>
 
                   <div>
-                    <h3 className="text-sm font-semibold text-zinc-300 mb-2">Relatórios</h3>
-                    <div className="rounded-md border border-zinc-800 overflow-hidden">
+                    <h3 className="text-sm font-semibold text-pos-fg mb-2">Relatórios</h3>
+                    <div className="rounded border border-pos-border overflow-hidden">
                       <table className="w-full text-sm">
-                        <thead className="bg-zinc-900 text-zinc-500 text-xs uppercase">
+                        <thead className="bg-pos-bg text-pos-muted text-xs uppercase">
                           <tr>
                             <th className="text-left px-3 py-2 font-medium">Número</th>
                             <th className="text-left px-3 py-2 font-medium">Data</th>
@@ -510,7 +547,7 @@ export function EndOfDayModal({
                         <tbody>
                           {history.length === 0 && (
                             <tr>
-                              <td colSpan={2} className="px-3 py-8 text-center text-zinc-500">
+                              <td colSpan={2} className="px-3 py-8 text-center text-pos-muted">
                                 Nenhum Relatório Z neste período.
                               </td>
                             </tr>
@@ -519,14 +556,14 @@ export function EndOfDayModal({
                             <tr
                               key={row.id}
                               onClick={() => setSelectedZId(row.id)}
-                              className={`border-t border-zinc-800 cursor-pointer ${
+                              className={`border-t border-pos-border cursor-pointer ${
                                 selectedZId === row.id
                                   ? 'bg-[#0001fb]/10 outline outline-1 outline-[#0001fb]/50'
-                                  : 'hover:bg-zinc-900/80'
+                                  : 'hover:bg-pos-field'
                               }`}
                             >
-                              <td className="px-3 py-2.5 text-white font-medium">{row.zNumber}</td>
-                              <td className="px-3 py-2.5 text-zinc-300">
+                              <td className="px-3 py-2.5 text-pos-fg font-medium">{row.zNumber}</td>
+                              <td className="px-3 py-2.5 text-pos-muted">
                                 {formatDateTime(row.generatedAt)}
                               </td>
                             </tr>
@@ -541,15 +578,15 @@ export function EndOfDayModal({
 
             {/* Footer */}
             {mainTab === 'day' && (
-              <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-3">
+              <div className="px-5 py-4 border-t border-pos-border flex justify-end gap-3">
                 <button
                   type="button"
                   disabled={!canContinue}
                   onClick={() => void handleContinue()}
                   className={`h-11 min-w-[140px] px-5 rounded font-semibold text-sm inline-flex items-center justify-center gap-2 transition-all ${
                     canContinue
-                      ? 'bg-[#0001fb] hover:bg-[#1a1bff] text-white'
-                      : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                      ? 'pos-on-accent bg-[#0001fb] hover:bg-[#1a1bff] text-white'
+                      : 'border border-pos-border bg-pos-surface-3 text-pos-muted cursor-not-allowed'
                   }`}
                 >
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
@@ -558,7 +595,7 @@ export function EndOfDayModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="h-11 min-w-[140px] px-5 rounded bg-red-600 hover:bg-red-500 text-white font-semibold text-sm inline-flex items-center justify-center gap-2"
+                  className="h-11 min-w-[140px] px-5 rounded pos-on-accent bg-red-600 hover:bg-red-500 text-white font-semibold text-sm inline-flex items-center justify-center gap-2"
                 >
                   <X size={16} />
                   Cancelar
@@ -574,31 +611,31 @@ export function EndOfDayModal({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60"
+                className="fixed inset-0 z-[110] flex items-center justify-center p-4 pos-modal-overlay"
                 onClick={() => !busy && setPrintModalOpen(false)}
               >
                 <motion.div
                   initial={{ scale: 0.95, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   exit={{ scale: 0.95, opacity: 0 }}
-                  className="w-full max-w-md rounded-lg border border-zinc-700 bg-[#242424] p-5 shadow-xl"
+                  className="w-full max-w-md rounded border border-pos-border bg-pos-surface p-5 shadow-xl"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <h3 className="text-lg font-semibold text-white mb-2">
-                    Imprimir relatórios de fechamento
+                  <h3 className="text-lg font-semibold text-pos-fg mb-2">
+                    Imprimir relatórios de fecho
                   </h3>
-                  <p className="text-sm text-zinc-400 mb-5">
-                    Selecione relatórios para imprimir. A impressão usa a impressora
+                  <p className="text-sm text-pos-muted mb-5">
+                    Seleccione relatórios para imprimir. A impressão usa a impressora
                     definida em Opções de impressão (lista do Windows).
                   </p>
 
                   <div className="space-y-4 mb-6">
                     <div className="flex items-center justify-between gap-4">
-                      <span className="text-sm text-zinc-200">Imprimir relatório de itens</span>
+                      <span className="text-sm text-pos-fg">Imprimir produtos vendidos</span>
                       <PosSwitch checked={printItems} onChange={setPrintItems} />
                     </div>
                     <div className="flex items-center justify-between gap-4">
-                      <span className="text-sm text-zinc-200">Imprimir relatório Z</span>
+                      <span className="text-sm text-pos-fg">Imprimir Relatório Z (totais)</span>
                       <PosSwitch checked={printZ} onChange={setPrintZ} />
                     </div>
                   </div>
@@ -608,7 +645,7 @@ export function EndOfDayModal({
                       type="button"
                       disabled={busy || (!printItems && !printZ)}
                       onClick={() => void handleConfirmClose()}
-                      className="h-11 px-5 rounded bg-[#0001fb] hover:bg-[#1a1bff] disabled:opacity-40 text-white font-semibold text-sm inline-flex items-center gap-2"
+                      className="h-11 px-5 rounded pos-on-accent bg-[#0001fb] hover:bg-[#1a1bff] disabled:opacity-40 text-white font-semibold text-sm inline-flex items-center gap-2"
                     >
                       {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
                       Continuar
@@ -617,7 +654,7 @@ export function EndOfDayModal({
                       type="button"
                       disabled={busy}
                       onClick={() => setPrintModalOpen(false)}
-                      className="h-11 px-5 rounded bg-red-600 hover:bg-red-500 text-white font-semibold text-sm inline-flex items-center gap-2"
+                      className="h-11 px-5 rounded pos-on-accent bg-red-600 hover:bg-red-500 text-white font-semibold text-sm inline-flex items-center gap-2"
                     >
                       <X size={16} />
                       Cancelar

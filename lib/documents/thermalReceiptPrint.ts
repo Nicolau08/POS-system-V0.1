@@ -4,8 +4,9 @@ import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { getPosTaxPercentLabel } from '@/lib/taxConfig';
 import type { SalesDocumentItem, SalesDocumentSale } from '@/lib/documents/salesDocumentPrint';
 import { formatDocumentSourceReferenceLabel } from '@/lib/documents/documentReference';
-
-const THERMAL_ROLL_WIDTH_MM = 80;
+import { getReceiptPrinterName, loadPosSettings } from '@/lib/posSettings';
+import { resolveConfiguredReceiptPrinterName } from '@/lib/printersClient';
+import { buildThermalPrintPageCss, resolveThermalWidthMm } from '@/lib/thermalPrintPage';
 
 function escapeHtml(value: string) {
   return value
@@ -178,9 +179,10 @@ export function buildThermalReceiptMarkup(
   `;
 }
 
-const THERMAL_PRINT_STYLES = `
+function buildThermalReceiptStyles(widthMm: number) {
+  return `
   html, body {
-    width: ${THERMAL_ROLL_WIDTH_MM}mm;
+    width: ${widthMm}mm;
     height: auto !important;
     min-height: 0 !important;
     max-height: none !important;
@@ -203,7 +205,7 @@ const THERMAL_PRINT_STYLES = `
     font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
     color: black;
     background: white;
-    width: ${THERMAL_ROLL_WIDTH_MM}mm;
+    width: ${widthMm}mm;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
@@ -215,7 +217,7 @@ const THERMAL_PRINT_STYLES = `
   * { box-sizing: border-box; }
   .print-receipt {
     width: 100%;
-    max-width: ${THERMAL_ROLL_WIDTH_MM}mm;
+    max-width: ${widthMm}mm;
     margin: 0 auto;
     padding: 0.5mm 2mm;
   }
@@ -394,8 +396,14 @@ const THERMAL_PRINT_STYLES = `
     font-weight: 900;
   }
 `;
+}
 
-function buildThermalPrintHtml(markup: string, estimatedHeightMm: number) {
+function buildThermalPrintHtml(
+  markup: string,
+  estimatedHeightMm: number,
+  widthMm: number,
+  pageCss: string,
+) {
   return `<!DOCTYPE html>
 <html>
   <head>
@@ -403,17 +411,18 @@ function buildThermalPrintHtml(markup: string, estimatedHeightMm: number) {
     <title></title>
     <style id="page-size-style">
       @page {
-        size: ${THERMAL_ROLL_WIDTH_MM}mm ${estimatedHeightMm}mm;
+        size: ${widthMm}mm ${estimatedHeightMm}mm;
         margin: 0;
       }
     </style>
-    <style>${THERMAL_PRINT_STYLES}</style>
+    <style>${pageCss}</style>
+    <style>${buildThermalReceiptStyles(widthMm)}</style>
   </head>
   <body>${markup}</body>
 </html>`;
 }
 
-function printThermalHtml(printHtml: string): Promise<boolean> {
+function printThermalHtml(printHtml: string, widthMm: number): Promise<boolean> {
   return new Promise((resolve) => {
     const iframe = document.createElement('iframe');
     iframe.setAttribute(
@@ -446,7 +455,7 @@ function printThermalHtml(printHtml: string): Promise<boolean> {
         if (receipt && styleTag) {
           const px = Math.max(receipt.scrollHeight, receipt.offsetHeight);
           const mm = Math.max(28, Math.ceil((px * 25.4) / 96));
-          styleTag.textContent = `@page { size: ${THERMAL_ROLL_WIDTH_MM}mm ${mm}mm; margin: 0 !important; }`;
+          styleTag.textContent = `@page { size: ${widthMm}mm ${mm}mm; margin: 0 !important; }`;
         }
         void doc.body?.offsetHeight;
 
@@ -482,18 +491,33 @@ export async function printSalesDocumentThermalSecondCopy(
   items: SalesDocumentItem[],
   profile: CompanyProfile | null,
 ) {
+  const settings = loadPosSettings();
+  const widthMm = resolveThermalWidthMm(settings.printPaperWidth);
+  const pageCss = buildThermalPrintPageCss(widthMm, {
+    top: settings.printMarginTop,
+    right: settings.printMarginRight,
+    bottom: settings.printMarginBottom,
+    left: settings.printMarginLeft,
+  });
   const markup = buildThermalReceiptMarkup(sale, items, profile, { secondCopy: true });
   const estimatedHeightMm = Math.max(34, 66 + items.length * 9 + 34);
-  const printHtml = buildThermalPrintHtml(markup, estimatedHeightMm);
+  const printHtml = buildThermalPrintHtml(markup, estimatedHeightMm, widthMm, pageCss);
+  const printer = await resolveConfiguredReceiptPrinterName(getReceiptPrinterName(settings));
+  const copies = Math.max(1, Number(settings.printCopies) || 1);
 
   if (window.electronAPI?.printReceipt) {
     try {
-      const result = await window.electronAPI.printReceipt(printHtml);
+      const result = await window.electronAPI.printReceipt(printHtml, {
+        printer,
+        copies,
+        widthMm,
+        heightMm: estimatedHeightMm,
+      });
       if (result?.success) return true;
     } catch {
       /* fallback to browser print */
     }
   }
 
-  return printThermalHtml(printHtml);
+  return printThermalHtml(printHtml, widthMm);
 }

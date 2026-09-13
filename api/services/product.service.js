@@ -1,7 +1,7 @@
 import db from '../database.js';
 import { uuidv4, isUuidString } from '../cloudIdUtils.js';
 import { enqueueSync } from '../syncQueue.js';
-import { logAudit } from '../utils/logger.js';
+import { logAudit, logWarn } from '../utils/logger.js';
 import { assertTenantWrite, requireTenantId } from '../utils/tenant.js';
 import {
   parseBooleanFilter,
@@ -313,7 +313,14 @@ export async function createProduct(payload = {}, actorUser = null) {
         allowNegative: true,
       });
     } catch (whErr) {
-      console.warn('[product] falha ao inicializar stock no armazém', whErr?.message ?? whErr);
+      logWarn('product_warehouse_init_failed', {
+        module: 'product',
+        action: 'create',
+        reason: 'Falha ao inicializar stock no armazém',
+        tenant_id: tenantId,
+        product_id: insertedId,
+        error: whErr,
+      });
     }
   }
   if (Array.isArray(payload.bom_lines ?? payload.bomLines)) {
@@ -473,7 +480,14 @@ export async function updateProduct(localIdRaw, payload = {}, actorUser = null) 
         await refreshProductStockCache(localId, tenantId, now);
       }
     } catch (whErr) {
-      console.warn('[product] falha ao sincronizar stock de armazém', whErr?.message ?? whErr);
+      logWarn('product_warehouse_sync_failed', {
+        module: 'product',
+        action: 'update',
+        reason: 'Falha ao sincronizar stock de armazém',
+        tenant_id: tenantId,
+        product_id: localId,
+        error: whErr,
+      });
     }
   }
 
@@ -768,9 +782,13 @@ export async function adjustStock(payload = {}, actorUser = null) {
     syncQueued = true;
   } catch (queueErr) {
     syncError = queueErr?.message ?? String(queueErr);
-    console.warn('[stock] falha ao enfileirar sync de inventário rápido', {
-      productId,
-      error: syncError,
+    logWarn('stock_quick_inventory_sync_enqueue_failed', {
+      module: 'product',
+      action: 'quickStock',
+      reason: 'Falha ao enfileirar sync de inventário rápido',
+      tenant_id: tenantId,
+      product_id: productId,
+      error: queueErr,
     });
   }
 

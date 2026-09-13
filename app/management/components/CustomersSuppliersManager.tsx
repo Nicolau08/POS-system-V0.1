@@ -16,6 +16,7 @@ import {
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
+import { notifyCatalogChanged } from '@/lib/catalogLocalSync';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 import {
   CustomerSupplierFormModal,
@@ -57,6 +58,7 @@ export default function CustomersSuppliersManager() {
       const next = Array.isArray(data) ? data : [];
       setRows(next);
       patchPosCatalogCache({ customers: next as any });
+      notifyCatalogChanged();
     } catch {
       if (!getPosCatalogCache()?.customers?.length) setRows([]);
     } finally {
@@ -141,20 +143,20 @@ export default function CustomersSuppliersManager() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
-      <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
+    <div className="flex flex-col h-full bg-pos-surface text-zinc-300 overflow-hidden">
+      <div className="h-16 bg-pos-surface border-b border-pos-border flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
         <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
         <ManagementToolbarButton icon={<Plus size={20} />} label="Adicionar" onClick={openNewModal} />
         <ManagementToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
-        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={() => void handleDelete()} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Eliminar" onClick={() => void handleDelete()} />
         <ManagementToolbarButton icon={<Download size={20} />} label="Importar" />
         <ManagementToolbarButton icon={<Upload size={20} />} label="Exportar" />
         <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
-      <div className="h-10 bg-[#111] border-b border-zinc-800/50 flex items-center justify-between px-4">
+      <div className="h-10 bg-pos-bg border-b border-pos-border/50 flex items-center justify-between px-4">
         <div className="flex items-center gap-2 flex-1 max-w-md">
-          <div className="flex items-center gap-2 px-2 py-1 bg-[#1a1a1a] border border-zinc-800 rounded flex-1">
+          <div className="flex items-center gap-2 px-2 py-1 bg-pos-surface border border-pos-border rounded flex-1">
             <Search size={14} className="text-zinc-500" />
             <input
               type="text"
@@ -170,9 +172,9 @@ export default function CustomersSuppliersManager() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]">
-        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
-          <thead className="sticky top-0 z-10 bg-[#141414]">
+      <div className="flex-1 overflow-auto custom-scrollbar bg-pos-bg">
+        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-pos-border/55 [&_td]:border-pos-border/55">
+          <thead className="sticky top-0 z-10 bg-pos-card">
             <tr className="border-b border-[#0001fb]/70">
               <th className="px-3 py-2 text-xs font-bold text-zinc-300">Código</th>
               <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
@@ -208,7 +210,7 @@ export default function CustomersSuppliersManager() {
                   key={row.id}
                   onClick={() => setSelectedId(row.id)}
                   className={`transition-colors cursor-pointer ${
-                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-pos-surface' : 'bg-pos-row'
                   } hover:bg-[var(--pos-brand-hover-bg)]`}
                 >
                   <td className="px-3 py-2 text-xs text-zinc-400 truncate">

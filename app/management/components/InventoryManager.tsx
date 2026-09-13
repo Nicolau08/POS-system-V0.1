@@ -14,10 +14,9 @@ import {
   getCachedCategories,
   getCachedWarehouses,
   getPosCatalogCache,
-  patchPosCatalogCache,
-  setCachedCategories,
   setCachedWarehouses,
 } from '@/lib/posSessionCache';
+import { publishLocalCatalog } from '@/lib/catalogLocalSync';
 import { formatMoneyMt } from '@/lib/currency';
 import { calcMargin } from '@/lib/margin';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -147,10 +146,14 @@ export default function InventoryManager() {
       setProducts(prodData || []);
       const activeWh = (whRows || []).filter((w) => w.isActive);
       setWarehouses(activeWh);
-      setCachedCategories(catData || []);
       setCachedWarehouses(activeWh);
       if (!whParam) {
-        patchPosCatalogCache({ products: (prodData || []) as any });
+        publishLocalCatalog({
+          products: prodData || [],
+          categories: catData || [],
+        });
+      } else {
+        // Stock filtrado por armazém não substitui o catálogo POS global.
       }
       if (!filterWarehouseId) {
         const def = activeWh.find((w) => w.isDefault) || activeWh[0];
@@ -587,9 +590,9 @@ export default function InventoryManager() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
+    <div className="flex flex-col h-full bg-pos-bg text-zinc-300 overflow-hidden">
       {/* Toolbar */}
-      <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
+      <div className="h-16 bg-pos-surface border-b border-pos-border flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
         {isPurchaseOpen ? (
           <>
             <ManagementToolbarButton
@@ -608,7 +611,7 @@ export default function InventoryManager() {
           </>
         ) : (
           <>
-        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={fetchData} />
+        <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchData()} />
         <ManagementToolbarDivider />
         <ManagementToolbarButton
           icon={<History size={20} />}
@@ -680,10 +683,10 @@ export default function InventoryManager() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar Tree */}
         <div 
-          className="bg-[#141414] border-r border-zinc-800/50 flex flex-col relative"
+          className="bg-pos-surface border-r border-pos-border flex flex-col relative"
           style={{ width: sidebarWidth }}
         >
-          <div className="p-2 border-b border-zinc-800/50 flex items-center gap-2">
+          <div className="p-2 border-b border-pos-border flex items-center gap-2">
             <button 
               onClick={() => setIsTreeExpanded(!isTreeExpanded)}
               className="rounded p-1 transition-colors hover:text-[#0001fb] focus-visible:outline-none"
@@ -731,7 +734,7 @@ export default function InventoryManager() {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Filters and Stats */}
-          <div className="bg-[#111] border-b border-zinc-800/50 p-2 space-y-2">
+          <div className="bg-pos-bg border-b border-pos-border p-2 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <FilterCheckbox 
@@ -759,7 +762,7 @@ export default function InventoryManager() {
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 flex-1 max-w-md">
-                <div className="flex items-center gap-2 px-2 py-1 bg-[#1a1a1a] border border-zinc-800 rounded flex-1">
+                <div className="flex items-center gap-2 px-2 py-1 bg-pos-field border border-pos-border rounded flex-1">
                   <Search size={14} className="text-zinc-500" />
                   <input 
                     type="text" 
@@ -778,12 +781,12 @@ export default function InventoryManager() {
 
           {/* Table */}
           <div
-            className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]"
+            className="flex-1 overflow-auto custom-scrollbar bg-pos-bg"
             onClick={() => setSelectedProductId(null)}
           >
-            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-[color:var(--pos-border)] [&_td]:border-[color:var(--pos-border)]">
-              <thead className="sticky top-0 z-10 bg-[#141414]">
-                <tr className="border-b border-[#0001fb]/70">
+            <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-pos-border [&_td]:border-pos-border">
+              <thead className="sticky top-0 z-10 bg-pos-surface">
+                <tr className="border-b border-pos-border">
                   <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap w-20">Código</th>
                   <th className="px-3 py-2 text-left text-xs font-bold text-zinc-300 whitespace-nowrap">Nome</th>
                   <th className="px-3 py-2 text-right text-xs font-bold text-zinc-300 whitespace-nowrap w-24">No armazém</th>
@@ -825,8 +828,8 @@ export default function InventoryManager() {
                         selectedProductId === String(p.id)
                           ? 'bg-[var(--pos-brand-selected-bg)]'
                           : i % 2
-                            ? 'bg-[#171717]'
-                            : 'bg-[#1d1d1d]'
+                            ? 'bg-pos-row'
+                            : 'bg-pos-row-alt'
                       } hover:bg-[var(--pos-brand-hover-bg)]`}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -890,7 +893,7 @@ export default function InventoryManager() {
           </div>
 
           {/* Footer */}
-          <div className="h-auto min-h-20 bg-[#141414] border-t border-zinc-800 flex items-center justify-end px-8 py-3 gap-14">
+          <div className="h-auto min-h-20 bg-pos-surface border-t border-pos-border flex items-center justify-end px-8 py-3 gap-14">
             {canSeeCost ? (
               <div className="min-w-[200px] text-right text-white tabular-nums">
                 <p className="mb-1 text-[11px] font-bold uppercase tracking-wider text-zinc-400">
@@ -903,7 +906,7 @@ export default function InventoryManager() {
                   <span className="text-sm font-semibold">
                     {formatPrice(Math.max(0, stats.totalCostWithTax - stats.totalCost))}
                   </span>
-                  <span className="col-span-2 my-1 border-t border-zinc-500" />
+                  <span className="col-span-2 my-1 border-t border-pos-border" />
                   <span className="text-base font-bold">Total:</span>
                   <span className="text-base font-bold">{formatPrice(stats.totalCostWithTax)}</span>
                 </div>
@@ -920,7 +923,7 @@ export default function InventoryManager() {
                 <span className="text-sm font-semibold">
                   {formatPrice(Math.max(0, stats.totalSalesWithTax - stats.totalSales))}
                 </span>
-                <span className="col-span-2 my-1 border-t border-zinc-500" />
+                <span className="col-span-2 my-1 border-t border-pos-border" />
                 <span className="text-base font-bold">Total:</span>
                 <span className="text-base font-bold">{formatPrice(stats.totalSalesWithTax)}</span>
               </div>
@@ -940,9 +943,9 @@ export default function InventoryManager() {
       />
 
       {isQuickOpen && selectedProduct && (
-        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-[420px] overflow-hidden rounded border border-zinc-700 bg-[#1a1a1a] shadow-2xl">
-            <div className="border-b border-zinc-700 px-5 py-4">
+        <div className="fixed inset-0 z-[85] flex items-center justify-center pos-modal-overlay p-4">
+          <div className="w-full max-w-[420px] overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl">
+            <div className="border-b border-pos-border px-5 py-4">
               <h2 className="text-base font-bold text-zinc-100">Atualizar quantidade de stock</h2>
               <p className="mt-2 text-xs leading-snug text-zinc-400">
                 Defina as quantidades em stock para o produto selecionado. O documento de contagem de
@@ -986,20 +989,20 @@ export default function InventoryManager() {
                 inputMode="decimal"
                 readOnly
                 value={quickValue}
-                className="h-12 w-full rounded border border-zinc-700 bg-[#121212] px-3 text-right text-2xl font-bold text-white outline-none"
+                className="h-12 w-full rounded border border-pos-border bg-pos-bg px-3 text-right text-2xl font-bold text-white outline-none"
                 style={quickOverwrite ? { caretColor: 'transparent' } : undefined}
               />
               {quickError ? <p className="mt-2 text-xs text-red-400">{quickError}</p> : null}
             </div>
 
-            <div className="mt-4 border-t border-zinc-800">
+            <div className="mt-4 border-t border-pos-border">
               <div className="grid grid-cols-4">
                 {(['1', '2', '3', 'back'] as const).map((key) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => (key === 'back' ? backspaceQuick() : appendQuickDigit(key))}
-                    className="flex h-16 items-center justify-center border-b border-r border-zinc-800 bg-[#141414] text-xl font-semibold text-zinc-200 hover:bg-zinc-800"
+                    className="flex h-16 items-center justify-center border-b border-r border-pos-border bg-pos-card text-xl font-semibold text-zinc-200 hover:bg-zinc-800"
                   >
                     {key === 'back' ? <Delete size={22} className="text-zinc-400" /> : key}
                   </button>
@@ -1009,10 +1012,10 @@ export default function InventoryManager() {
                     key={key}
                     type="button"
                     onClick={() => (key === 'esc' ? closeQuickModal() : appendQuickDigit(key))}
-                    className={`flex h-16 items-center justify-center border-b border-r border-zinc-800 text-xl font-semibold hover:bg-zinc-800 ${
+                    className={`flex h-16 items-center justify-center border-b border-r border-pos-border text-xl font-semibold hover:bg-zinc-800 ${
                       key === 'esc'
                         ? 'bg-zinc-800/60 text-zinc-400'
-                        : 'bg-[#141414] text-zinc-200'
+                        : 'bg-pos-card text-zinc-200'
                     }`}
                   >
                     {key === 'esc' ? (
@@ -1030,7 +1033,7 @@ export default function InventoryManager() {
                       key={key}
                       type="button"
                       onClick={() => appendQuickDigit(key)}
-                      className="flex h-16 items-center justify-center border-b border-r border-zinc-800 bg-[#141414] text-xl font-semibold text-zinc-200 hover:bg-zinc-800"
+                      className="flex h-16 items-center justify-center border-b border-r border-pos-border bg-pos-card text-xl font-semibold text-zinc-200 hover:bg-zinc-800"
                     >
                       {key}
                     </button>
@@ -1040,7 +1043,7 @@ export default function InventoryManager() {
                   type="button"
                   disabled={quickSaving}
                   onClick={() => void submitQuickCount()}
-                  className="flex h-32 items-center justify-center border-b border-zinc-800 bg-[#0001fb] text-white hover:bg-[#1a1bff] disabled:opacity-50"
+                  className="flex h-32 items-center justify-center border-b border-pos-border bg-[#0001fb] text-white hover:bg-[#1a1bff] disabled:opacity-50"
                 >
                   {quickSaving ? (
                     <Loader2 size={28} className="animate-spin" />
@@ -1056,16 +1059,16 @@ export default function InventoryManager() {
 
       {isHistoryOpen && (
         <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[80] flex items-center justify-center pos-modal-overlay p-4"
           onClick={() => setIsHistoryOpen(false)}
         >
           <div
-            className="flex h-[82vh] w-[95vw] max-w-[1200px] flex-col overflow-hidden rounded-lg border border-zinc-800 bg-[#1a1a1a] shadow-2xl"
+            className="flex h-[82vh] w-[95vw] max-w-[1200px] flex-col overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-zinc-800 bg-[#141414] px-5 py-3">
+            <div className="flex items-center justify-between border-b border-pos-border bg-pos-card px-5 py-3">
               <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0001fb]/15 text-[#0001fb]">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-[#0001fb]/15 text-[#0001fb]">
                   <History size={18} />
                 </div>
                 <div className="min-w-0">
@@ -1081,14 +1084,14 @@ export default function InventoryManager() {
               <button
                 type="button"
                 onClick={() => setIsHistoryOpen(false)}
-                className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-white"
+                className="rounded p-2 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-white"
                 aria-label="Fechar"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="flex flex-wrap items-end gap-3 border-b border-zinc-800 bg-[#171717] px-5 py-3">
+            <div className="flex flex-wrap items-end gap-3 border-b border-pos-border bg-pos-surface px-5 py-3">
               <div className="min-w-[240px] max-w-[320px] flex-1">
                 <label className="mb-1 block text-[11px] text-zinc-400">Período</label>
                 <button
@@ -1117,9 +1120,9 @@ export default function InventoryManager() {
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto bg-[#0f0f0f] custom-scrollbar">
-              <table className="w-full min-w-[980px] border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
-                <thead className="sticky top-0 z-10 bg-[#141414]">
+            <div className="min-h-0 flex-1 overflow-auto bg-pos-bg custom-scrollbar">
+              <table className="w-full min-w-[980px] border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-pos-border/55 [&_td]:border-pos-border/55">
+                <thead className="sticky top-0 z-10 bg-pos-card">
                   <tr className="border-b border-[#0001fb]/70">
                     <HistoryTh>Tipo de documento</HistoryTh>
                     <HistoryTh>Documento</HistoryTh>
@@ -1160,7 +1163,7 @@ export default function InventoryManager() {
                       <tr
                         key={row.id}
                         className={`${
-                          index % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                          index % 2 ? 'bg-pos-surface' : 'bg-pos-row'
                         } hover:bg-[var(--pos-brand-hover-bg)]`}
                       >
                         <HistoryTd>{movementLabel(row.movement_type)}</HistoryTd>
@@ -1227,16 +1230,16 @@ export default function InventoryManager() {
 
       {isPeriodModalOpen && (
         <div
-          className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-[2px] flex items-center justify-center p-6"
+          className="fixed inset-0 z-[90] pos-modal-overlay flex items-center justify-center p-6"
           onClick={() => setIsPeriodModalOpen(false)}
         >
           <div
-            className="w-full max-w-[820px] overflow-hidden rounded-[0.55rem] border border-zinc-700 bg-[#1f1f1f] shadow-2xl"
+            className="w-full max-w-[820px] overflow-hidden rounded-[0.55rem] border border-pos-border bg-pos-surface shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="px-6 py-5 text-center">
               <h3 className="text-[18px] text-white">Período</h3>
-              <div className="mt-4 inline-flex items-center rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] px-4 py-2 font-bold text-white">
+              <div className="mt-4 inline-flex items-center rounded-[0.4rem] border border-pos-border bg-pos-surface px-4 py-2 font-bold text-white">
                 {formatPeriodDate(tempHistoryFrom)} - {formatPeriodDate(tempHistoryTo)}
               </div>
             </div>
@@ -1244,7 +1247,7 @@ export default function InventoryManager() {
             <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1fr_1fr_280px]">
               <div>
                 <p className="mb-3 text-center text-sm text-zinc-100">Início</p>
-                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-pos-border bg-pos-surface p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
@@ -1275,7 +1278,7 @@ export default function InventoryManager() {
 
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Fim</p>
-                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-zinc-700 bg-[#1a1a1a] p-4">
+                <div className="mx-auto max-w-[260px] rounded-[0.4rem] border border-pos-border bg-pos-surface p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
@@ -1330,7 +1333,7 @@ export default function InventoryManager() {
                   <button
                     type="button"
                     onClick={() => setIsPeriodModalOpen(false)}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-pos-border bg-pos-card px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
                   >
                     <X size={16} />
                     <span className="text-sm">Cancelar</span>
@@ -1350,7 +1353,7 @@ function FilterCheckbox({ label, checked, onChange }: { label: string, checked: 
     <label className="flex items-center gap-2 cursor-pointer group">
       <div 
         onClick={onChange}
-        className={`w-4 h-4 border border-zinc-700 rounded-sm flex items-center justify-center transition-colors ${checked ? 'bg-blue-600 border-blue-600' : 'bg-zinc-800 group-hover:border-[#0001fb]'}`}
+        className={`w-4 h-4 border border-pos-border rounded-sm flex items-center justify-center transition-colors ${checked ? 'bg-blue-600 border-blue-600' : 'bg-zinc-800 group-hover:border-[#0001fb]'}`}
       >
         {checked && <div className="w-2 h-2 bg-white rounded-sm" />}
       </div>
@@ -1447,7 +1450,7 @@ function HistoryPresetButton({
       className={`min-h-11 rounded-[0.4rem] border px-3 py-3 text-sm transition-colors ${
         active
           ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
-          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+          : 'border-pos-border bg-pos-surface text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
       }`}
     >
       {label}
@@ -1489,7 +1492,7 @@ function HistoryCalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday
