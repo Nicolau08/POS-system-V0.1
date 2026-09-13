@@ -198,13 +198,15 @@ async function isInternetAvailable() {
   }
 }
 
-function logConnectivityTransition(isOnline, context = {}) {
+async function logConnectivityTransition(isOnline, context = {}) {
   if (lastConnectivityState === isOnline) return;
   lastConnectivityState = isOnline;
   if (!isOnline) {
-    console.warn('[sync][connectivity] offline - pausing sync cycles', context);
+    await logSyncOperation('connectivity-offline', context, 'Ligação à cloud perdida — ciclos de sync em pausa', {
+      level: 'warn',
+    });
   } else {
-    console.log('[sync][connectivity] online - resuming sync cycles', context);
+    await logSyncOperation('connectivity-online', context, 'Ligação à cloud restabelecida — ciclos de sync retomados');
   }
 }
 
@@ -253,7 +255,12 @@ async function resolveCustomerUUID(id, tenantId) {
 async function ensureCustomerSynced(selectedCustomerId, tenantId) {
   const customerUUID = await resolveCustomerUUID(selectedCustomerId, tenantId);
   if (!customerUUID && selectedCustomerId) {
-    console.warn('[SYNC WARNING] Invalid customer mapping', { selectedCustomerId });
+    await logSyncOperation(
+      'sync-customer-mapping-invalid',
+      { tenant_id: tenantId, selected_customer_id: selectedCustomerId },
+      'Mapeamento de cliente inválido ao sincronizar',
+      { level: 'warn' },
+    );
   }
   return customerUUID;
 }
@@ -434,6 +441,48 @@ async function mapCategoryCloudIdFromLocal(localCategoryId, tenantId) {
   );
   const cloudId = row?.cloud_id ? String(row.cloud_id).trim() : '';
   return cloudId || null;
+}
+
+/**
+ * Garante que a categoria local existe na cloud antes de upsert de produto.
+ * Evita 23503 products_category_id_fkey quando o produto sobe antes do item category na fila.
+ */
+async function ensureLocalCategoryOnCloud(localCategoryId, tenantId, seen = new Set()) {
+  const localIdNumber = Number(localCategoryId);
+  if (!Number.isFinite(localIdNumber)) return null;
+  if (seen.has(localIdNumber)) return null;
+  seen.add(localIdNumber);
+
+  const scopedTenantId = requireTenantId(tenantId, 'ensureLocalCategoryOnCloud');
+  const row = await get(
+    `SELECT id, cloud_id, name, parent_id, color, updated_at
+     FROM categories
+     WHERE id = ?
+       AND tenant_id = ?
+     LIMIT 1`,
+    [localIdNumber, scopedTenantId]
+  );
+  if (!row) return null;
+
+  const cloudId = row.cloud_id ? String(row.cloud_id).trim() : '';
+  if (!isUuidString(cloudId)) return null;
+
+  if (row.parent_id != null) {
+    await ensureLocalCategoryOnCloud(row.parent_id, scopedTenantId, seen);
+  }
+
+  await syncCategory({
+    id: row.id,
+    cloud_id: cloudId,
+    name: row.name,
+    parent_id: row.parent_id,
+    color: row.color,
+    updated_at: row.updated_at,
+    tenant_id: scopedTenantId,
+    deleted: false,
+  });
+
+  return cloudId;
 }
 
 async function resolveProductCloudId(localProductId, tenantId) {
@@ -924,23 +973,36 @@ async function syncUsersFromCloud(summary, tenantId) {
 
     if (!existing) {
       const incomingRole = String(row.role ?? 'cashier').trim().toLowerCase();
+      const incomingName = String(row.name ?? 'Administrador').trim() || 'Administrador';
       if (incomingRole === 'admin') {
+        // Liga ao admin local (mesmo sem cloud_id vazio): evita 2.º «Administrador» após sync.
         const orphanAdmin = await get(
-          `SELECT rowid AS rid, id, pin
+          `SELECT rowid AS rid, id, pin, cloud_id
            FROM users
            WHERE tenant_id = ?
              AND active = 1
              AND LOWER(COALESCE(role, '')) = 'admin'
-             AND (cloud_id IS NULL OR TRIM(cloud_id) = '')
+             AND (
+               cloud_id IS NULL OR TRIM(COALESCE(cloud_id, '')) = ''
+               OR LOWER(TRIM(COALESCE(name, ''))) = LOWER(?)
+             )
            ORDER BY
+             CASE
+               WHEN cloud_id IS NULL OR TRIM(COALESCE(cloud_id, '')) = '' THEN 0
+               ELSE 1
+             END,
              CASE
                WHEN id = 'admin-local' THEN 0
                WHEN id = 'admin-1' THEN 1
                ELSE 2
              END,
+             CASE
+               WHEN LOWER(TRIM(COALESCE(name, ''))) = LOWER(?) THEN 0
+               ELSE 1
+             END,
              COALESCE(access_level, 0) DESC
            LIMIT 1`,
-          [scopedTenantId],
+          [scopedTenantId, incomingName, incomingName],
         );
         if (orphanAdmin?.rid != null) {
           const shouldUpdatePin =
@@ -950,13 +1012,14 @@ async function syncUsersFromCloud(summary, tenantId) {
              SET cloud_id = ?,
                  name = COALESCE(NULLIF(TRIM(name), ''), ?),
                  role = 'admin',
+                 access_level = CASE WHEN COALESCE(access_level, 0) > 9 THEN access_level ELSE 9 END,
                  pin = ?,
                  updated_at = ?
              WHERE rowid = ?
                AND tenant_id = ?`,
             [
               cloudUserId,
-              row.name ?? 'Administrador',
+              incomingName,
               shouldUpdatePin ? String(incomingPin) : orphanAdmin.pin,
               remoteTs,
               orphanAdmin.rid,
@@ -964,8 +1027,10 @@ async function syncUsersFromCloud(summary, tenantId) {
             ],
           );
           summary.updated += 1;
-          console.log(
-            `[sync][users] linked cloud admin ${cloudUserId} → local ${orphanAdmin.id}`,
+          await logSyncOperation(
+            'pull-users-linked-admin',
+            { tenant_id: scopedTenantId, cloud_user_id: cloudUserId, local_user_id: orphanAdmin.id },
+            `Admin da cloud ${cloudUserId} ligado ao utilizador local ${orphanAdmin.id}`,
           );
           continue;
         }
@@ -986,7 +1051,7 @@ async function syncUsersFromCloud(summary, tenantId) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cloudUserId,
-          row.name ?? 'User',
+          incomingRole === 'admin' ? incomingName : (row.name ?? 'User'),
           row.role ?? 'cashier',
           String(incomingPin),
           incomingRole === 'admin' ? 9 : Number(row.access_level ?? 0),
@@ -997,7 +1062,11 @@ async function syncUsersFromCloud(summary, tenantId) {
         ]
       );
       summary.inserted += 1;
-      console.log(`[sync][users] inserted cloud_id=${cloudUserId}`);
+      await logSyncOperation(
+        'pull-users-inserted',
+        { tenant_id: scopedTenantId, cloud_user_id: cloudUserId },
+        `Utilizador ${cloudUserId} inserido a partir da cloud`,
+      );
       continue;
     }
 
@@ -1045,10 +1114,19 @@ async function syncUsersFromCloud(summary, tenantId) {
     );
     if (Number(updateResult?.changes ?? 0) > 0) {
       summary.updated += 1;
-      console.log(`[sync][users] updated cloud_id=${cloudUserId} local_id=${nextLocalId}`);
+      await logSyncOperation(
+        'pull-users-updated',
+        { tenant_id: scopedTenantId, cloud_user_id: cloudUserId, local_user_id: nextLocalId },
+        `Utilizador ${cloudUserId} actualizado a partir da cloud`,
+      );
     } else {
       summary.skipped += 1;
-      console.warn(`[sync][users] skipped update cloud_id=${cloudUserId} reason=no_changes_applied`);
+      await logSyncOperation(
+        'pull-users-update-skip',
+        { tenant_id: scopedTenantId, cloud_user_id: cloudUserId },
+        `Actualização do utilizador ${cloudUserId} não aplicou alterações`,
+        { level: 'warn' },
+      );
     }
   }
 
@@ -1095,7 +1173,6 @@ async function syncUsersFromCloud(summary, tenantId) {
     }
 
     if (removedLocalIds.length > 0) {
-      console.log(`[sync][users] removed ${removedLocalIds.length} local user(s) deleted in cloud`);
       summary.updated += removedLocalIds.length;
       await logSyncOperation(
         'pull-users-delete',
@@ -1123,9 +1200,11 @@ async function syncUsersFromCloud(summary, tenantId) {
   try {
     await consolidateActiveAdmins(scopedTenantId);
   } catch (consolidateError) {
-    console.warn(
-      '[sync][users] consolidate admins failed:',
-      consolidateError?.message ?? consolidateError,
+    await logSyncOperation(
+      'pull-users-consolidate-admins-failed',
+      { tenant_id: scopedTenantId, reason: String(consolidateError?.message ?? consolidateError) },
+      'Falha ao consolidar administradores duplicados após pull',
+      { level: 'warn' },
     );
   }
 }
@@ -1254,9 +1333,11 @@ async function syncUsersToCloud(summary, tenantId) {
   try {
     await consolidateActiveAdmins(scopedTenantId);
   } catch (consolidateError) {
-    console.warn(
-      '[sync][users][push] consolidate admins failed:',
-      consolidateError?.message ?? consolidateError,
+    await logSyncOperation(
+      'push-users-consolidate-admins-failed',
+      { tenant_id: scopedTenantId, reason: String(consolidateError?.message ?? consolidateError) },
+      'Falha ao consolidar administradores duplicados antes do push',
+      { level: 'warn' },
     );
   }
 
@@ -1977,8 +2058,21 @@ async function fullSyncFromCloud(tenantId) {
 
 function isPermanentError(error) {
   const message = String(error?.message ?? '').toLowerCase();
-  // Unique / duplicate conflicts: use normal retries (idempotent sale sync, data fixes).
+  const code = String(error?.code ?? '');
+  if (code === 'DOCUMENT_NUMBER_TAKEN' || error?.permanent === true) {
+    return true;
+  }
+  // Unique / duplicate conflicts: use normal retries (idempotent sale sync, data fixes),
+  // except número de documento de outra venda (tratado em DOCUMENT_NUMBER_TAKEN).
   if (message.includes('duplicate key') || message.includes('unique constraint')) {
+    return false;
+  }
+  // FK em falta (ex.: produto antes da categoria) — pode recuperar no ciclo seguinte.
+  if (code === '23503' || message.includes('foreign key constraint')) {
+    return false;
+  }
+  // Schema bigint vs UUID — syncService tenta omitir FK; se ainda falhar, deixa re-tentar.
+  if (isBigintUuidTypeError(error)) {
     return false;
   }
   return (
@@ -1987,6 +2081,18 @@ function isPermanentError(error) {
     message.includes('null value') ||
     message.includes('unsupported sync type')
   );
+}
+
+/** Postgres 22P02 when a UUID string is sent to a bigint column (schema legado na cloud). */
+function isBigintUuidTypeError(error) {
+  const code = String(error?.code ?? '');
+  const message = String(error?.message ?? '');
+  return code === '22P02' && /bigint/i.test(message) && /[0-9a-f]{8}-[0-9a-f]{4}-/i.test(message);
+}
+
+function isMissingColumnError(error) {
+  const blob = `${error?.message ?? ''} ${error?.code ?? ''} ${error?.details ?? ''}`;
+  return /PGRST204|schema cache|could not find/i.test(blob);
 }
 
 function isDuplicateSaleError(error) {
@@ -2025,16 +2131,89 @@ function isDocumentNumberUniqueViolation(error) {
 
 async function idempotentDocumentNumberConflict(supabase, tenantId, localSaleId, documentNumber) {
   const doc = documentNumber == null ? '' : String(documentNumber).trim();
-  if (!doc) return false;
+  if (!doc) return { sameSale: false, takenByOther: false };
   const { data: row, error } = await supabase
     .from('orders')
-    .select('local_sale_id')
+    .select('id, local_sale_id')
     .eq('tenant_id', tenantId)
     .eq('document_number', doc)
     .maybeSingle();
   if (error) throw error;
-  if (!row) return false;
-  return String(row.local_sale_id ?? '') === String(localSaleId);
+  if (!row) return { sameSale: false, takenByOther: false };
+  if (String(row.local_sale_id ?? '') === String(localSaleId)) {
+    return { sameSale: true, takenByOther: false };
+  }
+  return { sameSale: false, takenByOther: true };
+}
+
+/** Reatribui o próximo número livre deste tenant (local) quando a cloud já o tem noutra venda. */
+async function reallocateLocalSaleDocumentNumber(payload, tenantId) {
+  const localSaleId = String(payload?.local_sale_id ?? payload?.id ?? '').trim();
+  const docType = String(payload?.docType ?? payload?.usedDocType ?? 'VD').trim().toUpperCase() || 'VD';
+  if (!localSaleId) return null;
+
+  const saleRow = await get(
+    `SELECT id, doc_type, doc_sequence, data, tenant_id
+       FROM vendas
+      WHERE tenant_id = ?
+        AND (CAST(id AS TEXT) = ? OR CAST(id AS TEXT) = ?)
+      LIMIT 1`,
+    [tenantId, localSaleId, String(payload?.id ?? '')],
+  );
+  if (!saleRow?.id) return null;
+
+  let candidate = Number(
+    (
+      await get(
+        `SELECT COALESCE(MAX(COALESCE(doc_sequence, id)), 0) + 1 AS next
+           FROM vendas
+          WHERE UPPER(COALESCE(doc_type, 'VD')) = ?
+            AND tenant_id = ?`,
+        [docType, tenantId],
+      )
+    )?.next ?? 1,
+  );
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const takenLocal = await get(
+      `SELECT 1 AS ok
+         FROM vendas
+        WHERE tenant_id = ?
+          AND UPPER(COALESCE(doc_type, 'VD')) = ?
+          AND CAST(COALESCE(doc_sequence, id) AS INTEGER) = ?
+          AND CAST(id AS TEXT) <> CAST(? AS TEXT)
+        LIMIT 1`,
+      [tenantId, docType, candidate, saleRow.id],
+    );
+    if (!takenLocal) break;
+    candidate += 1;
+  }
+
+  const saleDate = new Date(saleRow.data || payload.saleTimestamp || Date.now());
+  const year = Number.isFinite(saleDate.getFullYear()) ? saleDate.getFullYear() : new Date().getFullYear();
+  const usedDocumentNumber = `${docType}/${year}/${String(candidate).padStart(4, '0')}`;
+
+  await run(`UPDATE vendas SET doc_sequence = ? WHERE id = ? AND tenant_id = ?`, [
+    candidate,
+    saleRow.id,
+    tenantId,
+  ]);
+
+  payload.usedSequence = candidate;
+  payload.usedDocType = docType;
+  payload.usedDocumentNumber = usedDocumentNumber;
+  payload.docType = docType;
+
+  logWarn(`Documento local reatribuído para ${usedDocumentNumber}`, {
+    module: 'syncService',
+    action: 'reallocateLocalSaleDocumentNumber',
+    event: 'sync.sale_doc_renumbered',
+    tenant_id: tenantId,
+    local_sale_id: localSaleId,
+    document_number: usedDocumentNumber,
+  });
+
+  return { usedSequence: candidate, usedDocumentNumber, usedDocType: docType };
 }
 
 function buildExpectedQtyByProduct(items = []) {
@@ -2134,7 +2313,12 @@ async function toOrderPayload(sale, tenantId) {
   const customerUUID = await resolveCustomerUUID(sale.selectedCustomerId);
 
   if (sale.selectedCustomerId && !customerUUID) {
-    console.warn('[SYNC WARNING] Invalid customer_id, setting to null:', sale.selectedCustomerId);
+    await logSyncOperation(
+      'push-sale-invalid-customer-id',
+      { tenant_id: tenantId, selected_customer_id: sale.selectedCustomerId },
+      'customer_id inválido ao preparar venda para a cloud — a gravar como null',
+      { level: 'warn' },
+    );
   }
 
   const docType = String(sale.docType ?? '').trim().toUpperCase() || null;
@@ -2287,10 +2471,12 @@ async function toOrderItemsPayload(sale, supabase, tenantId) {
   for (const item of cart) {
     const qty = Number(item?.quantity ?? 0);
     if (!Number.isFinite(qty) || qty <= 0) {
-      console.error('[SALE BLOCKED] invalid item:', {
-        item,
-        reason: 'invalid quantity',
-      });
+      await logSyncOperation(
+        'push-sale-blocked-invalid-item',
+        { tenant_id: tenantId, item, reason: 'invalid quantity' },
+        'Venda bloqueada: item com quantidade inválida',
+        { level: 'error' },
+      );
       throw new Error('Sale sync blocked: invalid item');
     }
 
@@ -2302,26 +2488,32 @@ async function toOrderItemsPayload(sale, supabase, tenantId) {
     }
     cloudId = await resolveCloudProductIdForSaleItem(supabase, item, cloudId, tenantId);
     if (!cloudId) {
-      console.error('[SALE BLOCKED] invalid item:', {
-        item,
-        reason: 'invalid product_id',
-      });
+      await logSyncOperation(
+        'push-sale-blocked-invalid-item',
+        { tenant_id: tenantId, item, reason: 'invalid product_id' },
+        'Venda bloqueada: item sem product_id válido',
+        { level: 'error' },
+      );
       throw new Error('Sale sync blocked: invalid item');
     }
     if (!isUuidString(cloudId)) {
-      console.error('[SALE BLOCKED] invalid item:', {
-        item,
-        reason: 'invalid product_id',
-      });
+      await logSyncOperation(
+        'push-sale-blocked-invalid-item',
+        { tenant_id: tenantId, item, reason: 'invalid product_id' },
+        'Venda bloqueada: item com product_id que não é UUID',
+        { level: 'error' },
+      );
       throw new Error('Sale sync blocked: invalid item');
     }
 
     const productName = String(item?.name ?? '').trim();
     if (!productName) {
-      console.error('[SALE BLOCKED] invalid item:', {
-        item,
-        reason: 'empty name',
-      });
+      await logSyncOperation(
+        'push-sale-blocked-invalid-item',
+        { tenant_id: tenantId, item, reason: 'empty name' },
+        'Venda bloqueada: item sem nome',
+        { level: 'error' },
+      );
       throw new Error('Sale sync blocked: invalid item');
     }
 
@@ -2334,16 +2526,18 @@ async function toOrderItemsPayload(sale, supabase, tenantId) {
     });
   }
   if (items.length === 0) {
-    console.error('[SALE BLOCKED] invalid item:', {
-      item: null,
-      reason: 'invalid quantity',
-    });
+    await logSyncOperation(
+      'push-sale-blocked-invalid-item',
+      { tenant_id: tenantId, item: null, reason: 'empty cart' },
+      'Venda bloqueada: carrinho sem itens válidos',
+      { level: 'error' },
+    );
     throw new Error('Sale sync blocked: invalid item');
   }
   return items;
 }
 
-async function syncSaleAtomically(payload) {
+async function syncSaleAtomically(payload, options = {}) {
   const supabase = getSupabase();
   if (!supabase) {
     throw new Error('Supabase client unavailable');
@@ -2353,6 +2547,7 @@ async function syncSaleAtomically(payload) {
   }
   const tenantId = requirePayloadTenantId(payload, 'sale sync');
   const localSaleId = String(payload.local_sale_id);
+  const alreadyRenumbered = Boolean(options.renumbered || payload._docRenumbered);
 
   const { data: existingOrder, error: existingError } = await supabase
     .from('orders')
@@ -2401,24 +2596,41 @@ async function syncSaleAtomically(payload) {
   });
 
   if (!rpcError && (result == null || (Array.isArray(result) && result.length === 0))) {
-    console.warn('[SALE WARNING] RPC returned no data', {
-      order_data,
-      items,
-    });
+    await logSyncOperation(
+      'push-sale-rpc-empty-result',
+      { tenant_id: tenantId, local_sale_id: localSaleId, item_count: items.length },
+      'RPC create_order_with_items não devolveu dados para a venda',
+      { level: 'warn' },
+    );
   }
 
   if (rpcError) {
     if (isDuplicateSaleError(rpcError)) return;
-    if (
-      isDocumentNumberUniqueViolation(rpcError) &&
-      (await idempotentDocumentNumberConflict(
+    if (isDocumentNumberUniqueViolation(rpcError)) {
+      const conflict = await idempotentDocumentNumberConflict(
         supabase,
         tenantId,
         localSaleId,
         order_data.document_number,
-      ))
-    ) {
-      return;
+      );
+      if (conflict.sameSale) return;
+      if (conflict.takenByOther && !alreadyRenumbered) {
+        const reallocated = await reallocateLocalSaleDocumentNumber(payload, tenantId);
+        if (reallocated?.usedDocumentNumber) {
+          return syncSaleAtomically(
+            { ...payload, ...reallocated, _docRenumbered: true },
+            { renumbered: true },
+          );
+        }
+      }
+      const taken = new Error(
+        conflict.takenByOther
+          ? `Número de documento ${String(order_data.document_number ?? '').trim()} já está na cloud noutra venda`
+          : `Número de documento ${String(order_data.document_number ?? '').trim()} já existe na cloud`,
+      );
+      taken.code = 'DOCUMENT_NUMBER_TAKEN';
+      taken.permanent = true;
+      throw taken;
     }
     throw rpcError;
   }
@@ -2442,10 +2654,12 @@ async function syncSaleAtomically(payload) {
     return;
   }
 
-  console.warn('[SALE WARNING] stock not decremented by RPC, applying fallback update', {
-    local_sale_id: localSaleId,
-    productCount: productIds.length,
-  });
+  await logSyncOperation(
+    'push-sale-stock-fallback',
+    { tenant_id: tenantId, local_sale_id: localSaleId, product_count: productIds.length },
+    'Stock não decrementado pela RPC — a aplicar actualização de recurso',
+    { level: 'warn' },
+  );
 
   const currentById = new Map((afterStocks ?? []).map((row) => [String(row.id), Number(row.stock_quantity ?? 0)]));
   for (const [productId, qty] of expectedQtyByProduct.entries()) {
@@ -2473,7 +2687,12 @@ async function syncProduct(payload) {
   }
   const cloudId = requireProductCloudId(payload.cloud_id, 'product upsert');
   const tenantId = requirePayloadTenantId(payload, 'product sync');
-  const categoryCloudId = await mapCategoryCloudIdFromLocal(payload.category_id, tenantId);
+  // Categoria tem de existir na cloud antes do produto (FK products_category_id_fkey).
+  const categoryCloudId =
+    payload.category_id != null
+      ? (await ensureLocalCategoryOnCloud(payload.category_id, tenantId)) ??
+        (await mapCategoryCloudIdFromLocal(payload.category_id, tenantId))
+      : null;
   // Always bump updated_at on push so local inventário / entradas ganham à cloud stale.
   const updatedAt = new Date().toISOString();
   const isDeleted = Number(payload.deleted ?? 0) === 1 || payload.deleted === true;
@@ -2505,17 +2724,45 @@ async function syncProduct(payload) {
     tenant_id: tenantId,
     updated_at: updatedAt,
   };
+  if (mapped.local_id != null && !Number.isFinite(mapped.local_id)) {
+    mapped.local_id = null;
+  }
+  if (mapped.code != null && !Number.isFinite(mapped.code)) {
+    mapped.code = null;
+  }
 
-  const { error } = await supabase.from('products').upsert(mapped, { onConflict: 'id' });
+  const upsertProduct = async (body) => {
+    const { error } = await supabase.from('products').upsert(body, { onConflict: 'id' });
+    return error;
+  };
+
+  let error = await upsertProduct(mapped);
   if (error) {
     const msg = String(error.message || error.details || '');
     // Cloud ainda sem coluna track_lot: repetir sem o campo.
     if (/track_lot/i.test(msg)) {
       const { track_lot: _omit, ...withoutTrackLot } = mapped;
-      const retry = await supabase.from('products').upsert(withoutTrackLot, { onConflict: 'id' });
-      if (retry.error) throw retry.error;
+      error = await upsertProduct(withoutTrackLot);
+    }
+  }
+  if (error && isMissingColumnError(error) && mapped.local_id != null) {
+    const { local_id: _omit, ...withoutLocalId } = mapped;
+    error = await upsertProduct(withoutLocalId);
+  }
+  if (error && isBigintUuidTypeError(error) && mapped.category_id != null) {
+    const { category_id: _omit, ...withoutCategory } = mapped;
+    error = await upsertProduct(withoutCategory);
+    if (!error) {
+      await logSyncOperation(
+        'push-product-category-id-omitted',
+        { tenant_id: tenantId, cloud_id: mapped.id },
+        'category_id omitido no push — coluna na cloud não aceita UUID. Aplique supabase/migrations/20260814_categories_parent_id_uuid.sql e confirme products.category_id UUID.',
+        { level: 'warn' },
+      );
       return;
     }
+  }
+  if (error) {
     throw error;
   }
 }
@@ -2584,6 +2831,20 @@ async function syncCategory(payload) {
     const { color: _omit, ...withoutColor } = mapped;
     error = await upsertCategory(withoutColor);
   }
+  // parent_id bigint legado na cloud: omitir hierarquia até migration UUID.
+  if (error && isBigintUuidTypeError(error) && mapped.parent_id != null) {
+    const { parent_id: _omit, ...withoutParent } = mapped;
+    error = await upsertCategory(withoutParent);
+    if (!error) {
+      await logSyncOperation(
+        'push-category-parent-id-omitted',
+        { tenant_id: tenantId, cloud_id: mapped.id },
+        'parent_id omitido no push — coluna na cloud não aceita UUID. Aplique supabase/migrations/20260814_categories_parent_id_uuid.sql',
+        { level: 'warn' },
+      );
+      return;
+    }
+  }
   if (!error) return;
 
   // Compat: schema antigo com UNIQUE(name) global, ou conflito no mesmo tenant.
@@ -2620,6 +2881,14 @@ async function syncCategory(payload) {
       ({ error: updateErr } = await supabase
         .from('categories')
         .update(withoutColor)
+        .eq('tenant_id', tenantId)
+        .eq('id', existing.id));
+    }
+    if (updateErr && isBigintUuidTypeError(updateErr) && updateBody.parent_id != null) {
+      const { parent_id: _omit, ...withoutParent } = updateBody;
+      ({ error: updateErr } = await supabase
+        .from('categories')
+        .update(withoutParent)
         .eq('tenant_id', tenantId)
         .eq('id', existing.id));
     }
@@ -2733,15 +3002,17 @@ async function processQueueItem(row) {
          AND tenant_id = ?`,
       [new Date().toISOString(), new Date().toISOString(), row.id, tenantId]
     );
-    console.log('[QUEUE] success:', {
-      id: row.id,
-      type: row.type,
-    });
+    await logSyncOperation(
+      'queue-item-success',
+      { tenant_id: tenantId, queue_id: row.id, type: row.type },
+      `Item da fila sincronizado com sucesso (${row.type})`,
+    );
     return 'success';
   } catch (error) {
-    console.error('[QUEUE] error:', {
-      id: row.id,
+    await logSyncError({
+      queueId: row.id,
       type: row.type,
+      payload: { tenant_id: tenantId },
       error,
     });
     if (isNetworkOfflineError(error)) {
@@ -2855,6 +3126,25 @@ async function processSyncQueueCycle() {
       return summary;
     }
 
+    // Itens mortos por FK (produto antes da categoria) voltam a pending — agora com ensure-category.
+    try {
+      await run(
+        `UPDATE sync_queue
+         SET status = 'pending', retries = 0, next_retry_at = NULL,
+             lock_token = NULL, locked_at = NULL, updated_at = ?
+         WHERE status = 'dead'
+           AND type IN ('product', 'category')`,
+        [new Date().toISOString()],
+      );
+    } catch (reviveErr) {
+      await logSyncOperation(
+        'queue-revive-dead-catalog-failed',
+        { reason: String(reviveErr?.message ?? reviveErr) },
+        'Falha ao repor itens mortos (product/category) como pending',
+        { level: 'warn' },
+      );
+    }
+
     const rows = await all(
       `SELECT id, tenant_id
        FROM sync_queue
@@ -2862,7 +3152,15 @@ async function processSyncQueueCycle() {
          AND retries < ?
          AND (next_retry_at IS NULL OR next_retry_at <= ?)
          AND (lock_token IS NULL OR locked_at IS NULL OR locked_at <= ?)
-       ORDER BY created_at ASC
+       ORDER BY
+         CASE type
+           WHEN 'category' THEN 0
+           WHEN 'customer' THEN 1
+           WHEN 'product' THEN 2
+           WHEN 'sale' THEN 3
+           ELSE 4
+         END,
+         created_at ASC
        LIMIT ?`,
       [MAX_RETRIES, new Date().toISOString(), new Date(Date.now() - LOCK_TIMEOUT_MS).toISOString(), MAX_ITEMS_PER_CYCLE]
     );
@@ -2942,6 +3240,14 @@ async function processSyncQueueCycle() {
   return summary;
 }
 
+function isCloudSyncConfigured() {
+  return Boolean(getSupabase());
+}
+
+function isSyncServiceActive() {
+  return Boolean(timer);
+}
+
 function startSyncService() {
   if (timer) return;
 
@@ -2954,6 +3260,12 @@ function startSyncService() {
       action: 'startSyncService',
       reason: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY não configurados',
     });
+    void logSyncOperation(
+      'offline_only_boot',
+      { reason: 'supabase_not_configured' },
+      'Sync cloud desactivado: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY não configurados no processo da API',
+      { level: 'warn' },
+    );
     return;
   }
 
@@ -3010,4 +3322,6 @@ export {
   processFullSyncCycle,
   fullSyncFromCloud,
   isInternetAvailable,
+  isCloudSyncConfigured,
+  isSyncServiceActive,
 };

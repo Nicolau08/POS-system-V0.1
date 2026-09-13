@@ -97,6 +97,21 @@ export function PosStatusFooter() {
           const raw = await response.json();
           const data = unwrapApiSuccessPayload<Record<string, unknown>>(raw);
           if (!cancelled && data && typeof data === 'object') applyTenant(data);
+        } else {
+          // Fallback sem auth de utilizador (instalado: proxy local)
+          const statusRes = await fetch(`${apiBase}/setup/status?skipRegistrySync=1`);
+          if (statusRes.ok) {
+            const statusRaw = await statusRes.json();
+            const status = unwrapApiSuccessPayload<Record<string, unknown>>(statusRaw);
+            if (!cancelled && status && typeof status === 'object') {
+              applyTenant({
+                name: status.tenantName ?? status.storeName ?? 'Loja',
+                nuit: '--',
+                license_type: 'BASIC',
+                license_expires_at: status.licenseExpiresAt ?? status.license_expires_at ?? null,
+              });
+            }
+          }
         }
         // Actualização da consola sem bloquear o rodapé
         void fetch(`${apiBase}/setup/license/sync-registry`, {
@@ -163,16 +178,16 @@ export function PosStatusFooter() {
     String(tenantInfo?.license_type ?? 'BASIC').toUpperCase() === 'PRO' ? 'Pro' : 'Lite';
 
   return (
-    <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 bg-[#1a1a1a] p-2 text-xs">
-      <div className="min-w-0 truncate text-zinc-400">
-        Loja: <span className="text-zinc-200">{tenantInfo?.name ?? 'Loja'}</span>
-        {'    |    '}Licença: <span className="text-zinc-200">{licenseLabel}</span>
+    <footer className="pos-chrome flex shrink-0 items-center justify-between gap-3 border-t border-pos-border bg-pos-surface p-2 text-xs">
+      <div className="min-w-0 truncate text-pos-muted">
+        Loja: <span className="text-pos-fg-soft">{tenantInfo?.name ?? 'Loja'}</span>
+        {'    |    '}Licença: <span className="text-pos-fg-soft">{licenseLabel}</span>
         {'    |    '}Validade licenca: <span className={licenseVisual.className}>{licenseVisual.text}</span>
         {'    |    '}Dias restantes:{' '}
         <span className={licenseVisual.daysClassName}>{licenseVisual.daysLeft ?? '--'}</span>
       </div>
       {stationLabel ? (
-        <span className="shrink-0 rounded bg-zinc-700 px-2 py-1 text-[11px] font-medium text-zinc-200">
+        <span className="shrink-0 rounded border border-pos-border bg-pos-action px-2 py-1 text-[11px] font-medium text-white">
           Posto: {stationLabel}
         </span>
       ) : null}

@@ -114,7 +114,20 @@ export function createRateLimiter({
   max = Number(process.env.API_RATE_LIMIT_MAX ?? 300),
 } = {}) {
   const buckets = new Map();
-  return (req, res, next) => {
+
+  // Chaves não revisitadas (IP/rota que pára de ser usada) ficavam para sempre
+  // no Map — varredura periódica remove buckets já expirados.
+  function sweep() {
+    const now = Date.now();
+    for (const [key, bucket] of buckets) {
+      if (bucket.resetAt <= now) buckets.delete(key);
+    }
+  }
+
+  const sweepTimer = setInterval(sweep, Math.max(windowMs, 30_000));
+  if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
+
+  const middleware = (req, res, next) => {
     const ip = getClientIp(req);
     const key = `${ip}:${req.method}:${req.path}`;
     const now = Date.now();
@@ -131,4 +144,11 @@ export function createRateLimiter({
     }
     return next();
   };
+
+  // Exposto para testes/introspecção — não usado pelo pedido normal.
+  middleware.buckets = buckets;
+  middleware.sweep = sweep;
+  middleware.stop = () => clearInterval(sweepTimer);
+
+  return middleware;
 }

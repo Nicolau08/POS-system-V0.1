@@ -1,12 +1,10 @@
 import db from '../database.js';
 import crypto from 'crypto';
-import machineIdModule from 'node-machine-id';
-
-const { machineIdSync } = machineIdModule;
 import { uuidv4 } from '../cloudIdUtils.js';
 import { ensureHashedPin, hashPin, verifyPinAgainstStored } from '../pinAuth.js';
 import { logAudit, logError, logInfo } from '../utils/logger.js';
 import { requireTenantId } from '../utils/tenant.js';
+import { getLocalMachineId } from '../../lib/licensing/localMachineId.js';
 import {
   parseBooleanFilter,
   parsePagination,
@@ -199,13 +197,24 @@ export async function authenticateLogin({ userId, enteredPin }) {
     ]);
   }
 
+  // Nível 9 = admin na UI; garante role alinhado (evita 403 em requireAdmin).
+  let role = String(user.role ?? 'cashier').trim().toLowerCase() || 'cashier';
+  const accessLevel = Number(user.access_level ?? 0);
+  if (accessLevel >= 9 && role !== 'admin') {
+    role = 'admin';
+    await runDb(`UPDATE users SET role = 'admin', updated_at = ? WHERE id = ?`, [
+      new Date().toISOString(),
+      user.id,
+    ]).catch(() => null);
+  }
+
   const authenticatedUser = {
     id: String(user.id),
     name: String(user.name ?? ''),
     surname: user.surname == null ? null : String(user.surname),
     email: user.email == null ? null : String(user.email),
-    role: String(user.role ?? 'cashier'),
-    access_level: Number(user.access_level ?? 0),
+    role,
+    access_level: accessLevel,
     active: Number(user.active ?? 1) !== 0,
     tenant_id: requireTenantId(user.tenant_id, {
       status: 401,
@@ -242,7 +251,10 @@ export async function consolidateActiveAdmins(tenantId = null) {
         `SELECT DISTINCT tenant_id AS id
          FROM users
          WHERE active = 1
-           AND LOWER(COALESCE(role, '')) = 'admin'
+           AND (
+             LOWER(COALESCE(role, '')) = 'admin'
+             OR COALESCE(access_level, 0) >= 9
+           )
            AND tenant_id IS NOT NULL
            AND TRIM(tenant_id) <> ''`,
       );
@@ -253,11 +265,14 @@ export async function consolidateActiveAdmins(tenantId = null) {
     if (!tid) continue;
 
     const admins = await allDb(
-      `SELECT id, name, access_level, is_system, pin, cloud_id, updated_at
+      `SELECT id, name, access_level, is_system, pin, cloud_id, updated_at, role
        FROM users
        WHERE tenant_id = ?
          AND active = 1
-         AND LOWER(COALESCE(role, '')) = 'admin'`,
+         AND (
+           LOWER(COALESCE(role, '')) = 'admin'
+           OR COALESCE(access_level, 0) >= 9
+         )`,
       [tid],
     );
     if (admins.length <= 1) continue;
@@ -268,15 +283,37 @@ export async function consolidateActiveAdmins(tenantId = null) {
       if (id === 'admin-local') points += 1000;
       if (id === 'admin-1') points += 900;
       if (Number(row?.is_system ?? 0) === 1) points += 100;
+      if (LowerRoleIsAdmin(row)) points += 50;
       points += Number(row?.access_level ?? 0) * 10;
       if (String(row?.pin ?? '').trim()) points += 5;
-      if (String(row?.cloud_id ?? '').trim()) points += 1;
+      if (String(row?.cloud_id ?? '').trim()) points += 2;
+      // Preferir nome canónico local
+      if (String(row?.name ?? '').trim().toLowerCase() === 'administrador') points += 1;
       return points;
     };
 
     const ranked = [...admins].sort((a, b) => score(b) - score(a));
-    const keepId = String(ranked[0].id);
+    const keep = ranked[0];
+    const keepId = String(keep.id);
     const now = new Date().toISOString();
+
+    // Se o keeper ainda não tem cloud_id, herda do primeiro extra que tenha.
+    if (!String(keep.cloud_id ?? '').trim()) {
+      const donor = ranked.slice(1).find((row) => String(row?.cloud_id ?? '').trim());
+      if (donor?.cloud_id) {
+        await runDb(
+          `UPDATE users
+           SET cloud_id = ?,
+               role = 'admin',
+               access_level = CASE WHEN COALESCE(access_level, 0) > 9 THEN access_level ELSE 9 END,
+               updated_at = ?
+           WHERE id = ?
+             AND tenant_id = ?`,
+          [String(donor.cloud_id).trim(), now, keepId, tid],
+        );
+      }
+    }
+
     for (const extra of ranked.slice(1)) {
       await runDb(
         `UPDATE users
@@ -296,6 +333,10 @@ export async function consolidateActiveAdmins(tenantId = null) {
   }
 
   return { deactivated };
+}
+
+function LowerRoleIsAdmin(row) {
+  return String(row?.role ?? '').trim().toLowerCase() === 'admin';
 }
 
 export async function listLoginUsers() {
@@ -790,7 +831,7 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
       return { isExpired: true };
     }
 
-    const localMachine = machineIdSync({ original: true });
+    const localMachine = getLocalMachineId();
 
     for (const license of rows) {
       if (Number(license.active ?? 1) !== 1) {
@@ -818,7 +859,13 @@ export async function validateLicenseAccess(gracePeriodMs = 0, actorUser = null)
     console.log('🔥 LICENSE DB RESULT: nenhuma licença válida (expirada, inactiva ou outra máquina)');
     return { isExpired: true };
   } catch (err) {
-    console.error('❌ license validation error', err);
+    logError('license_validation_error', {
+      module: 'user',
+      action: 'validateLicenseAccess',
+      reason: 'Excepção ao validar acesso da licença',
+      tenant_id: String(actorUser?.tenant_id ?? '').trim() || null,
+      error: err,
+    });
     return { isExpired: true };
   }
 }

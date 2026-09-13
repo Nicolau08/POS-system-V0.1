@@ -24,19 +24,31 @@ export function resolveDatabasePath() {
   return path.join(API_DIR, DATABASE_FILE_NAME);
 }
 
+const BACKUP_FOLDER_NAME = 'POSly Backup';
+
 /**
- * Resolve pasta de backups por defeito (junto à pasta data, ou POS_BACKUP_DIR).
+ * Pasta Documentos do utilizador (Windows: %USERPROFILE%\Documents).
  */
-export function resolveBackupsDir(databasePath = resolveDatabasePath()) {
+function resolveDocumentsDir() {
+  const explicit = String(process.env.POS_DOCUMENTS_DIR ?? '').trim();
+  if (explicit) return path.resolve(explicit);
+  if (process.env.USERPROFILE) {
+    return path.join(process.env.USERPROFILE, 'Documents');
+  }
+  const home = process.env.HOME || process.env.HOMEPATH || '';
+  if (home) return path.join(home, 'Documents');
+  return path.join(API_DIR, '..', 'Documents');
+}
+
+/**
+ * Resolve pasta de backups por defeito:
+ * POS_BACKUP_DIR, senão Documentos\POSly Backup.
+ */
+export function resolveBackupsDir(_databasePath = resolveDatabasePath()) {
   if (process.env.POS_BACKUP_DIR) {
     return path.resolve(String(process.env.POS_BACKUP_DIR));
   }
-  const dataDir = path.dirname(path.resolve(databasePath));
-  // …/data/database.db → …/backups ; api/database.db → project/backups
-  if (path.basename(dataDir).toLowerCase() === 'data') {
-    return path.join(path.dirname(dataDir), 'backups');
-  }
-  return path.resolve(API_DIR, '..', 'backups');
+  return path.join(resolveDocumentsDir(), BACKUP_FOLDER_NAME);
 }
 
 function renameIfExists(fromPath, toPath) {

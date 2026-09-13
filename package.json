@@ -1,18 +1,18 @@
 {
   "name": "posly",
-  "version": "0.2.7",
+  "version": "0.2.21",
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "api:dev": "node api/server.js",
-    "dev:full": "concurrently --names \"API,WEB\" --prefix-colors \"blue.bold,magenta.bold\" \"npm run api:dev\" \"npm run dev\"",
-    "dev:full:electron": "concurrently --names \"API,WEB,APP\" --prefix-colors \"blue.bold,magenta.bold,green.bold\" \"npm run api:dev\" \"npm run dev\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001/health && cross-env POS_ELECTRON_USE_EXTERNAL_API=1 npm run electron\"",
+    "api:dev": "node --watch-path=./api --watch api/server.js",
+    "dev:full": "concurrently --names \"API,WEB\" --prefix \"{name} |\" --prefix-colors \"cyan,magenta\" --pad-prefix \"npm run api:dev\" \"npm run dev\"",
+    "dev:full:electron": "concurrently --names \"API,WEB,APP\" --prefix \"{name} |\" --prefix-colors \"cyan,magenta,green\" --pad-prefix \"npm run api:dev\" \"npm run dev\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001/health && cross-env POS_ELECTRON_USE_EXTERNAL_API=1 npm run electron\"",
     "licensing:ensure-env": "node scripts/ensure-licensing-env.mjs",
     "dev:console": "npm --prefix license-console run dev",
     "build:console": "npm --prefix license-console run build",
-    "dev:licensing": "node scripts/ensure-licensing-env.mjs && concurrently --names \"API,WEB,CONSOLE\" --prefix-colors \"blue.bold,magenta.bold,yellow.bold\" \"npm run api:dev\" \"npm run dev\" \"npm run dev:console\"",
+    "dev:licensing": "node scripts/ensure-licensing-env.mjs && concurrently --names \"API,WEB,CONSOLE\" --prefix \"{name} |\" --prefix-colors \"cyan,magenta,yellow\" --pad-prefix \"npm run api:dev\" \"npm run dev\" \"npm run dev:console\"",
     "license-console": "echo Abra http://localhost:3002/license-admin (npm run dev:console) ou use o deploy Vercel.",
-    "dev:licensing:electron": "node scripts/ensure-licensing-env.mjs && concurrently --names \"API,WEB,POS,CONSOLE\" --prefix-colors \"blue.bold,magenta.bold,green.bold,yellow.bold\" \"npm run api:dev\" \"npm run dev\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001/health && cross-env POS_ELECTRON_USE_EXTERNAL_API=1 npm run electron\" \"npm run dev:console\"",
+    "dev:licensing:electron": "node scripts/ensure-licensing-env.mjs && concurrently --names \"API,WEB,POS,CONSOLE\" --prefix \"{name} |\" --prefix-colors \"cyan,magenta,green,yellow\" --pad-prefix \"npm run api:dev\" \"npm run dev\" \"npx wait-on http://127.0.0.1:3000 http://127.0.0.1:3001/health && cross-env POS_ELECTRON_USE_EXTERNAL_API=1 npm run electron\" \"npm run dev:console\"",
     "dev:tenant:default": "node scripts/dev-tenant.mjs default",
     "dev:tenant": "node scripts/dev-tenant.mjs",
     "dev:tenant:qa01": "node scripts/dev-tenant.mjs qa01",
@@ -28,7 +28,7 @@
     "electron-dist": "node scripts/electron-dist-pos.mjs",
     "electron-dist:pos": "npm run electron-dist",
     "test:e2e": "playwright test",
-    "test:unit": "node --test tests/unit/table-order-conflict.test.mjs tests/unit/db-encryption.test.mjs tests/unit/tenant-capabilities.test.mjs",
+    "test:unit": "node --test tests/unit/table-order-conflict.test.mjs tests/unit/db-encryption.test.mjs tests/unit/tenant-capabilities.test.mjs tests/unit/tax-math.test.mjs tests/unit/margin.test.mjs tests/unit/rate-limiter.test.mjs",
     "sync:revive-dead-sales": "node api/scripts/revive-dead-sale-queue.mjs",
     "sync:reset-sale-queue": "node api/scripts/reset-sale-queue.mjs",
     "stock:audit": "node api/scripts/stock-flow-audit.mjs",
@@ -77,6 +77,7 @@
     "eslint": "^10.1.0",
     "eslint-config-next": "^0.2.4",
     "firebase-tools": "^15.11.0",
+    "javascript-obfuscator": "^4.2.2",
     "png-to-ico": "^3.0.1",
     "pngjs": "^7.0.0",
     "rcedit": "^5.0.2",
@@ -85,17 +86,31 @@
     "typescript": "5.9.3"
   },
   "main": "electron/main.js",
-  "description": "POS System desktop application",
+  "description": "POSly desktop application by nicolau nino",
   "build": {
     "appId": "com.nicol.posly",
     "productName": "POSly",
+    "copyright": "Copyright © GIGA IT Lda",
     "npmRebuild": false,
+    "asar": true,
     "files": [
       "electron/**/*",
+      "electron/.build-secrets.json",
       "api/**/*",
       "assets/**/*",
       "lib/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.ts",
+      "!**/*.tsx",
+      "!**/*.d.ts",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/license-console/**",
+      "!**/.dev-tenants/**",
+      "!**/__tests__/**",
+      "!**/*.test.js",
+      "!**/*.spec.js"
     ],
     "asarUnpack": [
       "**/node_modules/sqlite3/**",
@@ -103,6 +118,10 @@
       "**/node_modules/@mapbox/node-pre-gyp/**"
     ],
     "extraResources": [
+      {
+        "from": "electron/.build-secrets.json",
+        "to": "electron/.build-secrets.json"
+      },
       {
         "from": ".next/standalone/server.js",
         "to": "web/server.js"
@@ -137,6 +156,7 @@
     "win": {
       "icon": "assets/icon.ico",
       "executableName": "POSly",
+      "legalTrademarks": "GIGA IT Lda",
       "target": [
         "nsis"
       ]
@@ -144,13 +164,19 @@
     "nsis": {
       "artifactName": "POSly Setup ${version}.${ext}",
       "oneClick": false,
+      "perMachine": true,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "POSly",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": ["pt_PT"],
+      "language": "2070",
+      "displayLanguageSelector": false
     },
     "directories": {
       "output": "dist-electron"
@@ -168,11 +194,14 @@
     "url": "git+https://github.com/Nicolau08/POS-system-V0.1.git"
   },
   "keywords": [],
-  "author": "",
+  "author": {
+    "name": "GIGA IT Lda",
+    "url": "https://posly.co.mz"
+  },
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/Nicolau08/POS-system-V0.1/issues"
+    "url": "https://posly.co.mz"
   },
-  "homepage": "https://github.com/Nicolau08/POS-system-V0.1#readme"
+  "homepage": "https://posly.co.mz"
 }

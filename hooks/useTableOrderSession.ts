@@ -62,6 +62,11 @@ export function useTableOrderSession(opts: UseTableOrderSessionOpts) {
       const currentId = selectedTableId || 'direct';
       const currentOrder = { cart, globalDiscount, selectedCustomer, docType };
 
+      // Grelha vê logo o pedido da mesa que estamos a deixar.
+      if (selectedTableId) {
+        setTableOrders((prev) => ({ ...prev, [selectedTableId]: currentOrder }));
+      }
+
       if (selectedTableId && selectedTableId !== tableId && currentOrder.cart.length > 0) {
         const expectedUpdatedAt = tableOrderUpdatedAtRef.current[selectedTableId] ?? null;
         const saveResult = await saveSharedTableOrder(selectedTableId, {

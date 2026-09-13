@@ -18,6 +18,8 @@ type PosSelectProps = {
   disabled?: boolean;
   className?: string;
   triggerClassName?: string;
+  /** Alinhamento do valor no trigger */
+  align?: 'left' | 'center';
   /** sm = filtros compactos; md = formulários */
   size?: 'sm' | 'md';
   /** Acção no fundo do menu (estilo «Ver mais…») */
@@ -48,6 +50,7 @@ export default function PosSelect({
   disabled = false,
   className = '',
   triggerClassName = '',
+  align = 'left',
   size = 'sm',
   footerActionLabel,
   onFooterAction,
@@ -78,8 +81,9 @@ export default function PosSelect({
     // Preferir baixo; só abrir para cima quando não há espaço útil abaixo.
     const preferBelow = spaceBelow >= 96 || spaceBelow >= spaceAbove;
     const maxHeight = Math.max(96, Math.min(280, preferBelow ? spaceBelow : spaceAbove));
-    const width = Math.max(rect.width, 160);
+    const width = Math.max(Math.round(rect.width), 112);
     let left = rect.left;
+    if (left < viewportPad) left = viewportPad;
     if (left + width > window.innerWidth - viewportPad) {
       left = Math.max(viewportPad, window.innerWidth - width - viewportPad);
     }
@@ -147,13 +151,16 @@ export default function PosSelect({
             ref={menuRef}
             id={listId}
             role="listbox"
-            className="pos-dropdown fixed z-[10000] overflow-y-auto custom-scrollbar"
+            className="pos-dropdown fixed z-[10000] overflow-y-auto overflow-x-hidden custom-scrollbar"
             style={{
               top: coords.top,
               bottom: coords.bottom,
               left: coords.left,
               width: coords.width,
+              minWidth: coords.width,
+              maxWidth: coords.width,
               maxHeight: coords.maxHeight,
+              boxSizing: 'border-box',
             }}
           >
             {options.map((option) => {
@@ -167,7 +174,7 @@ export default function PosSelect({
                   type="button"
                   role="option"
                   aria-selected={active}
-                  className={`pos-dropdown-item ${active ? 'is-active' : ''} ${
+                  className={`pos-dropdown-item whitespace-nowrap text-center ${active ? 'is-active' : ''} ${
                     isActionOption ? '!text-[#a5b4fc] hover:!bg-[var(--pos-brand-hover-bg)]' : ''
                   }`}
                   onClick={() => {
@@ -214,7 +221,7 @@ export default function PosSelect({
           }}
           className={`pos-select-trigger ${triggerSize} ${open ? 'is-open' : ''} ${triggerClassName}`}
         >
-          <span className="truncate text-left text-zinc-200">{display}</span>
+          <span className={`w-full truncate text-zinc-200 ${align === 'center' ? 'text-center' : 'text-left'}`}>{display}</span>
           <ChevronsUpDown
             size={size === 'md' ? 15 : 13}
             className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500"

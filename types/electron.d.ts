@@ -51,6 +51,15 @@ declare global {
         error?: string;
         licensePath?: string;
       }>;
+      clearLocalLicense: () => Promise<{
+        success: boolean;
+        error?: string;
+        isActivated?: boolean;
+        machineId?: string;
+        activationCode?: string;
+        reason?: string;
+        licensePath?: string;
+      }>;
       restartApp: () => Promise<{
         success: boolean;
         error?: string;

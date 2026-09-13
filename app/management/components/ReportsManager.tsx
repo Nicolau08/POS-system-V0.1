@@ -669,10 +669,10 @@ export default function ReportsManager() {
 
   return (
     <>
-      <div className="flex h-full bg-[#1a1a1a] text-zinc-200 overflow-hidden">
-        <div className="flex-1 min-w-0 border-r border-zinc-800/50 flex flex-col bg-[#1a1a1a]">
-          <div className="h-14 px-4 flex items-center bg-[#1a1a1a] border-b border-zinc-800">
-            <div className="flex items-center gap-3 px-3 text-zinc-500 border-r border-zinc-800">
+      <div className="flex h-full bg-pos-surface text-zinc-200 overflow-hidden">
+        <div className="flex-1 min-w-0 border-r border-pos-border/50 flex flex-col bg-pos-surface">
+          <div className="h-14 px-4 flex items-center bg-pos-surface border-b border-pos-border">
+            <div className="flex items-center gap-3 px-3 text-zinc-500 border-r border-pos-border">
               <Search size={18} />
             </div>
             <div className="flex-1 relative">
@@ -734,8 +734,8 @@ export default function ReportsManager() {
           </div>
         </div>
 
-        <aside className="w-[340px] shrink-0 bg-[#1a1a1a] flex flex-col">
-          <div className="px-4 py-4 border-b border-zinc-800/50">
+        <aside className="w-[340px] shrink-0 bg-pos-surface flex flex-col">
+          <div className="px-4 py-4 border-b border-pos-border/50">
             <h3 className="text-xl md:text-[22px] leading-none text-white">Filtro</h3>
           </div>
 
@@ -804,7 +804,7 @@ export default function ReportsManager() {
             )}
           </div>
 
-          <div className="p-4 border-t border-zinc-800/50 space-y-2 no-print">
+          <div className="p-4 border-t border-pos-border/50 space-y-2 no-print">
             <div className="grid grid-cols-2 gap-2">
               <ActionButton
                 icon={<RefreshCcw size={18} />}
@@ -838,14 +838,14 @@ export default function ReportsManager() {
 
       {isPreviewOpen && builtReport && (
         <div
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[2px] flex items-center justify-center p-6"
+          className="fixed inset-0 z-50 pos-modal-overlay flex items-center justify-center p-6"
           onClick={() => setIsPreviewOpen(false)}
         >
           <div
-            className="w-full max-w-[1500px] max-h-[92vh] bg-[#111] border border-zinc-800 rounded shadow-2xl overflow-hidden"
+            className="w-full max-w-[1500px] max-h-[92vh] bg-pos-bg border border-pos-border rounded shadow-2xl overflow-hidden"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="h-14 border-b border-zinc-800 px-4 flex items-center justify-between bg-[#141414]">
+            <div className="h-14 border-b border-pos-border px-4 flex items-center justify-between bg-pos-card">
               <div>
                 <h3 className="text-base font-bold text-white">{builtReport.title}</h3>
                 <p className="text-xs text-zinc-500">Pré-visualização em A4 horizontal</p>
@@ -854,7 +854,7 @@ export default function ReportsManager() {
                 <ActionButton icon={<Printer size={16} />} label="Imprimir" onClick={handlePrint} />
                 <button
                   onClick={() => setIsPreviewOpen(false)}
-                  className="h-11 w-11 flex items-center justify-center border border-zinc-700 rounded bg-[#202020] hover:bg-zinc-800 hover:border-[#0001fb] transition-colors text-zinc-200"
+                  className="h-11 w-11 flex items-center justify-center border border-pos-border rounded bg-pos-surface hover:bg-zinc-800 hover:border-[#0001fb] transition-colors text-zinc-200"
                   aria-label="Fechar pré-visualização"
                 >
                   <X size={18} />
@@ -862,7 +862,7 @@ export default function ReportsManager() {
               </div>
             </div>
 
-            <div className="max-h-[calc(92vh-56px)] overflow-auto custom-scrollbar bg-[#1a1a1a] p-6">
+            <div className="max-h-[calc(92vh-56px)] overflow-auto custom-scrollbar bg-pos-surface p-6">
               <div
                 ref={reportPreviewRef}
                 className="report-print-root mx-auto bg-white text-black shadow-2xl"
@@ -984,16 +984,16 @@ export default function ReportsManager() {
 
       {isPeriodModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[2px] flex items-center justify-center p-6"
+          className="fixed inset-0 z-50 pos-modal-overlay flex items-center justify-center p-6"
           onClick={() => setIsPeriodModalOpen(false)}
         >
           <div
-            className="w-full max-w-[820px] bg-[#1f1f1f] border border-zinc-700 rounded shadow-2xl overflow-hidden"
+            className="w-full max-w-[820px] bg-pos-surface border border-pos-border rounded shadow-2xl overflow-hidden"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="px-6 py-5 text-center">
               <h3 className="text-[18px] text-white">Período</h3>
-              <div className="mt-4 inline-flex items-center rounded border border-zinc-700 bg-[#1a1a1a] px-4 py-2 text-white font-bold">
+              <div className="mt-4 inline-flex items-center rounded border border-pos-border bg-pos-surface px-4 py-2 text-white font-bold">
                 {formatDate(tempDateFrom)} - {formatDate(tempDateTo)}
               </div>
             </div>
@@ -1001,7 +1001,7 @@ export default function ReportsManager() {
             <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_280px] gap-6 p-6">
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Início</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <div className="mx-auto max-w-[260px] bg-pos-surface border border-pos-border rounded p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
@@ -1032,7 +1032,7 @@ export default function ReportsManager() {
 
               <div>
                 <p className="text-sm text-zinc-100 mb-3 text-center">Fim</p>
-                <div className="mx-auto max-w-[260px] bg-[#1a1a1a] border border-zinc-700 rounded p-4">
+                <div className="mx-auto max-w-[260px] bg-pos-surface border border-pos-border rounded p-4">
                   <div className="flex items-center justify-between px-1 pb-4">
                     <button
                       type="button"
@@ -1161,7 +1161,7 @@ function PresetButton({
       className={`min-h-11 rounded border px-3 py-3 text-sm transition-colors ${
         active
           ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
-          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+          : 'border-pos-border bg-pos-surface text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
       }`}
     >
       {label}
@@ -1203,7 +1203,7 @@ function CalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday

@@ -1,44 +1,28 @@
 'use client';
 
 import React from 'react';
-import { Archive, FileText, LogOut, Percent, Printer, User, Utensils } from 'lucide-react';
-import { ManagementToolbarDivider } from '@/components/ManagementToolbarButton';
+import { Armchair, LogOut, Menu, Utensils } from 'lucide-react';
+import { PosMenuButton } from '@/components/PosMenuButton';
+import type { PosLocation } from '@/lib/services/posService';
 
 // Top bar actions extracted from the POS page to reduce page-level JSX size.
 export function Header({
-  selectedCustomerName,
-  selectedTableId,
-  tableDisplayLabel,
-  salesMode,
-  onOpenCustomer,
-  onOpenDiscount,
-  onOpenQuotation,
-  onOpenCashDrawer,
-  onOpenTable,
   showTables = true,
   tablesFloorOpen = false,
-  onOpenBillPreview,
-  billPreviewEnabled = false,
+  locations = [],
+  activeLocationId = null,
+  selectedTableId = null,
+  onSelectLocation,
   onOpenAdminSidebar,
   userName,
   onLogout,
 }: {
-  selectedCustomerName: string | null;
-  selectedTableId: string | null;
-  /** Nome opcional dado ao abrir a mesa no POS */
-  tableDisplayLabel?: string | null;
-  salesMode: 'customer' | 'table';
-  onOpenCustomer: () => void;
-  onOpenDiscount: () => void;
-  onOpenQuotation: () => void;
-  onOpenCashDrawer?: () => void;
-  onOpenTable: () => void;
-  /** False = licença retalho/farmácia — oculta botão Mesas */
   showTables?: boolean;
-  /** Grelha de mesas a substituir os produtos */
   tablesFloorOpen?: boolean;
-  onOpenBillPreview?: () => void;
-  billPreviewEnabled?: boolean;
+  locations?: PosLocation[];
+  activeLocationId?: string | null;
+  selectedTableId?: string | null;
+  onSelectLocation?: (locationId: string) => void;
   onOpenAdminSidebar: () => void;
   userName?: string | null;
   onLogout?: () => void;
@@ -57,7 +41,10 @@ export function Header({
     }
   }, []);
 
-  const displayName = userName || fallbackUserName || 'User';
+  const displayName = userName || fallbackUserName || 'Operador';
+  const userInitial = displayName.trim().charAt(0).toUpperCase() || 'O';
+  const showLocationButtons = showTables !== false && locations.length > 0;
+
   const handleLogout = () => {
     if (onLogout) {
       onLogout();
@@ -68,110 +55,101 @@ export function Header({
   };
 
   return (
-    <header className="flex items-center bg-[#1a1a1a] border-b border-zinc-800 px-2 py-1 gap-1 overflow-x-auto scrollbar-hide">
-      <HeaderButton
-        icon={<User size={20} />}
-        label={selectedCustomerName || 'Cliente'}
-        active={!!selectedCustomerName}
-        onClick={onOpenCustomer}
-      />
-      <HeaderButton icon={<Percent size={20} />} label="Desconto" onClick={onOpenDiscount} />
-      <HeaderButton icon={<FileText size={20} />} label="Cotação" onClick={onOpenQuotation} />
-
-      <ManagementToolbarDivider />
-
-      <HeaderButton icon={<Archive size={20} />} label="Gaveta de dinheiro" onClick={onOpenCashDrawer} />
-      {showTables !== false ? (
-        <HeaderButton
-          icon={<Utensils size={20} />}
-          label={
-            selectedTableId
-              ? tableDisplayLabel
-                ? `Mesa ${selectedTableId} · ${tableDisplayLabel}`
-                : `Mesa ${selectedTableId}`
-              : 'Mesas'
-          }
-          active={tablesFloorOpen || salesMode === 'table'}
-          onClick={onOpenTable}
+    <header className="pos-toolbar flex items-stretch border-b px-2 py-1.5 gap-1 overflow-hidden">
+      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto scrollbar-hide">
+        <HeaderActionButton
+          icon={<Menu size={18} strokeWidth={2.25} />}
+          label="Menu"
+          title="Menu e configurações"
+          onClick={onOpenAdminSidebar}
         />
-      ) : null}
+        {showLocationButtons
+          ? locations.map((location) => {
+              const openTable = !tablesFloorOpen
+                ? location.tables.find((table) => String(table.name) === String(selectedTableId))
+                : null;
+              const tableLabel = openTable
+                ? `Mesa ${String(openTable.displayName || openTable.name)}`
+                : null;
+              const isActive =
+                (tablesFloorOpen && String(location.id) === String(activeLocationId)) ||
+                Boolean(tableLabel);
+              return (
+                <PosMenuButton
+                  key={location.id}
+                  icon={
+                    tableLabel ? (
+                      <Utensils size={18} strokeWidth={2} />
+                    ) : (
+                      <Armchair size={18} strokeWidth={2} />
+                    )
+                  }
+                  label={tableLabel || location.name?.trim() || 'Local'}
+                  title={
+                    tableLabel
+                      ? `${tableLabel} — voltar às mesas de ${location.name?.trim() || 'local'}`
+                      : `Mesas de ${location.name?.trim() || 'local'}`
+                  }
+                  active={isActive}
+                  onClick={() => onSelectLocation?.(String(location.id))}
+                />
+              );
+            })
+          : null}
+      </div>
 
-      <ManagementToolbarDivider />
-
-      <HeaderButton
-        icon={<Printer size={20} />}
-        label="Conta"
-        onClick={onOpenBillPreview}
-        disabled={!billPreviewEnabled}
-      />
-
-      <div className="flex-grow" />
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-zinc-300">{displayName}</span>
+      <div className="ml-2 flex shrink-0 items-center border-l border-pos-border pl-3">
         <button
+          type="button"
           onClick={handleLogout}
-          className="rounded border border-transparent p-1 text-zinc-400 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
-          title="Terminar sessão"
-          aria-label="Terminar sessão"
+          title={`Terminar sessão — ${displayName}`}
+          aria-label={`Terminar sessão — ${displayName}`}
+          className="pos-header-action pos-header-action--danger pos-operator-logout"
         >
-          <LogOut size={16} />
+          <span className="pos-operator-logout__user hidden min-[900px]:flex" title={displayName}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider opacity-80">Operador</span>
+            <span className="max-w-[7.5rem] truncate text-sm font-medium leading-tight">{displayName}</span>
+          </span>
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/30 text-xs font-semibold min-[900px]:hidden"
+            aria-hidden="true"
+          >
+            {userInitial}
+          </span>
+          <span className="pos-operator-logout__divider" aria-hidden="true" />
+          <span className="pos-operator-logout__exit">
+            <LogOut size={17} strokeWidth={2.25} />
+            <span className="text-[9px] font-bold uppercase leading-none tracking-wide">Sair</span>
+          </span>
         </button>
       </div>
-      <button
-        onClick={onOpenAdminSidebar}
-        className="p-2 rounded text-zinc-400 transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] focus-visible:outline-offset-1"
-        title="Configurações"
-      >
-        <svg
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <circle cx="5" cy="6" r="1.75" fill="currentColor" />
-          <circle cx="5" cy="12" r="1.75" fill="currentColor" />
-          <circle cx="5" cy="18" r="1.75" fill="currentColor" />
-          <path d="M9 6H19" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-          <path d="M9 12H19" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-          <path d="M9 18H19" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-        </svg>
-      </button>
     </header>
   );
 }
 
-function HeaderButton({
+function HeaderActionButton({
   icon,
   label,
-  active,
-  disabled,
-  className,
+  title,
+  variant = 'default',
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
-  active?: boolean;
-  disabled?: boolean;
-  className?: string;
+  title: string;
+  variant?: 'default' | 'danger';
   onClick?: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
-      className={`h-10 min-w-[65px] px-2 flex flex-col items-center justify-center rounded text-[8px] uppercase font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] focus-visible:outline-offset-1 ${
-        disabled
-          ? 'cursor-not-allowed text-zinc-700 opacity-50'
-          : active
-            ? 'bg-[var(--pos-brand-selected-bg)] text-white'
-            : 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-zinc-200'
-      } ${className || ''}`}
+      title={title}
+      aria-label={title}
+      className={`pos-header-action ${variant === 'danger' ? 'pos-header-action--danger' : ''}`}
     >
       {icon}
-      <span className="mt-0.5 leading-none tracking-wide">{label}</span>
+      <span className="text-[9px] font-bold uppercase leading-none tracking-wide">{label}</span>
     </button>
   );
 }

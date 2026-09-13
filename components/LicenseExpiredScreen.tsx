@@ -96,8 +96,8 @@ export default function LicenseExpiredScreen({
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#121212] px-4 text-zinc-200">
-      <section className="relative w-full max-w-2xl rounded-xl border border-[#0001fb]/70 bg-[#0f0f0f] p-8 shadow-2xl">
+    <main className="flex min-h-screen items-center justify-center bg-pos-bg px-4 text-zinc-200">
+      <section className="relative w-full max-w-2xl rounded border border-[#0001fb]/70 bg-pos-bg p-8 shadow-2xl">
         <p className="text-center text-2xl font-bold tracking-wide text-[#0001fb]">POSLY</p>
         <h1 className="mt-3 text-center text-2xl font-bold text-amber-400 sm:text-3xl">
           Sua licença expirou!
@@ -107,7 +107,7 @@ export default function LicenseExpiredScreen({
           suporte para renovar sua licença.
         </p>
 
-        <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/80 p-4 text-sm text-zinc-200">
+        <div className="mt-6 rounded border border-pos-border bg-pos-bg/80 p-4 text-sm text-zinc-200">
           <p>
             <span className="text-zinc-400">Loja:</span>{' '}
             <strong>{tenantName || 'N/A'}</strong>
@@ -125,7 +125,7 @@ export default function LicenseExpiredScreen({
               value={licenseKey}
               onChange={(event) => setLicenseKey(event.target.value)}
               placeholder="introduza o token"
-              className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none ring-[rgba(0,1,251,0.45)] focus:ring"
+              className="mt-2 w-full rounded border border-pos-border bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none ring-[rgba(0, 1, 251,0.45)] focus:ring"
               disabled={isBusy}
               autoComplete="off"
             />
@@ -146,7 +146,7 @@ export default function LicenseExpiredScreen({
             <button
               type="submit"
               disabled={isBusy}
-              className="rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isActivating ? 'A ativar…' : 'Ativar'}
             </button>

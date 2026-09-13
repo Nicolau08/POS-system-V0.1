@@ -1,17 +1,18 @@
 'use client';
 
 import { useEffect } from 'react';
-import { loadPosSettings, type PosTheme } from '@/lib/posSettings';
+import { loadPosSettings, parsePosTheme, type PosTheme } from '@/lib/posSettings';
 
 export function applyPosTheme(theme: PosTheme) {
   if (typeof document === 'undefined') return;
-  const next = theme === 'light' ? 'light' : 'dark';
+  const next = parsePosTheme(theme);
   const root = document.documentElement;
   root.dataset.theme = next;
   root.classList.toggle('dark', next === 'dark');
   root.classList.toggle('light', next === 'light');
+  root.classList.toggle('violet', next === 'violet');
   try {
-    root.style.colorScheme = next;
+    root.style.colorScheme = next === 'light' ? 'light' : 'dark';
   } catch {
     // ignore
   }
@@ -26,11 +27,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
     const onSettings = (event: Event) => {
       const detail = (event as CustomEvent)?.detail as { theme?: PosTheme } | undefined;
-      if (detail?.theme === 'light' || detail?.theme === 'dark') {
-        applyPosTheme(detail.theme);
-        return;
-      }
-      applyPosTheme(loadPosSettings().theme);
+      applyPosTheme(parsePosTheme(detail?.theme ?? loadPosSettings().theme));
     };
 
     window.addEventListener('pos-settings-changed', onSettings as EventListener);

@@ -252,9 +252,9 @@ export function CustomerSupplierFormModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="p-4 flex items-center bg-[#1a1a1a]">
+    <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 pos-modal-overlay">
+      <div className="bg-pos-surface border border-pos-border rounded w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-4 flex items-center bg-pos-surface">
           <h3 className="text-xl text-zinc-200">
             {editingId ? 'Editar cliente / fornecedor' : 'Novo cliente / fornecedor'}
           </h3>
@@ -274,7 +274,7 @@ export function CustomerSupplierFormModal({
         <form
           id="customer-supplier-form"
           onSubmit={(e) => void handleSave(e)}
-          className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-[#1a1a1a]"
+          className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-pos-surface"
         >
           {activeTab !== 'geral' ? (
             <div className="py-10 text-center text-zinc-500 text-sm">Sem configuração nesta aba.</div>
@@ -333,7 +333,7 @@ export function CustomerSupplierFormModal({
           )}
         </form>
 
-        <div className="p-4 bg-[#1a1a1a] border-t border-zinc-800 flex justify-end gap-3">
+        <div className="p-4 bg-pos-surface border-t border-pos-border flex justify-end gap-3">
           <button
             type="submit"
             form="customer-supplier-form"
@@ -347,7 +347,7 @@ export function CustomerSupplierFormModal({
             type="button"
             onClick={onClose}
             disabled={saving}
-            className="flex items-center gap-2 px-6 py-2 rounded border border-zinc-700 bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white disabled:opacity-40"
+            className="flex items-center gap-2 px-6 py-2 rounded border border-pos-border bg-transparent text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white disabled:opacity-40"
           >
             <X size={16} />
             Cancelar
@@ -404,7 +404,7 @@ function Field({
         readOnly={readOnly}
         className={`pos-field h-10 px-3 text-sm ${short ? '!w-24' : 'w-full'} ${
           required && !value.trim() ? '!border-red-900/50' : ''
-        } ${readOnly ? 'cursor-default text-zinc-400 hover:!border-[#3f3f46] hover:!bg-[#121212]' : ''}`}
+        } ${readOnly ? 'cursor-default text-zinc-400 hover:!border-[#3f3f46] hover:!bg-pos-bg' : ''}`}
       />
     </div>
   );

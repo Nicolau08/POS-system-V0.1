@@ -15,6 +15,7 @@ import {
   listTablesByLocation,
   updateLocation,
   updateTable,
+  findTablesByNames,
 } from '../repositories/locations.repository.js';
 import { assertWarehouseActive } from './warehouses.service.js';
 
@@ -28,8 +29,33 @@ function resolveTenantId(actorUser) {
   });
 }
 
+function parseDisplayStart(raw, fallback = null) {
+  if (raw === undefined) return fallback;
+  if (raw === null || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 1) {
+    throw new HttpError(400, 'A numeração no POS deve ser um número a partir de 1');
+  }
+  return Math.floor(value);
+}
+
+function applyDisplayNames(tables, displayStart) {
+  const start = displayStart != null ? Number(displayStart) : null;
+  const ordered = [...tables].sort(
+    (a, b) => Number(a.name) - Number(b.name) || String(a.name).localeCompare(String(b.name)),
+  );
+  if (!Number.isFinite(start) || start < 1) {
+    return ordered.map((table) => ({ ...table, displayName: String(table.name) }));
+  }
+  return ordered.map((table, index) => ({
+    ...table,
+    displayName: String(start + index),
+  }));
+}
+
 function normalizeLocation(row, tables = []) {
-  const normalizedTables = tables.map(normalizeTable);
+  const displayStart = row.display_start != null ? Number(row.display_start) : null;
+  const normalizedTables = applyDisplayNames(tables.map(normalizeTable), displayStart);
   return {
     id: String(row.id),
     name: String(row.name ?? ''),
@@ -39,6 +65,7 @@ function normalizeLocation(row, tables = []) {
     sortOrder: Number(row.sort_order ?? 0),
     allowCustomNames: Boolean(row.allow_custom_names),
     warehouseId: row.warehouse_id != null ? String(row.warehouse_id) : null,
+    displayStart: Number.isFinite(displayStart) && displayStart >= 1 ? displayStart : null,
     tables: normalizedTables,
     tablesSummary: formatTablesRangeFromRows(normalizedTables),
     createdAt: row.created_at ?? null,
@@ -68,6 +95,7 @@ function normalizeTable(row) {
     id: String(row.id),
     locationId: String(row.location_id),
     name: String(row.name ?? ''),
+    displayName: row.displayName != null ? String(row.displayName) : String(row.name ?? ''),
     seats: row.seats != null ? Number(row.seats) : null,
     sortOrder: Number(row.sort_order ?? 0),
     active: Boolean(row.active),
@@ -129,6 +157,33 @@ export function parseTablesSpec(raw) {
   return [...numbers].sort((a, b) => a - b).map(String);
 }
 
+async function assertTableNamesAvailable(tenantId, names, { exceptLocationId = null, exceptTableId = null } = {}) {
+  const wanted = [...new Set((names || []).map((name) => String(name).trim()).filter(Boolean))];
+  if (!wanted.length) return;
+  const existing = await findTablesByNames(tenantId, wanted);
+  const conflicts = (existing || []).filter((row) => {
+    if (exceptTableId && String(row.id) === String(exceptTableId)) return false;
+    if (exceptLocationId && String(row.location_id) === String(exceptLocationId)) return false;
+    return true;
+  });
+  if (!conflicts.length) return;
+
+  const unique = [];
+  const seen = new Set();
+  for (const row of conflicts) {
+    const key = `${row.name}:${row.location_name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(`${row.name} (${row.location_name})`);
+  }
+  throw new HttpError(
+    409,
+    unique.length === 1
+      ? `A mesa ${unique[0]} já está a ser usada. Cada número de mesa só pode existir num local.`
+      : `Estas mesas já estão a ser usadas noutro local: ${unique.join(', ')}. Cada número só pode existir num local.`,
+  );
+}
+
 async function insertTableNumber(locationId, tenantId, tableNumber, now) {
   const name = String(tableNumber);
   const sortOrder = Number(tableNumber) || 0;
@@ -166,6 +221,7 @@ async function insertTableNumber(locationId, tenantId, tableNumber, now) {
 async function addTablesFromSpec(locationId, tenantId, spec) {
   const numbers = parseTablesSpec(spec);
   if (!numbers.length) return [];
+  await assertTableNamesAvailable(tenantId, numbers, { exceptLocationId: locationId });
   const now = new Date().toISOString();
   const created = [];
   for (const num of numbers) {
@@ -173,6 +229,13 @@ async function addTablesFromSpec(locationId, tenantId, spec) {
     if (row) created.push(row);
   }
   return created;
+}
+
+async function replaceTablesFromSpec(locationId, tenantId, spec) {
+  const numbers = parseTablesSpec(spec);
+  await assertTableNamesAvailable(tenantId, numbers, { exceptLocationId: locationId });
+  await deleteTablesByLocation(String(locationId), tenantId);
+  return addTablesFromSpec(locationId, tenantId, spec);
 }
 
 export async function ensureDefaultBalcao(tenantId) {
@@ -190,6 +253,7 @@ export async function ensureDefaultBalcao(tenantId) {
     1,
     0,
     0,
+    null,
     null,
     now,
     now,
@@ -228,6 +292,12 @@ export async function createLocation(payload = {}, actorUser = null) {
         ? null
         : await assertWarehouseActive(warehouseIdRaw, tenantId);
 
+  const displayStart = parseDisplayStart(payload.displayStart ?? payload.display_start, null);
+  const tablesSpec = payload.tablesSpec ?? payload.tables_spec ?? payload.tables ?? '';
+  if (String(tablesSpec).trim()) {
+    await assertTableNamesAvailable(tenantId, parseTablesSpec(tablesSpec));
+  }
+
   try {
     await insertLocation([
       id,
@@ -239,6 +309,7 @@ export async function createLocation(payload = {}, actorUser = null) {
       Math.max(0, Number(payload.sortOrder ?? payload.sort_order ?? 0) || 0),
       allowCustomNames ? 1 : 0,
       warehouseId,
+      displayStart,
       now,
       now,
     ]);
@@ -249,7 +320,6 @@ export async function createLocation(payload = {}, actorUser = null) {
     throw error;
   }
 
-  const tablesSpec = payload.tablesSpec ?? payload.tables_spec ?? payload.tables ?? '';
   let tables = [];
   if (String(tablesSpec).trim()) {
     tables = await addTablesFromSpec(id, tenantId, tablesSpec);
@@ -265,6 +335,7 @@ export async function createLocation(payload = {}, actorUser = null) {
       sort_order: Math.max(0, Number(payload.sortOrder ?? 0) || 0),
       allow_custom_names: allowCustomNames ? 1 : 0,
       warehouse_id: warehouseId,
+      display_start: displayStart,
       created_at: now,
       updated_at: now,
     },
@@ -308,6 +379,11 @@ export async function updateLocationById(id, payload = {}, actorUser = null) {
         : await assertWarehouseActive(warehouseIdRaw, tenantId);
   }
 
+  const displayStart = parseDisplayStart(
+    payload.displayStart ?? payload.display_start,
+    existing.display_start != null ? Number(existing.display_start) : null,
+  );
+
   try {
     await updateLocation(String(id), tenantId, [
       name,
@@ -317,6 +393,7 @@ export async function updateLocationById(id, payload = {}, actorUser = null) {
       Math.max(0, Number(payload.sortOrder ?? payload.sort_order ?? existing.sort_order ?? 0) || 0),
       allowCustomNames,
       warehouseId,
+      displayStart,
       now,
     ]);
   } catch (error) {
@@ -324,6 +401,11 @@ export async function updateLocationById(id, payload = {}, actorUser = null) {
       throw new HttpError(409, 'Já existe um local com este nome');
     }
     throw error;
+  }
+
+  const tablesSpec = payload.tablesSpec ?? payload.tables_spec ?? payload.tables;
+  if (tablesSpec != null && String(tablesSpec).trim()) {
+    await replaceTablesFromSpec(String(id), tenantId, String(tablesSpec).trim());
   }
 
   const tables = await listTablesByLocation(String(id), tenantId);
@@ -364,6 +446,8 @@ export async function createLocationTable(locationId, payload = {}, actorUser = 
     throw new HttpError(400, 'Com nomes desactivados use números (ex.: 1:20 ou 5)');
   }
 
+  await assertTableNamesAvailable(tenantId, [name], { exceptLocationId: locationId });
+
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const sortOrder = /^\d+$/.test(name) ? Number(name) : Math.max(0, Number(payload.sortOrder ?? 0) || 0);
@@ -381,7 +465,7 @@ export async function createLocationTable(locationId, payload = {}, actorUser = 
     ]);
   } catch (error) {
     if (String(error?.message || '').includes('UNIQUE')) {
-      throw new HttpError(409, 'Já existe uma mesa com este nome neste local');
+      throw new HttpError(409, 'Já existe uma mesa com este número');
     }
     throw error;
   }
@@ -412,6 +496,8 @@ export async function updateLocationTable(id, payload = {}, actorUser = null) {
     throw new HttpError(400, 'Active «Dar nome às mesas» para usar nomes personalizados');
   }
 
+  await assertTableNamesAvailable(tenantId, [name], { exceptTableId: id });
+
   const now = new Date().toISOString();
   try {
     await updateTable(String(id), tenantId, [
@@ -427,7 +513,7 @@ export async function updateLocationTable(id, payload = {}, actorUser = null) {
     ]);
   } catch (error) {
     if (String(error?.message || '').includes('UNIQUE')) {
-      throw new HttpError(409, 'Já existe uma mesa com este nome neste local');
+      throw new HttpError(409, 'Já existe uma mesa com este número');
     }
     throw error;
   }

@@ -6,7 +6,7 @@
  *
  * Variáveis de ambiente:
  *   POS_LOG_LEVEL=debug|info|warn|error   (consola; default: info em dev, warn em prod)
- *   POS_LOG_PERSIST=0|1                   (gravar em SQLite app_logs; default: 1)
+ *   POS_LOG_JSON=0|1                      (JSON completo na consola; default: 0)
  *   POS_LOG_RETENTION_DAYS=30             (limpeza automática; default: 30)
  */
 import crypto from 'crypto';
@@ -176,10 +176,12 @@ function emitConsole(entry) {
         ? console.warn
         : console.log;
 
-  // Linha legível + JSON completo na mesma linha (fácil de grep / ingestão)
+  // Linha legível. JSON completo só com POS_LOG_JSON=1 (evita quebrar o prefixo do terminal).
   const human = `[${entry.timestamp}] ${entry.level.toUpperCase()} ${entry.event} — ${entry.message}`;
   sink(human);
-  sink(stringifySafe(entry));
+  if (envFlag('POS_LOG_JSON', false)) {
+    sink(stringifySafe(entry));
+  }
 }
 
 function pruneOldLogsIfNeeded() {

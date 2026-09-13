@@ -6,6 +6,7 @@ import {
   getZReport,
   listZReports,
   postClose,
+  postMovement,
   postReportX,
   postWithdraw,
 } from '../controllers/cash-session.controller.js';
@@ -15,6 +16,7 @@ const router = express.Router();
 router.get('/cash/session', authenticateUser, getSession);
 router.post('/cash/session/ensure', authenticateUser, ensureSession);
 router.post('/cash/withdraw', authenticateUser, postWithdraw);
+router.post('/cash/movements', authenticateUser, postMovement);
 router.post('/cash/report-x', authenticateUser, postReportX);
 router.post('/cash/close', authenticateUser, postClose);
 router.get('/cash/z-reports', authenticateUser, listZReports);

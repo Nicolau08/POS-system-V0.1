@@ -1,6 +1,7 @@
 import {
   buildReportX,
   closeCashSessionDay,
+  createCashMovement,
   ensureCashSession,
   getCashSession,
   getZReportDetail,
@@ -15,7 +16,11 @@ function controllerError(res, error) {
   if (status >= 400 && status < 500) {
     return sendError(res, status, error?.message || 'Pedido inválido', error?.code);
   }
-  console.error('❌ cash-session controller error:', error);
+  logError('controller_error', {
+    module: 'cash-session',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return sendError(res, 500, 'Erro interno do servidor', 'INTERNAL_ERROR');
 }
 
@@ -35,6 +40,16 @@ export async function ensureSession(req, res) {
     return sendSuccess(res, result);
   } catch (error) {
     logError('cash_session_ensure_failed', { error, module: 'cash-session' });
+    return controllerError(res, error);
+  }
+}
+
+export async function postMovement(req, res) {
+  try {
+    const result = await createCashMovement(req.user, req.body ?? {});
+    return sendSuccess(res, result);
+  } catch (error) {
+    logError('cash_movement_failed', { error, module: 'cash-session' });
     return controllerError(res, error);
   }
 }

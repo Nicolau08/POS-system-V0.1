@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { HttpError } from '../utils/response.js';
 import { get } from '../dbUtils.js';
+import { logWarn } from '../utils/logger.js';
 import {
   backfillStockMovementsWarehouse,
   backfillWarehouseStockFromProducts,
@@ -393,9 +394,14 @@ export async function applyWarehouseDelta({
       const layerQty = Number(layerSum?.total ?? 0) || 0;
       const whQty = await getWarehouseQuantity(warehouseId, pid, tenantId);
       if (Math.abs(layerQty - Math.max(0, whQty)) > 0.01 && whQty >= 0) {
-        console.warn(
-          `[fifo] divergência layers vs warehouse_stock product=${pid} wh=${warehouseId}: layers=${layerQty} wh=${whQty}`
-        );
+        logWarn('fifo_layers_divergence', {
+          module: 'warehouseStock',
+          reason: 'Camadas FIFO (stock_layers) e warehouse_stock divergem para este produto/armazém',
+          product_id: pid,
+          warehouse_id: warehouseId,
+          layers_qty: layerQty,
+          warehouse_qty: whQty,
+        });
       }
     } catch {
       /* ignore assert noise */

@@ -77,22 +77,33 @@ export function listSessionSales(tenantId, openedAt, closedAt = null) {
 }
 
 export function listSessionSaleItems(tenantId, openedAt, closedAt = null) {
+  // Vendas locais: order_items.order_id = vendas.id. Sync cloud: order_items.order_id = orders.id.
   const params = [tenantId, openedAt];
   let endClause = '';
   if (closedAt) {
-    endClause = ' AND datetime(o.created_at) <= datetime(?)';
+    endClause = ' AND datetime(COALESCE(v.data, o.created_at, oi.created_at)) <= datetime(?)';
     params.push(closedAt);
   }
   return all(
     `SELECT oi.product_name AS name,
             SUM(oi.quantity) AS quantity,
-            SUM(oi.quantity * oi.price) AS total
+            SUM(oi.quantity * oi.price - COALESCE(oi.discount_amount, 0)) AS total
        FROM order_items oi
-       INNER JOIN orders o ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
+       LEFT JOIN orders o
+         ON CAST(o.id AS TEXT) = CAST(oi.order_id AS TEXT)
+        AND o.tenant_id = oi.tenant_id
+       LEFT JOIN vendas v
+         ON CAST(v.id AS TEXT) = CAST(oi.order_id AS TEXT)
+        AND v.tenant_id = oi.tenant_id
       WHERE oi.tenant_id = ?
-        AND datetime(o.created_at) >= datetime(?)
+        AND (o.id IS NOT NULL OR v.id IS NOT NULL)
+        AND datetime(COALESCE(v.data, o.created_at, oi.created_at)) >= datetime(?)
         ${endClause}
-        AND UPPER(COALESCE(o.doc_type, 'VD')) <> 'FP'
+        AND UPPER(COALESCE(NULLIF(TRIM(v.doc_type), ''), NULLIF(TRIM(o.doc_type), ''), 'VD')) <> 'FP'
+        AND (
+          v.id IS NULL
+          OR LOWER(COALESCE(v.status, '')) NOT IN ('cancelled', 'canceled', 'void', 'anulado')
+        )
       GROUP BY oi.product_name
       ORDER BY total DESC`,
     params,
@@ -104,6 +115,43 @@ export function listWithdrawals(sessionId) {
     `SELECT * FROM cash_withdrawals WHERE session_id = ? ORDER BY datetime(created_at) ASC`,
     [sessionId],
   );
+}
+
+export async function listCashMovements(sessionId) {
+  try {
+    return await all(
+      `SELECT * FROM cash_movements WHERE session_id = ? ORDER BY datetime(created_at) DESC`,
+      [sessionId],
+    );
+  } catch (error) {
+    const msg = String(error?.message ?? error ?? '');
+    if (msg.includes('no such table') || msg.includes('cash_movements')) return [];
+    throw error;
+  }
+}
+
+export async function insertCashMovement(row) {
+  const id = row.id || crypto.randomUUID();
+  await run(
+    `INSERT INTO cash_movements (
+       id, session_id, tenant_id, kind, amount, note, party_kind, party_name,
+       user_id, user_name, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      row.session_id,
+      row.tenant_id,
+      row.kind,
+      Number(row.amount) || 0,
+      row.note ?? null,
+      row.party_kind ?? null,
+      row.party_name ?? null,
+      row.user_id ?? null,
+      row.user_name ?? null,
+      row.created_at || new Date().toISOString(),
+    ],
+  );
+  return { ...row, id };
 }
 
 export async function insertWithdrawal(row) {

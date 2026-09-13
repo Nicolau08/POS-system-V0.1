@@ -16,7 +16,11 @@ import { logAudit, logError } from '../utils/logger.js';
 import { getClientIp, isLoopbackIp } from '../utils/authSecret.js';
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'users',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return res.status(500).json({
     error: 'Erro interno',
     message: error instanceof Error ? error.message : String(error),

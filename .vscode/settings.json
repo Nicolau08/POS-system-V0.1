@@ -1,0 +1,7 @@
+{
+  "npm.exclude": [
+    "**/license-console/**",
+    "**/apps/**",
+    "**/node_modules/**"
+  ]
+}

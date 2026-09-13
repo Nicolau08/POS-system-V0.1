@@ -24,6 +24,7 @@ import {
 import { useIsPackagedDesktop } from '@/hooks/useIsPackagedDesktop';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
+import PosToast from '@/components/PosToast';
 
 type ManagedUser = {
   id: string;
@@ -134,7 +135,7 @@ const OP_LABELS: Record<string, string> = {
   'vendas.ver_historico_vendas': 'Ver histórico de vendas',
   'vendas.reimprimir_recibo': 'Reimprimir recibo',
   'vendas.credit_payments': 'Credit payments',
-  'vendas.abrir_caixa': 'Abertura de caixa',
+  'vendas.abrir_caixa': 'Movimento de caixa',
   'vendas.abrir_gaveta_dinheiro': 'Abrir a gaveta do dinheiro',
   'vendas.venda_estoque_zero': 'Venda de quantidade de stock zero',
 };
@@ -507,9 +508,9 @@ export default function UsersSecurityManager() {
     }
   };
 
-  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string; id: number } | null>(null);
   const pushToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setToast({ type, message });
+    setToast({ type, message, id: Date.now() });
     window.setTimeout(() => setToast(null), 4000);
   };
 
@@ -551,9 +552,9 @@ export default function UsersSecurityManager() {
     }`;
 
   return (
-    <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
+    <div className="flex flex-col h-full bg-pos-surface text-zinc-300 overflow-hidden">
       {/* Sub-tabs (referência: por baixo do cabeçalho do módulo) */}
-      <div className="flex shrink-0 border-b border-zinc-800 bg-[#1a1a1a] px-1">
+      <div className="flex shrink-0 border-b border-pos-border bg-pos-surface px-1">
         <button type="button" className={tabBtn(subTab === 'users')} onClick={() => setSubTab('users')}>
           Usuários
         </button>
@@ -567,7 +568,7 @@ export default function UsersSecurityManager() {
       </div>
 
       {/* Toolbar — mesmo padrão que ProductsManager */}
-      <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar shrink-0">
+      <div className="h-16 bg-pos-surface border-b border-pos-border flex items-center px-2 gap-1 overflow-x-auto no-scrollbar shrink-0">
         {subTab === 'users' ? (
           <>
             <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchUsers()} />
@@ -580,7 +581,7 @@ export default function UsersSecurityManager() {
             />
             <ManagementToolbarButton
               icon={<Trash2 size={20} />}
-              label="Deletar"
+              label="Eliminar"
               disabled={!selectedUser}
               onClick={() => void onDeactivateUserClick()}
             />
@@ -590,7 +591,7 @@ export default function UsersSecurityManager() {
               disabled={!selectedUser}
               onClick={openResetPin}
             />
-            <div className="flex items-center gap-2 px-3 ml-1 border-l border-zinc-800">
+            <div className="flex items-center gap-2 px-3 ml-1 border-l border-pos-border">
               <PosSwitch
                 checked={showInactive}
                 onChange={setShowInactive}
@@ -629,9 +630,9 @@ export default function UsersSecurityManager() {
 
       {/* Conteúdo */}
       {subTab === 'users' && (
-        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar bg-[#0f0f0f]">
-          <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
-            <thead className="sticky top-0 z-10 bg-[#141414]">
+        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar bg-pos-bg">
+          <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-pos-border/55 [&_td]:border-pos-border/55">
+            <thead className="sticky top-0 z-10 bg-pos-card">
               <tr className="border-b border-[#0001fb]/70">
                 <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
                 <th className="px-3 py-2 text-xs font-bold text-zinc-300">Sobrenome</th>
@@ -665,8 +666,8 @@ export default function UsersSecurityManager() {
                         isSelected
                           ? 'bg-[var(--pos-brand-selected-bg)]'
                           : i % 2
-                            ? 'bg-[#171717]'
-                            : 'bg-[#1d1d1d]'
+                            ? 'bg-pos-surface'
+                            : 'bg-pos-row'
                       } hover:bg-[var(--pos-brand-hover-bg)]`}
                     >
                       <td className="px-3 py-2 text-xs text-zinc-200">{u.name}</td>
@@ -699,10 +700,10 @@ export default function UsersSecurityManager() {
                 const leftKeys = group.leftKeys.filter(filterKey);
                 const rightKeys = group.rightKeys.filter(filterKey);
                 return (
-                  <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
+                  <div key={group.title} className="border border-pos-border rounded overflow-hidden bg-pos-card">
                     <div className="bg-[#0001fb] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
-                      <div className="md:border-r border-zinc-800">
+                      <div className="md:border-r border-pos-border">
                         {leftKeys.map((k) => (
                           <RuleRow
                             key={k}
@@ -733,7 +734,7 @@ export default function UsersSecurityManager() {
 
               const keys = group.keys.filter(filterKey);
               return (
-                <div key={group.title} className="border border-zinc-800 rounded overflow-hidden bg-[#141414]">
+                <div key={group.title} className="border border-pos-border rounded overflow-hidden bg-pos-card">
                   <div className="bg-[#0001fb] text-white text-[11px] font-bold px-4 py-2">{group.title}</div>
                   <div>
                     {keys.map((k) => (
@@ -763,23 +764,7 @@ export default function UsersSecurityManager() {
         onSaveClick={() => void onSaveUserClick()}
       />
 
-      {toast && (
-        <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] px-6 py-3 rounded-lg border bg-[#141414] border-zinc-800 flex items-center gap-3"
-          role="status"
-        >
-          <div
-            className={`w-3.5 h-3.5 rounded-full ${
-              toast.type === 'success'
-                ? 'bg-[#0001fb]'
-                : toast.type === 'error'
-                  ? 'bg-rose-400'
-                  : 'bg-blue-400'
-            }`}
-          />
-          <span className="text-sm font-medium text-zinc-100">{toast.message}</span>
-        </div>
-      )}
+      <PosToast toast={toast} placement="center" />
     </div>
   );
 }
@@ -816,18 +801,18 @@ function RuleRow({
         <button
           type="button"
           onClick={onDec}
-          className="w-7 h-7 rounded border border-zinc-800 bg-[#141414] text-zinc-200 hover:bg-zinc-800/60 transition-colors"
+          className="w-7 h-7 rounded border border-pos-border bg-pos-card text-zinc-200 hover:bg-zinc-800/60 transition-colors"
           aria-label="Diminuir nível"
         >
           −
         </button>
-        <div className="w-10 text-center text-[11px] text-white font-bold bg-zinc-900 border border-zinc-800 rounded px-2 py-1">
+        <div className="w-10 text-center text-[11px] text-white font-bold bg-zinc-900 border border-pos-border rounded px-2 py-1">
           {value}
         </div>
         <button
           type="button"
           onClick={onInc}
-          className="w-7 h-7 rounded border border-zinc-800 bg-[#141414] text-zinc-200 hover:bg-zinc-800/60 transition-colors"
+          className="w-7 h-7 rounded border border-pos-border bg-pos-card text-zinc-200 hover:bg-zinc-800/60 transition-colors"
           aria-label="Aumentar nível"
         >
           +
@@ -881,14 +866,14 @@ function UserFormModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center pos-modal-overlay p-4"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded border border-zinc-800 bg-[#1a1a1a]"
+        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded border border-pos-border bg-pos-surface"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-[#1a1a1a] p-4">
+        <div className="flex shrink-0 items-center gap-2 border-b border-pos-border bg-pos-surface p-4">
           <UserCircle2 size={20} className="shrink-0 text-[#0001fb]" />
           <h3 className="truncate text-xl text-zinc-200">{title}</h3>
         </div>
@@ -907,7 +892,7 @@ function UserFormModal({
                   onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
                   placeholder="Novo PIN"
                   autoFocus
-                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
                 />
               </Field>
             </div>
@@ -918,14 +903,14 @@ function UserFormModal({
                   value={draftUser.name}
                   onChange={(e) => setDraftUser((p) => ({ ...p, name: e.target.value }))}
                   autoFocus={mode === 'add'}
-                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
                 />
               </Field>
               <Field label="Sobrenome">
                 <input
                   value={draftUser.surname}
                   onChange={(e) => setDraftUser((p) => ({ ...p, surname: e.target.value }))}
-                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
                 />
               </Field>
               <Field label="Email">
@@ -933,7 +918,7 @@ function UserFormModal({
                   type="email"
                   value={draftUser.email}
                   onChange={(e) => setDraftUser((p) => ({ ...p, email: e.target.value }))}
-                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
                 />
               </Field>
               <Field label="Nível de acesso">
@@ -946,14 +931,14 @@ function UserFormModal({
                         accessLevel: clampLevel((p.accessLevel ?? 0) - 1),
                       }))
                     }
-                    className="h-10 w-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 transition-colors hover:bg-zinc-800/50"
+                    className="h-10 w-10 rounded border border-pos-border bg-pos-bg text-zinc-200 transition-colors hover:bg-zinc-800/50"
                   >
                     −
                   </button>
                   <input
                     readOnly
                     value={draftUser.accessLevel}
-                    className="h-10 flex-1 rounded border border-zinc-800 bg-[#0f0f0f] px-3 text-center font-bold text-white outline-none"
+                    className="h-10 flex-1 rounded border border-pos-border bg-pos-bg px-3 text-center font-bold text-white outline-none"
                   />
                   <button
                     type="button"
@@ -963,7 +948,7 @@ function UserFormModal({
                         accessLevel: clampLevel((p.accessLevel ?? 0) + 1),
                       }))
                     }
-                    className="h-10 w-10 rounded border border-zinc-800 bg-[#0f0f0f] text-zinc-200 transition-colors hover:bg-zinc-800/50"
+                    className="h-10 w-10 rounded border border-pos-border bg-pos-bg text-zinc-200 transition-colors hover:bg-zinc-800/50"
                   >
                     +
                   </button>
@@ -986,14 +971,14 @@ function UserFormModal({
                   value={draftUser.pin}
                   onChange={(e) => setDraftUser((p) => ({ ...p, pin: e.target.value }))}
                   placeholder={mode === 'add' ? 'Digite o PIN' : 'Deixe em branco para manter'}
-                  className="w-full rounded border border-zinc-800 bg-[#0f0f0f] px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
+                  className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2.5 text-sm text-white outline-none focus:border-[#0001fb]"
                 />
               </Field>
             </div>
           )}
         </div>
 
-        <div className="flex shrink-0 justify-end gap-3 border-t border-zinc-800 bg-[#1a1a1a] p-4">
+        <div className="flex shrink-0 justify-end gap-3 border-t border-pos-border bg-pos-surface p-4">
           <button
             type="button"
             onClick={onSaveClick}
@@ -1005,7 +990,7 @@ function UserFormModal({
           <button
             type="button"
             onClick={onClose}
-            className="flex items-center gap-2 rounded border border-zinc-700 bg-transparent px-6 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
+            className="flex items-center gap-2 rounded border border-pos-border bg-transparent px-6 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-[#0001fb] hover:bg-[var(--pos-brand-hover-bg)] hover:text-white"
           >
             <X size={16} />
             Cancelar

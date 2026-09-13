@@ -7,6 +7,7 @@ import {
   resolveAuthHmacSecret,
   resolveBearerTtlSeconds,
 } from '../utils/authSecret.js';
+import { logError, logWarn } from '../utils/logger.js';
 
 const isProduction = String(process.env.NODE_ENV ?? 'development').toLowerCase() === 'production';
 const STATION_ROLES = new Set(['caixa', 'garcom', 'consulta', 'cozinha']);
@@ -135,17 +136,29 @@ async function resolveStationRoleFromDb(tenantId, stationCode) {
   const code = String(stationCode ?? '').trim();
   const tid = String(tenantId ?? '').trim();
   if (!code || !tid) return '';
-  const row = await new Promise((resolve, reject) => {
-    db.get(
-      `SELECT role FROM stations WHERE tenant_id = ? AND code = ? AND active = 1 LIMIT 1`,
-      [tid, code],
-      (err, result) => (err ? reject(err) : resolve(result ?? null)),
-    );
-  });
-  const role = String(row?.role ?? '')
-    .trim()
-    .toLowerCase();
-  return STATION_ROLES.has(role) ? role : '';
+  try {
+    const row = await new Promise((resolve, reject) => {
+      db.get(
+        `SELECT role FROM stations WHERE tenant_id = ? AND code = ? AND active = 1 LIMIT 1`,
+        [tid, code],
+        (err, result) => (err ? reject(err) : resolve(result ?? null)),
+      );
+    });
+    const role = String(row?.role ?? '')
+      .trim()
+      .toLowerCase();
+    return STATION_ROLES.has(role) ? role : '';
+  } catch (err) {
+    // Tabela em falta / BD ocupada — não derrubar a sessão do utilizador.
+    logWarn('auth_station_role_lookup_failed', {
+      module: 'auth',
+      reason: 'Falha ao consultar o papel do posto (tabela em falta ou BD ocupada)',
+      tenant_id: tid,
+      station_code: code,
+      error: err,
+    });
+    return '';
+  }
 }
 
 export async function resolveUserFromRequest(req) {
@@ -190,6 +203,27 @@ export async function resolveUserFromRequest(req) {
   }
 
   const mapped = mapUserRow(dbUser);
+  if (!mapped.tenant_id) {
+    // Instalação/reativação: utilizador pode ficar sem tenant_id se a BD foi reposta
+    // a meio — recupera da licença activa / ficheiro.
+    try {
+      const { readLocalLicenseFile } = await import('../services/licenseRegistry.service.js');
+      const file = await readLocalLicenseFile();
+      const fromFile = String(file?.payload?.tenant_id ?? '').trim();
+      if (fromFile) {
+        mapped.tenant_id = fromFile;
+        await new Promise((resolve, reject) => {
+          db.run(
+            `UPDATE users SET tenant_id = ?, updated_at = ? WHERE id = ? AND (tenant_id IS NULL OR TRIM(tenant_id) = '')`,
+            [fromFile, new Date().toISOString(), mapped.id],
+            (err) => (err ? reject(err) : resolve()),
+          );
+        }).catch(() => null);
+      }
+    } catch {
+      // ignore
+    }
+  }
   if (!mapped.tenant_id) return null;
   if (mockHeaderUser?.role) {
     mapped.role = String(mockHeaderUser.role).trim() || mapped.role;
@@ -204,6 +238,12 @@ export async function resolveUserFromRequest(req) {
 }
 
 export async function authenticateUser(req, res, next) {
+  // Rotas também registam authenticateUser — evitar 2.ª ida à BD no mesmo pedido.
+  if (req.user?.id && String(req.tenantId ?? req.user?.tenant_id ?? '').trim()) {
+    req.tenantId = String(req.tenantId ?? req.user.tenant_id).trim();
+    return next();
+  }
+
   try {
     const user = await resolveUserFromRequest(req);
     const tenantId = String(user?.tenant_id ?? '').trim();
@@ -221,7 +261,17 @@ export async function authenticateUser(req, res, next) {
     req.user = user;
     req.tenantId = tenantId;
     return next();
-  } catch {
+  } catch (err) {
+    const detail = String(err?.message ?? err ?? '');
+    logError('auth_failed', {
+      module: 'auth',
+      reason: 'Excepção ao autenticar utilizador',
+      error: err,
+    });
+    const lower = detail.toLowerCase();
+    if (lower.includes('busy') || lower.includes('locked')) {
+      return sendError(res, 503, 'Base de dados ocupada, tente de novo', 'DB_BUSY');
+    }
     return sendError(res, 500, 'falha ao autenticar utilizador', 'AUTH_FAILED');
   }
 }
@@ -239,7 +289,19 @@ export function requireRole(role) {
   };
 }
 
-export const requireAdmin = requireRole('admin');
+/**
+ * Admin de instalação / nível máximo.
+ * Aceita role=admin OU access_level >= 9 (UI de utilizadores trata nível 9 como admin).
+ */
+export function requireAdmin(req, res, next) {
+  if (!req.user) return sendError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
+  const currentRole = String(req.user.role ?? '').trim().toLowerCase();
+  const level = Number(req.user.access_level ?? req.user.accessLevel ?? 0);
+  if (currentRole === 'admin' || (Number.isFinite(level) && level >= 9)) {
+    return next();
+  }
+  return sendError(res, 403, 'Forbidden', 'FORBIDDEN');
+}
 
 /** Exige access_level mínimo (independente das regras em BD). */
 export function requireMinLevel(minLevel) {

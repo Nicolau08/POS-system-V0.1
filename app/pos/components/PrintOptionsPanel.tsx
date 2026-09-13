@@ -47,7 +47,7 @@ function DarkSelect({
       placeholder={placeholder}
       size="md"
       className="min-w-[200px] max-w-[280px] flex-1"
-      triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+      triggerClassName="!bg-pos-field !border-zinc-600"
       options={[{ value: '', label: placeholder }, ...options]}
     />
   );
@@ -68,7 +68,7 @@ function DarkInput({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb]"
+      className="h-9 w-full max-w-[420px] rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb]"
     />
   );
 }
@@ -147,7 +147,7 @@ export function PrintOptionsPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-1 flex items-center gap-2 border-b border-zinc-700">
+      <div className="mb-1 flex items-center gap-2 border-b border-pos-border">
         {PRINT_TABS.map((item) => {
           const active = tab === item.id;
           return (
@@ -199,7 +199,7 @@ export function PrintOptionsPanel({
               return (
                 <div
                   key={job.key}
-                  className="grid grid-cols-[auto_minmax(180px,1.1fr)_minmax(200px,1fr)_minmax(160px,auto)] items-center gap-3 border-b border-zinc-800/80 py-3"
+                  className="grid grid-cols-[auto_minmax(180px,1.1fr)_minmax(200px,1fr)_minmax(160px,auto)] items-center gap-3 border-b border-pos-border/80 py-3"
                 >
                   <PosSwitch
                     checked={cfg.enabled}
@@ -253,7 +253,7 @@ export function PrintOptionsPanel({
 
         {tab === 'personalizar' && (
           <div className="max-w-2xl space-y-4">
-            <div className="flex items-center justify-between gap-4 border-b border-zinc-800 py-3">
+            <div className="flex items-center justify-between gap-4 border-b border-pos-border py-3">
               <div>
                 <p className="text-sm text-zinc-200">Mostrar logótipo no recibo</p>
                 <p className="text-xs text-zinc-500">Usa o logótipo da loja no cabeçalho.</p>
@@ -338,7 +338,7 @@ export function PrintOptionsPanel({
                   className={`rounded border p-4 text-left transition-colors ${
                     active
                       ? 'border-[#0001fb] bg-[#0001fb]/10'
-                      : 'border-zinc-700 bg-[#171717] hover:border-[#0001fb]'
+                      : 'border-pos-border bg-pos-surface hover:border-[#0001fb]'
                   }`}
                 >
                   <p className="text-sm font-semibold text-white">{model.title}</p>

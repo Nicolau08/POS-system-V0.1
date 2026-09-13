@@ -7,6 +7,7 @@ import type { PosSettings } from '@/lib/posSettings';
 import { buildThermalPrintPageCss, resolveThermalWidthMm } from '@/lib/thermalPrintPage';
 import PosSelect from '@/components/PosSelect';
 import { PosSwitch } from '@/components/PosSwitch';
+import { numberInputDisplayValue, parseNumberInput } from '@/lib/numberInput';
 
 type SettingsTab = 'general' | 'drawer' | 'advanced';
 
@@ -40,7 +41,7 @@ function FieldSelect({
       options={options}
       size="md"
       className="max-w-[280px]"
-      triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+      triggerClassName="!bg-pos-field !border-zinc-600"
     />
   );
 }
@@ -53,7 +54,7 @@ function CopiesStepper({
   onChange: (value: number) => void;
 }) {
   return (
-    <div className="mt-1.5 inline-flex h-10 items-center overflow-hidden rounded border border-zinc-600 bg-[#2a2a2a]">
+    <div className="mt-1.5 inline-flex h-10 items-center overflow-hidden rounded border border-zinc-600 bg-pos-field">
       <button
         type="button"
         onClick={() => onChange(Math.max(1, value - 1))}
@@ -128,9 +129,10 @@ function MarginField({
         step="0.5"
         min={-20}
         max={20}
-        value={Number.isFinite(value) ? value : 0}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="h-9 w-14 rounded border border-zinc-600 bg-[#1f1f1f] text-center text-sm text-white outline-none focus:border-[#0001fb]"
+        value={numberInputDisplayValue(Number.isFinite(value) ? value : 0)}
+        placeholder="0"
+        onChange={(event) => onChange(parseNumberInput(event.target.value))}
+        className="h-9 w-14 rounded border border-zinc-600 bg-pos-surface text-center text-sm text-white outline-none focus:border-[#0001fb] placeholder:text-zinc-600"
       />
     </div>
   );
@@ -274,17 +276,17 @@ export function ReceiptPrinterSettingsModal({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/70"
+            className="absolute inset-0 pos-modal-overlay"
           />
           <motion.div
             initial={{ opacity: 0, y: 16, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
             transition={{ duration: 0.18 }}
-            className="relative flex max-h-[min(900px,92vh)] w-full max-w-[720px] flex-col overflow-hidden rounded border border-zinc-700 bg-[#2b2b2b] shadow-2xl"
+            className="relative flex max-h-[min(900px,92vh)] w-full max-w-[720px] flex-col overflow-hidden rounded border border-pos-border bg-pos-field shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex shrink-0 items-start justify-between border-b border-zinc-700/80 px-6 pt-5 pb-3">
+            <div className="flex shrink-0 items-start justify-between border-b border-pos-border/80 px-6 pt-5 pb-3">
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-white">
                   Impressora de recibos
@@ -394,7 +396,7 @@ export function ReceiptPrinterSettingsModal({
                           value={Number(draft.printMarginLeft) || 0}
                           onChange={(value) => update('printMarginLeft', value)}
                         />
-                        <div className="flex h-16 w-12 items-center justify-center rounded border border-zinc-600 bg-[#1f1f1f] text-zinc-500">
+                        <div className="flex h-16 w-12 items-center justify-center rounded border border-zinc-600 bg-pos-surface text-zinc-500">
                           <FileText size={22} />
                         </div>
                         <MarginField
@@ -423,7 +425,7 @@ export function ReceiptPrinterSettingsModal({
                         onChange={(event) => update('printExtraHeader', event.target.value)}
                         rows={3}
                         placeholder="Texto extra no topo do recibo (opcional)"
-                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
+                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-pos-surface px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
                       />
                       <AlignButtons
                         value={draft.printHeaderAlign || 'center'}
@@ -440,7 +442,7 @@ export function ReceiptPrinterSettingsModal({
                         onChange={(event) => update('printExtraFooter', event.target.value)}
                         rows={3}
                         placeholder="Texto extra no fim do recibo (opcional)"
-                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-[#1f1f1f] px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
+                        className="min-h-[72px] flex-1 resize-y rounded border border-zinc-600 bg-pos-surface px-3 py-2 text-sm text-white outline-none focus:border-[#0001fb]"
                       />
                       <AlignButtons
                         value={draft.printFooterAlign || 'center'}
@@ -449,7 +451,7 @@ export function ReceiptPrinterSettingsModal({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-4 border-t border-zinc-700 pt-4">
+                  <div className="flex items-center justify-between gap-4 border-t border-pos-border pt-4">
                     <div>
                       <p className="text-sm text-white">Cortar papel após imprimir</p>
                       <p className="text-xs text-zinc-500">Se a impressora tiver cortador automático.</p>
@@ -483,7 +485,7 @@ export function ReceiptPrinterSettingsModal({
                       onChange={(event) => update('printDrawerCommand', event.target.value)}
                       placeholder="1B700019FA"
                       disabled={!draft.printOpenDrawer}
-                      className="h-10 w-full max-w-md rounded border border-zinc-600 bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#0001fb] disabled:opacity-50"
+                      className="h-10 w-full max-w-md rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb] disabled:opacity-50"
                     />
                   </div>
 

@@ -28,7 +28,7 @@ function DarkInput({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className={`h-9 w-full rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb] ${className}`}
+      className={`h-9 w-full rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb] ${className}`}
     />
   );
 }
@@ -171,7 +171,7 @@ export function WarehousesSettingsPanel() {
       {error ? <p className="text-xs text-amber-400/90">{error}</p> : null}
       {message ? <p className="text-xs text-[#a5b4fc]">{message}</p> : null}
 
-      <div className="rounded border border-zinc-700 bg-[#171717] p-4">
+      <div className="rounded border border-pos-border bg-pos-surface p-4">
         <p className="mb-3 text-sm font-medium text-zinc-200">Novo armazém</p>
         <div className="grid gap-3 sm:grid-cols-[1fr_140px_auto] sm:items-end">
           <div>
@@ -201,7 +201,7 @@ export function WarehousesSettingsPanel() {
           warehouses.map((warehouse) => {
             const isEditing = editingId === warehouse.id;
             return (
-              <div key={warehouse.id} className="rounded border border-zinc-700 bg-[#171717] p-4">
+              <div key={warehouse.id} className="rounded border border-pos-border bg-pos-surface p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     {isEditing ? (

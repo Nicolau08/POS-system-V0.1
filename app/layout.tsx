@@ -21,24 +21,38 @@ export const metadata: Metadata = {
 const THEME_BOOT_SCRIPT = `
 (function(){
   try {
-    var raw = localStorage.getItem('pos:settings');
-    var theme = 'dark';
+    var KEY = 'pos:settings';
+    var FLAG = 'pos:theme-principal';
+    var raw = localStorage.getItem(KEY);
+    var theme = 'violet';
+    var parsed = null;
     if (raw) {
-      var parsed = JSON.parse(raw);
-      if (parsed && parsed.theme === 'light') theme = 'light';
+      parsed = JSON.parse(raw);
+      if (parsed && (parsed.theme === 'light' || parsed.theme === 'dark' || parsed.theme === 'violet')) {
+        theme = parsed.theme;
+      }
+    }
+    if (!localStorage.getItem(FLAG)) {
+      theme = 'violet';
+      localStorage.setItem(FLAG, 'violet');
+      if (parsed && typeof parsed === 'object') {
+        parsed.theme = 'violet';
+        localStorage.setItem(KEY, JSON.stringify(parsed));
+      }
     }
     var root = document.documentElement;
     root.dataset.theme = theme;
     root.classList.toggle('dark', theme === 'dark');
     root.classList.toggle('light', theme === 'light');
-    root.style.colorScheme = theme;
+    root.classList.toggle('violet', theme === 'violet');
+    root.style.colorScheme = theme === 'light' ? 'light' : 'dark';
   } catch (e) {}
 })();
 `;
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
-    <html lang="pt" className="dark" suppressHydrationWarning>
+    <html lang="pt" className="violet" data-theme="violet" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>

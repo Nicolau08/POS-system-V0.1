@@ -18,7 +18,7 @@ export function SyncStatus() {
 
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1 rounded border border-zinc-800 bg-zinc-900/70 text-zinc-400"
+      className="flex items-center gap-1.5 px-2 py-1 rounded border border-pos-border bg-pos-surface/70 text-zinc-400"
       title={title}
     >
       <span className={`h-2 w-2 rounded-full ${dotClass}`} />
