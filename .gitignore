@@ -8,6 +8,13 @@ build/electron-builder.pack.json
 coverage/
 *.tsbuildinfo
 
+# --- Artefactos ofuscados/build que às vezes saem para a raiz por engano ---
+# (os reais ficam em electron/main.js e api/server.js, que continuam trackeados)
+/main.js
+/server.js
+/*.rar
+/*.zip
+
 # --- Sistema ---
 .DS_Store
 Thumbs.db
@@ -26,6 +33,7 @@ api/auth-hmac.secret
 **/auth-hmac.secret
 backups/
 data/license-issuer-store.json
+data/config.json
 
 # --- Ambiente de desenvolvimento local ---
 .dev-tenants/
