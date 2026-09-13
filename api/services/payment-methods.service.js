@@ -11,6 +11,7 @@ import {
   updatePaymentMethod,
 } from '../repositories/payment-methods.repository.js';
 import { buildDefaultPaymentMethodInsertRows, DEFAULT_PAYMENT_METHOD_SPECS } from '../constants/paymentMethodDefaults.js';
+import { getPaymentMethodColor } from '../utils/paymentMethodLabel.js';
 import { run, get } from '../dbUtils.js';
 
 function resolveTenantIdStrict(actorUser) {
@@ -34,6 +35,7 @@ function normalizePaymentMethodRow(row) {
     markAsPaid: Boolean(row.mark_as_paid),
     printReceipt: Boolean(row.print_receipt),
     openCashDrawer: Boolean(row.open_cash_drawer),
+    color: String(row.color ?? '').trim() || getPaymentMethodColor(row.code || row.name),
   };
 }
 
@@ -50,6 +52,7 @@ function buildWritePayload(payload = {}, now) {
     payload.markAsPaid === false ? 0 : 1,
     payload.printReceipt === false ? 0 : 1,
     payload.openCashDrawer ? 1 : 0,
+    String(payload.color ?? '').trim() || getPaymentMethodColor(payload.code || payload.name),
     now,
     now,
   ];
@@ -77,6 +80,18 @@ export async function ensureEssentialPaymentMethods(tenantId) {
       await insertPaymentMethod(row);
       inserted += 1;
     }
+  }
+
+  const rows = await listPaymentMethods('WHERE tenant_id = ?', [tenantId]);
+  for (const row of rows) {
+    if (String(row.color ?? '').trim()) continue;
+    const color = getPaymentMethodColor(row.code || row.name);
+    await run(`UPDATE payment_methods SET color = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [
+      color,
+      now,
+      row.id,
+      tenantId,
+    ]);
   }
   return { seeded: inserted > 0, count: inserted };
 }
@@ -151,9 +166,10 @@ export async function updatePaymentMethodById(idRaw, payload = {}, actorUser = n
     payload.requiredCustomer ? 1 : 0,
     payload.allowChange ? 1 : 0,
     payload.markAsPaid === false ? 0 : 1,
-    payload.printReceipt === false ? 0 : 1,
-    payload.openCashDrawer ? 1 : 0,
-    now,
+      payload.printReceipt === false ? 0 : 1,
+      payload.openCashDrawer ? 1 : 0,
+      String(payload.color ?? '').trim() || getPaymentMethodColor(code || name),
+      now,
   ];
   const result = await updatePaymentMethod(id, tenantId, writePayload);
   return { success: true, updated: result.changes > 0 };

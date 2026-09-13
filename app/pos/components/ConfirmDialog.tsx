@@ -3,6 +3,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Power, X } from 'lucide-react';
+import { useEnterToConfirm } from '@/hooks/useEnterToConfirm';
 
 export function ConfirmDialog({
   isOpen,
@@ -30,6 +31,8 @@ export function ConfirmDialog({
       ? 'bg-red-600 hover:bg-red-500 text-white'
       : 'bg-[#0001fb] hover:bg-[#1a1bff] text-white';
 
+  useEnterToConfirm(isOpen, onConfirm, onCancel);
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -37,7 +40,7 @@ export function ConfirmDialog({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4 pos-modal-overlay"
           onClick={onCancel}
         >
           <motion.div
@@ -49,43 +52,43 @@ export function ConfirmDialog({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-            className="w-full max-w-md overflow-hidden rounded-lg border border-zinc-700 bg-[#1f1f1f] shadow-2xl"
+            className="pos-modal w-full max-w-md"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
-              <h2 id="posly-confirm-title" className="text-lg font-semibold text-white tracking-tight">
+            <div className="pos-modal-header">
+              <h2 id="posly-confirm-title" className="text-lg font-semibold text-pos-fg tracking-tight">
                 {title}
               </h2>
               <button
                 type="button"
                 onClick={onCancel}
-                className="p-2 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                className="p-2 rounded text-pos-muted hover:text-pos-fg hover:bg-pos-surface-3 transition-colors"
                 aria-label="Fechar"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="px-5 py-6 flex gap-4 items-start">
+            <div className="pos-modal-body flex gap-4 items-start !py-6">
               <div
                 className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center border ${
                   tone === 'danger'
                     ? 'bg-red-600/15 border-red-600/30 text-red-400'
-                    : 'bg-zinc-800 border-zinc-700 text-zinc-300'
+                    : 'bg-pos-surface-3 border-pos-border text-pos-muted'
                 }`}
               >
                 {icon ?? <Power size={22} />}
               </div>
-              <div id="posly-confirm-message" className="text-[15px] leading-relaxed text-zinc-300 pt-2 space-y-2">
+              <div id="posly-confirm-message" className="text-[15px] leading-relaxed text-pos-muted pt-2 space-y-2">
                 {typeof message === 'string' ? <p>{message}</p> : message}
               </div>
             </div>
 
-            <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-3 bg-[#1a1a1a]">
+            <div className="pos-modal-footer gap-3">
               <button
                 type="button"
                 onClick={onCancel}
-                className="h-11 min-w-[110px] px-4 rounded border border-zinc-700 bg-[#1f1f1f] text-sm font-medium text-zinc-200 hover:bg-zinc-800 hover:border-[#0001fb] transition-colors"
+                className="h-11 min-w-[110px] px-4 rounded border border-pos-border bg-pos-surface-3 text-sm font-medium text-pos-muted hover:bg-pos-surface-2 hover:border-[#0001fb] transition-colors"
               >
                 {cancelLabel}
               </button>

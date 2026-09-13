@@ -2,7 +2,11 @@ import { readTenantInfo } from '../services/tenant.service.js';
 import { logError } from '../utils/logger.js';
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'tenant',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return res.status(500).json({
     error: 'Erro interno',
     message: error instanceof Error ? error.message : String(error),

@@ -22,7 +22,11 @@ const runDb = (sql, params = []) =>
   });
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'maintenance',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return res.status(500).json({
     error: 'Erro interno',
     message: error instanceof Error ? error.message : String(error),
@@ -195,12 +199,19 @@ export async function createDatabaseBackup(req, res) {
 export async function listDatabaseBackups(_req, res) {
   try {
     const backups = await listBackups();
-    const { getBackupsDirectory, getLiveDatabasePath } = await import('../utils/backup.js');
+    const {
+      getBackupsDirectory,
+      getLiveDatabasePath,
+      getBackupIntervalHours,
+      getBackupRetentionCount,
+    } = await import('../utils/backup.js');
     return res.json({
       success: true,
       backups,
       backupsDir: getBackupsDirectory(),
       databasePath: getLiveDatabasePath(),
+      intervalHours: getBackupIntervalHours(),
+      retentionCount: getBackupRetentionCount(),
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

@@ -171,7 +171,7 @@ export default function LicenseSerialManager() {
     const serial = String(result.serial_number ?? result.license_key ?? '').trim();
     const label = result.serie_label || `série ${serial}`;
     return (
-      <div className="mt-4 rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-4 py-3 text-sm">
+      <div className="mt-4 rounded border border-emerald-800/40 bg-emerald-950/20 px-4 py-3 text-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-emerald-400/90">{title}</p>
         {result.tenant_id ? (
           <p className="mt-2 text-xs text-zinc-500">
@@ -184,7 +184,7 @@ export default function LicenseSerialManager() {
           <button
             type="button"
             onClick={() => void copyText('Número de série', serial)}
-            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-[#0001fb]"
+            className="inline-flex items-center gap-1 rounded border border-pos-border px-2 py-1 text-xs text-zinc-300 hover:border-[#0001fb]"
           >
             <Copy size={14} /> Copiar
           </button>
@@ -197,8 +197,8 @@ export default function LicenseSerialManager() {
   return (
     <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
       <div className="mx-auto max-w-3xl space-y-6">
-        <div className="flex items-start gap-3 rounded-lg border border-zinc-800/50 bg-[#141414] p-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+        <div className="flex items-start gap-3 rounded border border-pos-border/50 bg-pos-card p-4">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-emerald-500/10 text-emerald-400">
             <KeyRound size={22} />
           </div>
           <div>
@@ -211,10 +211,10 @@ export default function LicenseSerialManager() {
         </div>
 
         {toast ? (
-          <div className="rounded border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200">{toast}</div>
+          <div className="rounded border border-pos-border bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200">{toast}</div>
         ) : null}
 
-        <section className="rounded-lg border border-zinc-800/50 bg-[#141414] p-5">
+        <section className="rounded border border-pos-border/50 bg-pos-card p-5">
           <h3 className="text-sm font-semibold text-zinc-300">Novo cliente (com primeira licença)</h3>
           <p className="mt-1 text-xs text-zinc-500">Cria o registo do cliente e emite já um número de série (validade +1 mês).</p>
           <form onSubmit={(ev) => void emitNewClient(ev)} className="mt-4 space-y-3">
@@ -223,7 +223,7 @@ export default function LicenseSerialManager() {
               <input
                 value={newName}
                 onChange={(ev) => setNewName(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
+                className="mt-1 w-full rounded border border-pos-border bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="Ex.: Padaria Central"
                 autoComplete="organization"
               />
@@ -234,14 +234,14 @@ export default function LicenseSerialManager() {
                 value={newNuit}
                 onChange={(ev) => setNewNuit(ev.target.value.slice(0, 9))}
                 maxLength={9}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
+                className="mt-1 w-full rounded border border-pos-border bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="Ex.: 400123456"
               />
             </label>
             <button
               type="submit"
               disabled={newSubmitting}
-              className="inline-flex items-center gap-2 rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
             >
               {newSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
               Emitir série
@@ -250,7 +250,7 @@ export default function LicenseSerialManager() {
           <ResultCard title="Última emissão" result={lastNewResult} />
         </section>
 
-        <section className="rounded-lg border border-zinc-800/50 bg-[#141414] p-5">
+        <section className="rounded border border-pos-border/50 bg-pos-card p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-semibold text-zinc-300">Cliente já cadastrado</h3>
@@ -260,7 +260,7 @@ export default function LicenseSerialManager() {
               type="button"
               onClick={() => void loadTenants()}
               disabled={tenantsLoading}
-              className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:border-[#0001fb]"
+              className="inline-flex items-center gap-1 rounded border border-pos-border px-2 py-1 text-xs text-zinc-400 hover:border-[#0001fb]"
             >
               <RefreshCw size={14} className={tenantsLoading ? 'animate-spin' : ''} />
               Atualizar lista
@@ -291,7 +291,7 @@ export default function LicenseSerialManager() {
               <input
                 value={plan}
                 onChange={(ev) => setPlan(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
+                className="mt-1 w-full rounded border border-pos-border bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
                 placeholder="BASIC"
               />
             </label>
@@ -301,13 +301,13 @@ export default function LicenseSerialManager() {
                 type="date"
                 value={expiresDate}
                 onChange={(ev) => setExpiresDate(ev.target.value)}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
+                className="mt-1 w-full rounded border border-pos-border bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-[#0001fb]"
               />
             </label>
             <button
               type="submit"
               disabled={existingSubmitting || !existingTenantId}
-              className="inline-flex items-center gap-2 rounded-md bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded bg-[#0001fb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1a1bff] disabled:opacity-50"
             >
               {existingSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
               Emitir nova série

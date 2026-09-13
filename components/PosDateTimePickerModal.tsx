@@ -51,36 +51,36 @@ export function PosDateTimePickerModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center pos-modal-overlay px-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="pos-datetime-picker-title"
     >
-      <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-xl">
-        <h2 id="pos-datetime-picker-title" className="text-base font-semibold text-white">
+      <div className="pos-modal w-full max-w-md p-5">
+        <h2 id="pos-datetime-picker-title" className="text-base font-semibold text-pos-fg">
           {title}
         </h2>
-        <label className="mt-4 block text-sm text-zinc-300">
+        <label className="mt-4 block text-sm text-pos-muted">
           Data e hora
           <input
             type="datetime-local"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-[#0001fb] focus:ring-1 focus:ring-[rgba(0,1,251,0.4)]"
+            className="pos-field mt-1 w-full rounded px-3 py-2 text-sm"
           />
         </label>
         <div className="mt-5 flex gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 rounded-lg border border-zinc-600 px-4 py-2 text-sm text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="flex-1 rounded border border-pos-border px-4 py-2 text-sm text-pos-muted transition-colors hover:bg-pos-surface-3"
           >
             Cancelar
           </button>
           <button
             type="button"
             onClick={() => onApply(datetimeLocalToIso(draft))}
-            className="flex-1 rounded-lg bg-[#0001fb] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a1bff]"
+            className="flex-1 rounded bg-[#0001fb] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a1bff]"
           >
             Aplicar
           </button>

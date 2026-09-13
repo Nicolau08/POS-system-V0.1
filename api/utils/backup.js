@@ -17,7 +17,10 @@ const backupsDir = resolveBackupsDir(dbPath);
 
 const BACKUP_FILE_PATTERN = /^backup-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.db$/;
 const PRE_RESTORE_PATTERN = /^pre-restore-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.db$/;
-const DEFAULT_RETENTION = 14;
+/** Intervalo por defeito: 1h — adequado a POS (perda máxima ~1h se falhar o disco). */
+const DEFAULT_INTERVAL_HOURS = 1;
+/** Retenção: 48 cópias horárias ≈ 2 dias (mais as manuais/pre-restore). */
+const DEFAULT_RETENTION = 48;
 
 let activeCriticalOperations = 0;
 
@@ -73,8 +76,8 @@ export function hasCriticalOperations() {
 }
 
 export function getBackupIntervalHours() {
-  const parsed = Number(process.env.BACKUP_INTERVAL_HOURS ?? 6);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 6;
+  const parsed = Number(process.env.BACKUP_INTERVAL_HOURS ?? DEFAULT_INTERVAL_HOURS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_INTERVAL_HOURS;
   return parsed;
 }
 

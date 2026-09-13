@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  /** Sem source maps no instalador — evita vazar código-fonte no pack. */
+  productionBrowserSourceMaps: false,
 
   images: {
     remotePatterns: [

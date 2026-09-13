@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import db from '../database.js';
 import { sendError, sendSuccess } from '../utils/response.js';
 import { generateSerialNumber } from '../services/licenseSerial.service.js';
+import { logError } from '../utils/logger.js';
 
 const run = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -20,7 +21,11 @@ const all = (sql, params = []) =>
   });
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'saas',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return sendError(
     res,
     500,

@@ -4,8 +4,6 @@ import { FormEvent, useEffect, useState } from 'react';
 import { LicenseInUseModal } from '@/components/LicenseInUseModal';
 import { isLicenseInUseConflict } from '@/lib/licensing/licenseConflict.js';
 
-const POSLY_BLUE = '#0001fb';
-
 type ActivationScreenProps = {
   activationCode: string;
   machineId: string;
@@ -14,6 +12,7 @@ type ActivationScreenProps = {
   onRefresh: () => Promise<void> | void;
   onActivate: (licenseKey: string) => Promise<void> | void;
   onRestartNow: () => Promise<void> | void;
+  onClearLocalLicense?: () => Promise<void> | void;
 };
 
 export default function ActivationScreen({
@@ -24,11 +23,13 @@ export default function ActivationScreen({
   onRefresh,
   onActivate,
   onRestartNow,
+  onClearLocalLicense,
 }: ActivationScreenProps) {
   const [licenseKey, setLicenseKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [conflictOpen, setConflictOpen] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   useEffect(() => {
     if (isLicenseInUseConflict(reason)) {
@@ -65,71 +66,103 @@ export default function ActivationScreen({
   const showInlineReason = Boolean(reason) && !isLicenseInUseConflict(reason);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#121212] px-4 text-zinc-200">
-      <section className="w-full max-w-xl rounded-xl border border-zinc-800 bg-zinc-900/90 p-6 shadow-xl">
-        <h1 className="text-xl font-semibold text-white">Renovação / reativação da licença</h1>
-        <p className="mt-2 text-sm text-zinc-400">
-          A <strong>primeira instalação</strong> usa o número de série no ecrã de instalação. Este ecrã serve para{' '}
-          <strong>renovar ou reativar</strong>: cole o <strong>token de 12 dígitos</strong> gerado na consola, ou o
-          código Base64/JSON legado. Depois de ativar, reinicie a aplicação.
+    <main className="flex min-h-screen items-center justify-center bg-pos-bg px-4 text-pos-fg">
+      <section className="w-full max-w-xl rounded border border-pos-border bg-pos-surface p-6 shadow-xl">
+        <h1 className="text-xl font-semibold text-pos-fg">Renovação / reativação da licença</h1>
+        <p className="mt-2 text-sm text-pos-muted">
+          A <strong className="text-pos-fg">primeira instalação</strong> usa o número de série. Neste ecrã pode{' '}
+          <strong className="text-pos-fg">renovar ou reativar</strong>: cole o <strong className="text-pos-fg">número de série</strong>, o{' '}
+          <strong className="text-pos-fg">token de 12 dígitos</strong> da consola, ou o código Base64/JSON legado. Depois de
+          ativar, reinicie se for pedido.
+        </p>
+        <p className="mt-2 text-sm text-pos-muted">
+          Desvincular na consola não apaga a licença neste PC. Use <strong className="text-pos-fg">Limpar licença local</strong>{' '}
+          e volte a ativar com o número de série (a máquina tem de estar desvinculada na consola).
         </p>
 
-        <div className="mt-4 space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/70 p-3 text-sm">
+        <div className="mt-4 space-y-2 rounded border border-pos-border bg-pos-card p-3 text-sm">
           <p>
-            <span className="text-zinc-400">Codigo de ativacao:</span>{' '}
-            <span className="font-mono text-zinc-200">{activationCode || 'N/A'}</span>
+            <span className="text-pos-muted">Codigo de ativacao:</span>{' '}
+            <span className="font-mono text-pos-fg break-all">{activationCode || 'N/A'}</span>
           </p>
           <p>
-            <span className="text-zinc-400">Machine ID:</span>{' '}
-            <span className="font-mono text-zinc-200">{machineId || 'N/A'}</span>
+            <span className="text-pos-muted">Machine ID:</span>{' '}
+            <span className="font-mono text-pos-fg">{machineId || 'N/A'}</span>
           </p>
           {showInlineReason ? (
-            <p className="text-amber-300">
-              <span className="text-zinc-400">Motivo:</span> {reason}
+            <p className="rounded border border-amber-600/40 bg-amber-500/15 px-2 py-1.5 text-pos-fg">
+              <span className="font-semibold">Motivo:</span> {reason}
             </p>
           ) : null}
         </div>
 
         <form className="mt-5 space-y-3" onSubmit={handleSubmit}>
-          <label className="block text-sm text-zinc-300">
+          <label className="block text-sm font-medium text-pos-fg">
             Chave ou token
             <input
               value={licenseKey}
               onChange={(event) => setLicenseKey(event.target.value)}
-              placeholder="Base64/JSON de ativação ou token de 12 dígitos"
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-[#0001fb] focus:ring focus:ring-[#0001fb]/30"
+              placeholder="Número de série, token de 12 dígitos ou Base64/JSON"
+              className="mt-1 w-full rounded border border-pos-border bg-pos-field px-3 py-2 text-sm text-pos-fg outline-none placeholder:text-pos-muted focus:border-[#0001fb] focus:ring focus:ring-[#0001fb]/30"
               disabled={isSubmitting}
             />
           </label>
 
-          {error ? <p className="text-sm text-rose-400">{error}</p> : null}
-          {success ? <p className="text-sm text-[#a5b4fc]">{success}</p> : null}
+          {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
+          {success ? <p className="text-sm font-medium text-[#15803d]">{success}</p> : null}
 
           <div className="flex flex-wrap gap-2">
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="rounded-md px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              style={{ backgroundColor: POSLY_BLUE }}
+              disabled={isSubmitting || isClearing}
+              className="pos-btn-brand pos-on-accent rounded px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? 'A ativar...' : 'Ativar licenca'}
             </button>
             <button
               type="button"
               onClick={() => void onRefresh()}
-              disabled={isSubmitting}
-              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSubmitting || isClearing}
+              className="rounded border border-pos-border bg-pos-action px-4 py-2 text-sm text-pos-fg hover:bg-pos-action-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
               Revalidar estado
             </button>
             <button
               type="button"
               onClick={() => void onRestartNow()}
-              disabled={isSubmitting}
-              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSubmitting || isClearing}
+              className="rounded border border-pos-border bg-pos-action px-4 py-2 text-sm text-pos-fg hover:bg-pos-action-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
               Reiniciar aplicacao
             </button>
+            {onClearLocalLicense ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    setError(null);
+                    setSuccess(null);
+                    setIsClearing(true);
+                    try {
+                      await onClearLocalLicense();
+                      setSuccess('Licença local limpa. Pode colar o número de série e ativar de novo.');
+                    } catch (clearError) {
+                      setError(
+                        clearError instanceof Error
+                          ? clearError.message
+                          : 'Falha ao limpar licença local.',
+                      );
+                    } finally {
+                      setIsClearing(false);
+                    }
+                  })();
+                }}
+                disabled={isSubmitting || isClearing}
+                className="rounded border border-red-600 bg-red-600/10 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-600/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isClearing ? 'A limpar...' : 'Limpar licença local'}
+              </button>
+            ) : null}
           </div>
         </form>
       </section>

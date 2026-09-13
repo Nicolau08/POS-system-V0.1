@@ -15,6 +15,7 @@ import {
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
+import { getPaymentMethodColor } from '@/lib/paymentMethodLabel';
 import { PosSwitch } from '@/components/PosSwitch';
 import { ManagementToolbarButton } from '@/components/ManagementToolbarButton';
 
@@ -31,6 +32,7 @@ type PaymentMethod = {
   markAsPaid: boolean;
   printReceipt: boolean;
   openCashDrawer: boolean;
+  color: string;
 };
 
 type PaymentMethodForm = Omit<PaymentMethod, 'id'>;
@@ -57,6 +59,7 @@ const initialForm: PaymentMethodForm = {
   markAsPaid: true,
   printReceipt: true,
   openCashDrawer: true,
+  color: '#66c013',
 };
 
 function buildCodeFromName(name: string) {
@@ -119,6 +122,7 @@ export default function PaymentMethodsManager() {
     setForm({
       ...initialForm,
       position: Math.max(1, nextPosition),
+      color: getPaymentMethodColor(''),
     });
     setIsModalOpen(true);
   };
@@ -140,6 +144,7 @@ export default function PaymentMethodsManager() {
       markAsPaid: selected.markAsPaid,
       printReceipt: selected.printReceipt,
       openCashDrawer: selected.openCashDrawer,
+      color: selected.color || getPaymentMethodColor(selected.code || selected.name),
     });
     setIsModalOpen(true);
   };
@@ -173,6 +178,7 @@ export default function PaymentMethodsManager() {
         code: resolvedCode,
         shortcut: form.shortcut.trim(),
         position: Math.max(1, Number(form.position) || 1),
+        color: form.color.trim() || getPaymentMethodColor(resolvedCode || form.name),
       };
       const url = editingId ? `${getPosApiBase()}/payment-methods/${editingId}` : `${getPosApiBase()}/payment-methods`;
       const method = editingId ? 'PUT' : 'POST';
@@ -198,18 +204,18 @@ export default function PaymentMethodsManager() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#1a1a1a] text-zinc-300 overflow-hidden">
-      <div className="h-16 bg-[#1a1a1a] border-b border-zinc-800 flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
+    <div className="flex flex-col h-full bg-pos-surface text-zinc-300 overflow-hidden">
+      <div className="h-16 bg-pos-surface border-b border-pos-border flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
         <ManagementToolbarButton icon={<RotateCcw size={20} />} label="Atualizar" onClick={() => void fetchRows()} />
         <ManagementToolbarButton icon={<Plus size={20} />} label="Novo" onClick={openNewModal} />
         <ManagementToolbarButton icon={<Edit3 size={20} />} label="Editar" onClick={openEditModal} />
-        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Deletar" onClick={handleDelete} />
+        <ManagementToolbarButton icon={<Trash2 size={20} />} label="Eliminar" onClick={handleDelete} />
         <ManagementToolbarButton icon={<HelpCircle size={20} />} label="Ajuda" />
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar bg-[#0f0f0f]">
-        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-zinc-800/55 [&_td]:border-zinc-800/55">
-          <thead className="sticky top-0 z-10 bg-[#141414]">
+      <div className="flex-1 overflow-auto custom-scrollbar bg-pos-bg">
+        <table className="w-full table-fixed border-collapse text-left text-xs [&_th]:border [&_td]:border [&_th]:border-pos-border/55 [&_td]:border-pos-border/55">
+          <thead className="sticky top-0 z-10 bg-pos-card">
             <tr className="border-b border-[#0001fb]/70">
               <th className="px-3 py-2 text-xs font-bold text-zinc-300">Nome</th>
               <th className="px-3 py-2 text-xs font-bold text-zinc-300">Posição</th>
@@ -242,10 +248,18 @@ export default function PaymentMethodsManager() {
                   key={row.id}
                   onClick={() => setSelectedId(row.id)}
                   className={`transition-colors cursor-pointer ${
-                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-[#171717]' : 'bg-[#1d1d1d]'
+                    selectedId === row.id ? 'bg-[var(--pos-brand-selected-bg)]' : i % 2 ? 'bg-pos-surface' : 'bg-pos-row'
                   } hover:bg-[var(--pos-brand-hover-bg)]`}
                 >
-                  <td className="px-3 py-2 text-xs text-zinc-200 truncate">{row.name}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-200 truncate">
+                    <span className="inline-flex items-center gap-2">
+                      <span
+                        className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/10"
+                        style={{ backgroundColor: row.color || getPaymentMethodColor(row.code || row.name) }}
+                      />
+                      {row.name}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-xs text-zinc-400">{row.position}</td>
                   <td className="px-3 py-2 text-xs text-zinc-400 truncate">{row.code || '-'}</td>
                   <td className="px-3 py-2 text-xs text-center text-zinc-300">{row.enabled ? '✓' : ''}</td>
@@ -264,22 +278,44 @@ export default function PaymentMethodsManager() {
 
       {isModalOpen && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 pos-modal-overlay"
           onClick={() => setIsModalOpen(false)}
         >
           <div
-            className="bg-[#1a1a1a] border border-zinc-800 rounded w-full max-w-2xl overflow-hidden flex flex-col max-h-[94vh]"
+            className="bg-pos-surface border border-pos-border rounded w-full max-w-2xl overflow-hidden flex flex-col max-h-[94vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 flex items-center justify-between bg-[#1a1a1a] border-b border-zinc-800">
+            <div className="p-4 flex items-center justify-between bg-pos-surface border-b border-pos-border">
               <h3 className="text-xl text-zinc-200">Novo tipo de pagamento</h3>
               <ArrowRight size={24} className="text-zinc-200" />
             </div>
 
-            <form id="payment-method-form" onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-[#1a1a1a]">
-              <div className="max-w-xl space-y-3">
-                <Field label="Nome" value={form.name} required onChange={(value) => setForm((prev) => ({ ...prev, name: value }))} />
-                <Field label="Código" value={form.code} onChange={(value) => setForm((prev) => ({ ...prev, code: value }))} short />
+            <form id="payment-method-form" onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-pos-surface">
+              <div className="max-w-xl space-y-5">
+                <Field
+                  label="Nome"
+                  value={form.name}
+                  required
+                  onChange={(value) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      name: value,
+                      color: getPaymentMethodColor(prev.code || value),
+                    }))
+                  }
+                />
+                <Field
+                  label="Código"
+                  value={form.code}
+                  onChange={(value) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      code: value,
+                      color: getPaymentMethodColor(value || prev.name),
+                    }))
+                  }
+                  short
+                />
                 <Field
                   label="Tecla de atalho"
                   value={form.shortcut}
@@ -287,13 +323,13 @@ export default function PaymentMethodsManager() {
                   short
                 />
 
-                <div className="space-y-1">
-                  <label className="text-xs text-zinc-400">Posição</label>
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400 mr-2">Posição</label>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setForm((prev) => ({ ...prev, position: Math.max(1, prev.position - 1) }))}
-                      className="h-8 w-8 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                      className="h-8 w-8 rounded border border-pos-border text-zinc-300 hover:bg-zinc-800/70 transition-colors"
                     >
                       -
                     </button>
@@ -302,59 +338,76 @@ export default function PaymentMethodsManager() {
                       min={1}
                       value={form.position}
                       onChange={(e) => setForm((prev) => ({ ...prev, position: Math.max(1, Number(e.target.value) || 1) }))}
-                      className="w-16 bg-[#1a1a1a] border border-zinc-700 rounded px-2 py-1.5 text-sm text-white focus:border-zinc-500 outline-none transition-colors text-center"
+                      className="w-16 bg-pos-surface border border-pos-border rounded px-2 py-1.5 text-sm text-white focus:border-zinc-500 outline-none transition-colors text-center"
                     />
                     <button
                       type="button"
                       onClick={() => setForm((prev) => ({ ...prev, position: prev.position + 1 }))}
-                      className="h-8 w-8 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                      className="h-8 w-8 rounded border border-pos-border text-zinc-300 hover:bg-zinc-800/70 transition-colors"
                     >
                       +
                     </button>
                   </div>
                 </div>
 
-                <div className="pt-1 space-y-1.5">
-                  <ToggleLine label="Habilitado" checked={form.enabled} onToggle={() => setForm((prev) => ({ ...prev, enabled: !prev.enabled }))} />
-                  <ToggleLine
+                <div className="space-y-2">
+                  <label className="text-xs text-zinc-400 mr-2">Cor no POS</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={form.color || '#66c013'}
+                      onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))}
+                      className="h-9 w-12 cursor-pointer rounded border border-pos-border bg-pos-surface p-0.5"
+                    />
+                    <span className="text-xs text-zinc-500">{form.color || getPaymentMethodColor(form.code || form.name)}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-8 gap-y-3 pt-2">
+                  <PosSwitch
+                    label="Habilitado"
+                    checked={form.enabled}
+                    onChange={() => setForm((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                  />
+                  <PosSwitch
                     label="Pagamento rápido"
                     checked={form.quickPayment}
-                    onToggle={() => setForm((prev) => ({ ...prev, quickPayment: !prev.quickPayment }))}
+                    onChange={() => setForm((prev) => ({ ...prev, quickPayment: !prev.quickPayment }))}
                   />
-                  <ToggleLine
+                  <PosSwitch
                     label="Cliente obrigatório"
                     checked={form.requiredCustomer}
-                    onToggle={() => setForm((prev) => ({ ...prev, requiredCustomer: !prev.requiredCustomer }))}
+                    onChange={() => setForm((prev) => ({ ...prev, requiredCustomer: !prev.requiredCustomer }))}
                   />
-                  <ToggleLine
+                  <PosSwitch
                     label="Imprimir recibo"
                     checked={form.printReceipt}
-                    onToggle={() => setForm((prev) => ({ ...prev, printReceipt: !prev.printReceipt }))}
+                    onChange={() => setForm((prev) => ({ ...prev, printReceipt: !prev.printReceipt }))}
                   />
-                  <ToggleLine
+                  <PosSwitch
                     label="Mudança permitida"
                     checked={form.allowChange}
-                    onToggle={() => setForm((prev) => ({ ...prev, allowChange: !prev.allowChange }))}
+                    onChange={() => setForm((prev) => ({ ...prev, allowChange: !prev.allowChange }))}
                   />
-                  <ToggleLine
+                  <PosSwitch
                     label="Marcar transação como paga"
                     checked={form.markAsPaid}
-                    onToggle={() => setForm((prev) => ({ ...prev, markAsPaid: !prev.markAsPaid }))}
+                    onChange={() => setForm((prev) => ({ ...prev, markAsPaid: !prev.markAsPaid }))}
                   />
-                  <ToggleLine
+                  <PosSwitch
                     label="Abrir a gaveta do dinheiro"
                     checked={form.openCashDrawer}
-                    onToggle={() => setForm((prev) => ({ ...prev, openCashDrawer: !prev.openCashDrawer }))}
+                    onChange={() => setForm((prev) => ({ ...prev, openCashDrawer: !prev.openCashDrawer }))}
                   />
                 </div>
               </div>
             </form>
 
-            <div className="p-4 bg-[#1a1a1a] border-t border-zinc-800 flex justify-end gap-3">
+            <div className="p-4 bg-pos-surface border-t border-pos-border flex justify-end gap-3">
               <button
                 type="submit"
                 form="payment-method-form"
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-pos-border hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
               >
                 <Check size={16} />
                 Salvar
@@ -362,7 +415,7 @@ export default function PaymentMethodsManager() {
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}
-                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-zinc-700 hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
+                className="flex items-center gap-2 px-6 py-2 bg-zinc-800/50 border border-pos-border hover:bg-zinc-700 text-zinc-400 hover:text-white text-xs font-medium rounded transition-colors"
               >
                 <X size={16} />
                 Cancelar
@@ -389,28 +442,17 @@ function Field({
   required?: boolean;
 }) {
   return (
-    <div className="space-y-1">
-      <label className="text-xs text-zinc-400">{label}</label>
+    <div className="space-y-2">
+      <label className="text-xs text-zinc-400 mr-2">{label}</label>
       <input
         type="text"
         required={required}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
-        className={`${short ? 'w-1/3 min-w-[160px]' : 'w-full'} bg-[#1a1a1a] border ${
-          required && !value.trim() ? 'border-red-900/50' : 'border-zinc-700'
+        className={`${short ? 'w-24 min-w-[160px]' : 'w-full'} bg-pos-surface border ${
+          required && !value.trim() ? 'border-red-900/50' : 'border-pos-border'
         } rounded px-3 py-1.5 text-sm text-white focus:border-zinc-500 outline-none transition-colors`}
       />
     </div>
-  );
-}
-
-function ToggleLine({ label, checked, onToggle }: { label: string; checked: boolean; onToggle: () => void }) {
-  return (
-    <PosSwitch
-      label={label}
-      checked={checked}
-      onChange={() => onToggle()}
-      className="pt-1"
-    />
   );
 }

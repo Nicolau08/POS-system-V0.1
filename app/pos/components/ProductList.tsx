@@ -68,19 +68,19 @@ export function ProductList({
   onFamiliesClickCapture: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const theme = usePosTheme();
-  const light = theme === 'light';
+  const light = theme === 'light' || theme === 'violet';
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-[#121212]">
-      <div className="h-14 p-2 flex items-center gap-2 bg-[#1a1a1a] border-b border-zinc-800">
-        <div className="flex items-center gap-3 px-3 text-zinc-500 border-r border-zinc-800">
+    <div className="flex-1 min-w-0 flex flex-col bg-pos-bg">
+      <div className="h-14 p-2 flex items-center gap-2 bg-pos-bg border-b border-pos-border">
+        <div className="flex items-center gap-3 px-3 text-zinc-500 border-r border-pos-border">
           <Search size={18} />
         </div>
         <div className="flex-1 relative">
           <input
             type="text"
             placeholder="Pesquisar produto por nome"
-            className="w-full bg-transparent py-2 px-2 outline-none text-sm text-zinc-200 placeholder:text-zinc-500"
+            className="w-full bg-transparent py-2 px-2 outline-none text-sm text-zinc-800 placeholder:text-zinc-500"
             value={searchQuery ?? ''}
             autoFocus
             onChange={(e) => onSearchChange(e.target.value)}
@@ -172,19 +172,29 @@ export function ProductList({
                   </span>
                 )}
                 <div className={hasImage ? 'pr-20' : 'pr-8'}>
-                  <span className="block text-sm font-semibold text-zinc-100 group-hover:text-white transition-colors">
+                  <span className={`block text-sm font-semibold transition-colors ${
+                    light
+                      ? 'text-zinc-800 group-hover:text-zinc-950'
+                      : 'text-zinc-100 group-hover:text-white'
+                  }`}>
                     {product.name}
                   </span>
-                  <span className="block mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-400">
+                  <span className={`block mt-2 text-[10px] uppercase tracking-[0.18em] ${
+                    light ? 'text-zinc-500' : 'text-zinc-400'
+                  }`}>
                     {product.category || 'Sem familia'}
                   </span>
                 </div>
-                <span className="text-sm font-mono font-semibold text-zinc-200 group-hover:text-white transition-colors">
+                <span className={`text-sm font-mono font-semibold transition-colors ${
+                  light
+                    ? 'text-zinc-800 group-hover:text-zinc-950'
+                    : 'text-zinc-200 group-hover:text-white'
+                }`}>
                   {formatPrice(product.price)}
                 </span>
 
                 {hasImage && (
-                  <div className="absolute right-3 bottom-3 w-[56px] h-[56px] rounded border border-zinc-700 bg-zinc-900/70 overflow-hidden">
+                  <div className="absolute right-3 bottom-3 w-[56px] h-[56px] rounded border border-pos-border bg-pos-surface/70 overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
                   </div>

@@ -4,7 +4,7 @@ import { getSyncLogs, getSyncStatus, runFullResetSync, runSyncCycle } from '../c
 
 const router = express.Router();
 
-router.get('/status', authenticateUser, requireAdmin, getSyncStatus);
+router.get('/status', authenticateUser, getSyncStatus);
 router.post('/run', authenticateUser, requireAdmin, runSyncCycle);
 router.post('/full-reset', authenticateUser, requireAdmin, runFullResetSync);
 router.get('/logs', authenticateUser, requireAdmin, getSyncLogs);

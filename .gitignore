@@ -3,6 +3,8 @@ node_modules/
 .api-runtime-node_modules/
 .next/
 dist-electron*/
+build/pack-obfuscated/
+build/electron-builder.pack.json
 coverage/
 *.tsbuildinfo
 
@@ -14,6 +16,7 @@ Thumbs.db
 .env*
 !.env.example
 electron/.build-secrets.json
+/.build-secrets.json
 
 # --- Bases de dados e backups locais ---
 api/*.db

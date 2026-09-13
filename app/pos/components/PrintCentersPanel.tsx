@@ -33,7 +33,7 @@ function DarkInput({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className="h-9 w-full rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb]"
+      className="h-9 w-full rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb]"
     />
   );
 }
@@ -233,7 +233,7 @@ export function PrintCentersPanel() {
       {error ? <p className="text-xs text-amber-400/90">{error}</p> : null}
       {message ? <p className="text-xs text-[#a5b4fc]">{message}</p> : null}
 
-      <div className="rounded border border-zinc-700 bg-[#171717] p-4">
+      <div className="rounded border border-pos-border bg-pos-surface p-4">
         <p className="mb-3 text-sm font-medium text-zinc-200">
           {editingId ? 'Editar centro' : 'Novo centro de impressão'}
         </p>
@@ -261,7 +261,7 @@ export function PrintCentersPanel() {
                 { value: 'network', label: 'Rede (IP)' },
               ]}
               size="md"
-              triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+              triggerClassName="!bg-pos-field !border-zinc-600"
             />
           </div>
           {form.connectionType === 'windows' ? (
@@ -272,7 +272,7 @@ export function PrintCentersPanel() {
                 onChange={(value) => setForm((prev) => ({ ...prev, windowsPrinterName: value }))}
                 options={[{ value: '', label: 'Seleccionar impressora' }, ...printerOptions]}
                 size="md"
-                triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+                triggerClassName="!bg-pos-field !border-zinc-600"
               />
             </div>
           ) : (
@@ -300,7 +300,7 @@ export function PrintCentersPanel() {
                 { value: '58', label: '58 mm' },
               ]}
               size="md"
-              triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+              triggerClassName="!bg-pos-field !border-zinc-600"
             />
           </div>
         </div>
@@ -326,8 +326,8 @@ export function PrintCentersPanel() {
                       selected
                         ? 'border-[#0001fb] bg-[#0001fb]/20 text-white'
                         : locked
-                          ? 'cursor-not-allowed border-zinc-800 text-zinc-600'
-                          : 'border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                          ? 'cursor-not-allowed border-pos-border text-zinc-600'
+                          : 'border-pos-border text-zinc-300 hover:border-zinc-500'
                     }`}
                   >
                     {opt.label}
@@ -367,7 +367,7 @@ export function PrintCentersPanel() {
           centers.map((center) => (
             <div
               key={center.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded border border-zinc-800 bg-[#171717] px-4 py-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded border border-pos-border bg-pos-surface px-4 py-3"
             >
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">{center.name}</p>
@@ -386,7 +386,7 @@ export function PrintCentersPanel() {
                 <button
                   type="button"
                   onClick={() => startEdit(center)}
-                  className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:border-[#0001fb]"
+                  className="rounded border border-pos-border px-2.5 py-1 text-xs text-zinc-300 hover:border-[#0001fb]"
                 >
                   Editar
                 </button>

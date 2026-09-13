@@ -2,8 +2,20 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Banknote, MessageSquare, Plus, RotateCcw, Trash2, User } from 'lucide-react';
+import { Archive, Banknote, FileText, MessageSquare, Minus, Percent, Plus, Printer, RotateCcw, Trash2, User } from 'lucide-react';
 import type { CartItem, Customer, Discount } from '@/app/pos/types';
+
+function lineGross(item: CartItem) {
+  return item.price * item.quantity;
+}
+
+function lineItemDiscount(item: CartItem) {
+  if (!item.discount) return 0;
+  const gross = lineGross(item);
+  return item.discount.type === 'percentage'
+    ? (gross * item.discount.amount) / 100
+    : item.discount.amount;
+}
 
 // Right sidebar cart section extracted from the POS page.
 export function Cart({
@@ -21,6 +33,8 @@ export function Cart({
   formatPrice,
   onToggleItemSelection,
   onEditItemQuantity,
+  onChangeQuantity,
+  onOpenLineDiscount,
   onEditItemNotes,
   onRemoveItem,
   onClearSelection,
@@ -31,6 +45,11 @@ export function Cart({
   onCancelOrder,
   canCancelOrder = true,
   onOpenPayment,
+  onOpenCustomer,
+  onOpenDiscount,
+  onOpenQuotation,
+  onOpenBill,
+  onOpenCashDrawer,
   allowItemNotes = false,
 }: {
   selectedCartItemId?: string | null;
@@ -47,6 +66,8 @@ export function Cart({
   formatPrice: (value: number) => string;
   onToggleItemSelection: (id: string) => void;
   onEditItemQuantity: (item: CartItem) => void;
+  onChangeQuantity: (item: CartItem, quantity: number) => void;
+  onOpenLineDiscount?: (item: CartItem) => void;
   onEditItemNotes?: (item: CartItem) => void;
   onRemoveItem: (id: string) => void;
   onClearSelection: () => void;
@@ -57,8 +78,46 @@ export function Cart({
   onCancelOrder: () => void;
   canCancelOrder?: boolean;
   onOpenPayment: () => void;
+  onOpenCustomer?: () => void;
+  onOpenDiscount?: () => void;
+  onOpenQuotation?: () => void;
+  onOpenBill?: () => void;
+  onOpenCashDrawer?: () => void;
   allowItemNotes?: boolean;
 }) {
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const dragRef = React.useRef({ active: false, startY: 0, startScroll: 0, moved: false });
+
+  const onListPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, textarea, a')) return;
+    const el = listRef.current;
+    if (!el) return;
+    event.preventDefault();
+    dragRef.current = { active: true, startY: event.clientY, startScroll: el.scrollTop, moved: false };
+    el.setPointerCapture(event.pointerId);
+  };
+  const onListPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active || !listRef.current) return;
+    event.preventDefault();
+    const dy = event.clientY - dragRef.current.startY;
+    if (Math.abs(dy) > 3) dragRef.current.moved = true;
+    listRef.current.scrollTop = dragRef.current.startScroll - dy;
+  };
+  const onListPointerUp = (event?: React.PointerEvent<HTMLDivElement>) => {
+    if (event && listRef.current?.hasPointerCapture(event.pointerId)) {
+      listRef.current.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current.active = false;
+  };
+  const onListClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragRef.current.moved) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current.moved = false;
+  };
+
   const docTypeButtonClass =
     docType === 'FP'
       ? 'bg-amber-600 hover:bg-amber-500'
@@ -67,8 +126,8 @@ export function Cart({
         : 'bg-[#0001fb] hover:bg-[#1a1bff]';
 
   return (
-    <div className="w-[350px] flex flex-col border-l border-zinc-800 bg-[#151515]">
-      <div className="h-14 p-2 border-b border-zinc-800 flex items-center gap-2 bg-[#1a1a1a]">
+    <div className="flex h-full min-h-0 w-[350px] flex-col overflow-hidden border-l border-pos-border bg-pos-surface">
+      <div className="h-14 shrink-0 p-2 border-b border-pos-border flex items-center gap-2 bg-pos-surface">
         {canCancelOrder ? (
           <button
             type="button"
@@ -81,10 +140,10 @@ export function Cart({
           </button>
         ) : null}
 
-        <div className="flex-[2] flex items-center bg-zinc-800 rounded h-10 relative overflow-hidden">
+        <div className="flex-[2] flex items-center rounded h-10 relative overflow-hidden border border-pos-border bg-pos-field">
           <button
             onClick={onCycleDocType}
-            className={`h-full px-3 text-white font-bold text-xs flex items-center justify-center min-w-[45px] transition-colors border-r border-zinc-700/50 ${docTypeButtonClass}`}
+            className={`h-full px-3 text-white font-bold text-xs flex items-center justify-center min-w-[45px] transition-colors border-r border-pos-border/50 ${docTypeButtonClass}`}
             title="Tipo de Documento"
           >
             {docType}
@@ -97,7 +156,7 @@ export function Cart({
                   <User size={12} />
                 </div>
                 <span className="text-xs text-[#a5b4fc] font-bold truncate">{selectedCustomer.name}</span>
-                <button onClick={() => onSelectCustomer(null)} className="ml-auto text-zinc-500 hover:text-rose-500 transition-colors">
+                <button onClick={() => onSelectCustomer(null)} className="ml-auto text-pos-muted hover:text-rose-500 transition-colors">
                   <RotateCcw size={12} />
                 </button>
               </div>
@@ -107,7 +166,7 @@ export function Cart({
                   type="text"
                   value={customerName ?? ''}
                   onChange={(e) => onCustomerNameChange(e.target.value)}
-                  className="bg-transparent w-full outline-none text-xs text-zinc-200 placeholder:text-zinc-600"
+                  className="bg-transparent w-full outline-none text-xs text-pos-fg placeholder:text-pos-muted"
                   placeholder="Nome do cliente..."
                 />
                 {customerName.length > 0 && (
@@ -125,8 +184,8 @@ export function Cart({
                             <User size={10} />
                           </div>
                           <div className="flex flex-col">
-                            <span className="text-[11px] text-white font-bold leading-none">{c.name}</span>
-                            <span className="text-[9px] text-zinc-500">{c.phone}</span>
+                            <span className="text-[11px] text-pos-fg font-bold leading-none">{c.name}</span>
+                            <span className="text-[9px] text-pos-muted">{c.phone}</span>
                           </div>
                         </button>
                       ))}
@@ -149,12 +208,35 @@ export function Cart({
 
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-hide" onClick={onClearSelection}>
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-2 space-y-1 select-none scrollbar-hide [touch-action:none]"
+        onPointerDown={onListPointerDown}
+        onPointerMove={onListPointerMove}
+        onPointerUp={onListPointerUp}
+        onPointerCancel={onListPointerUp}
+        onLostPointerCapture={() => {
+          dragRef.current.active = false;
+        }}
+        onDragStart={(event) => event.preventDefault()}
+        onClickCapture={onListClickCapture}
+        onClick={onClearSelection}
+      >
         {cart.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-zinc-600 text-sm italic">Sem itens</div>
+          <div className="h-full flex items-center justify-center text-pos-muted text-sm italic">Sem itens</div>
         ) : (
           <AnimatePresence initial={false}>
-            {cart.map((item) => (
+            {cart.map((item) => {
+              const gross = lineGross(item);
+              const itemDiscount = lineItemDiscount(item);
+              const net = Math.max(0, gross - itemDiscount);
+              const discountLabel = item.discount
+                ? item.discount.type === 'percentage'
+                  ? `-${item.discount.amount}%`
+                  : `-${formatPrice(item.discount.amount)}`
+                : null;
+
+              return (
               <motion.div
                 key={item.id}
                 initial={{ opacity: 0, y: 10 }}
@@ -168,110 +250,241 @@ export function Cart({
                   e.stopPropagation();
                   onEditItemQuantity(item);
                 }}
-                className={`flex justify-between items-center p-3 border rounded transition-colors cursor-pointer ${
+                className={`flex flex-col gap-2 p-2.5 border rounded transition-colors cursor-pointer select-none ${
                   selectedCartItemId === item.id
-                    ? 'bg-[var(--pos-brand-selected-bg)] border-[rgba(0,1,251,0.5)]'
-                    : 'bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800/50'
+                    ? 'bg-[var(--pos-brand-selected-bg)] border-[rgba(0, 1, 251,0.5)]'
+                    : 'bg-pos-field border-pos-border hover:bg-pos-surface-2'
                 }`}
               >
-                <div className="flex flex-col min-w-0 flex-1 pr-2">
-                  <span className="text-sm font-medium text-zinc-200">{item.name}</span>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-zinc-500">{item.quantity} x {formatPrice(item.price)}</span>
-                    {item.discount && (
-                      <span className="text-[10px] bg-[#0001fb]/20 text-[#a5b4fc] px-1 rounded-md font-bold">
-                        -{item.discount.type === 'percentage' ? `${item.discount.amount}%` : formatPrice(item.discount.amount)}
-                      </span>
-                    )}
-                    {globalDiscount && (
-                      <span className="text-[10px] bg-[#0001fb]/20 text-[#a5b4fc] px-1 rounded-md font-bold">
-                        Global: -{globalDiscount.type === 'percentage' ? `${globalDiscount.amount}%` : formatPrice(globalDiscount.amount / cart.length)}
-                      </span>
-                    )}
+                <div className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-pos-fg">{item.name}</span>
+                  <div className="flex shrink-0 flex-col items-end leading-tight">
+                    {itemDiscount > 0 ? (
+                      <span className="text-[10px] text-pos-muted line-through">{formatPrice(gross)}</span>
+                    ) : null}
+                    <span className="text-sm font-bold text-pos-fg">{formatPrice(net)}</span>
                   </div>
-                  {item.notes ? (
-                    <span className="mt-1 text-[11px] text-amber-300/90 italic truncate" title={item.notes}>
-                      {item.notes}
-                    </span>
-                  ) : null}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-sm font-bold text-zinc-100">{formatPrice(item.price * item.quantity)}</span>
-                  {selectedCartItemId === item.id ? (
-                    <>
-                      {allowItemNotes && onEditItemNotes ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onEditItemNotes(item);
-                          }}
-                          className={`transition-colors ${
-                            item.notes
-                              ? 'text-amber-400 hover:text-amber-300'
-                              : 'text-zinc-500 hover:text-amber-300'
-                          }`}
-                          title="Nota para cozinha"
-                        >
-                          <MessageSquare size={14} />
-                        </button>
-                      ) : null}
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-pos-muted">{item.quantity} × {formatPrice(item.price)}</span>
+                  {discountLabel ? (
+                    <span className="rounded-md bg-[#0001fb]/20 px-1.5 py-0.5 text-[10px] font-bold text-[#a5b4fc]">
+                      Desc. {discountLabel}
+                      {itemDiscount > 0 ? ` · ${formatPrice(itemDiscount)}` : ''}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium text-pos-muted">Sem desconto</span>
+                  )}
+                </div>
+
+                {item.notes ? (
+                  <span className="truncate text-[11px] italic text-amber-300/90" title={item.notes}>
+                    {item.notes}
+                  </span>
+                ) : null}
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeQuantity(item, item.quantity - 1);
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded border border-pos-border bg-pos-action text-pos-fg transition-colors hover:border-[#0001fb]"
+                    title="Diminuir quantidade"
+                    aria-label={`Diminuir quantidade de ${item.name}`}
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditItemQuantity(item);
+                    }}
+                    className="min-w-[2.25rem] px-1 text-center text-xs font-bold tabular-nums text-pos-fg"
+                    title="Editar quantidade"
+                  >
+                    {item.quantity}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeQuantity(item, item.quantity + 1);
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded border border-pos-border bg-pos-action text-pos-fg transition-colors hover:border-[#0001fb]"
+                    title="Aumentar quantidade"
+                    aria-label={`Aumentar quantidade de ${item.name}`}
+                  >
+                    <Plus size={14} />
+                  </button>
+
+                  <div className="ml-auto flex items-center gap-1">
+                    {onOpenLineDiscount ? (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onRemoveItem(item.id);
+                          onOpenLineDiscount(item);
                         }}
-                        className="text-zinc-500 hover:text-red-400 transition-colors"
-                        title="Remover artigo"
+                        className={`flex h-8 w-8 items-center justify-center rounded border transition-colors ${
+                          item.discount
+                            ? 'border-[#0001fb]/50 bg-[#0001fb]/15 text-[#a5b4fc] hover:bg-[#0001fb]/25'
+                            : 'border-pos-border bg-pos-action text-pos-muted hover:border-[#0001fb] hover:text-[#a5b4fc]'
+                        }`}
+                        title={item.discount ? 'Alterar desconto da linha' : 'Aplicar desconto na linha'}
+                        aria-label={`Desconto em ${item.name}`}
                       >
-                        <Trash2 size={14} />
+                        <Percent size={14} />
                       </button>
-                    </>
-                  ) : null}
+                    ) : null}
+                    {allowItemNotes && onEditItemNotes ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditItemNotes(item);
+                        }}
+                        className={`flex h-8 w-8 items-center justify-center rounded border border-pos-border transition-colors ${
+                          item.notes
+                            ? 'bg-amber-500/15 text-amber-400 hover:text-amber-300'
+                            : 'bg-pos-action text-pos-muted hover:text-amber-600'
+                        }`}
+                        title="Nota para cozinha"
+                      >
+                        <MessageSquare size={14} />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemoveItem(item.id);
+                      }}
+                      className="flex h-8 w-8 items-center justify-center rounded border border-pos-border bg-pos-action text-pos-muted transition-colors hover:border-red-500/60 hover:text-red-600"
+                      title="Remover artigo"
+                      aria-label={`Remover ${item.name}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
           </AnimatePresence>
         )}
       </div>
 
-      <div className="p-3 bg-[#1a1a1a] border-t border-zinc-800 space-y-0.5">
-        <div className="flex justify-between text-xs text-zinc-500">
+      <div className="shrink-0 p-3 bg-pos-surface border-t border-pos-border space-y-0.5">
+        <div className="flex justify-between text-xs text-pos-muted">
           <span>Subtotal</span>
           <span>{formatPrice(originalSubtotal)}</span>
         </div>
-        {totalDiscount > 0 && (
-          <div className="flex justify-between text-xs text-[#a5b4fc]">
-            <span>Desconto</span>
-            <span>-{formatPrice(totalDiscount)}</span>
-          </div>
-        )}
-        <div className="flex justify-between text-xs text-zinc-500">
+        <div className={`flex justify-between text-xs ${totalDiscount > 0 ? 'text-[#0001fb]' : 'text-pos-muted'}`}>
+          <span>{globalDiscount ? 'Desconto (pedido)' : 'Desconto'}</span>
+          <span>{totalDiscount > 0 ? `-${formatPrice(totalDiscount)}` : formatPrice(0)}</span>
+        </div>
+        <div className="flex justify-between text-xs text-pos-muted">
           <span>Imposto</span>
           <span>{formatPrice(tax)}</span>
         </div>
-        <div className="pt-1.5 mt-1.5 border-t border-dashed border-zinc-700 flex justify-between items-end">
-          <span className="text-xs font-bold uppercase tracking-wider">TOTAL</span>
-          <span className="text-2xl font-bold text-white">{formatPrice(total)}</span>
+        <div className="pt-1.5 mt-1.5 border-t border-dashed border-pos-border flex justify-between items-end">
+          <span className="text-xs font-bold uppercase tracking-wider text-pos-fg">TOTAL</span>
+          <span className="text-2xl font-bold text-pos-fg">{formatPrice(total)}</span>
         </div>
       </div>
 
-      <div className="p-1 bg-zinc-900">
+      <div className="shrink-0 p-1 bg-pos-surface border-t border-pos-border">
         <button
           type="button"
           onClick={onOpenPayment}
           disabled={cart.length === 0}
-          className={`flex w-full flex-col items-center justify-center py-3 rounded transition-colors ${
+          className={`flex w-full flex-col items-center justify-center py-3.5 rounded transition-colors ${
             cart.length > 0
               ? 'pos-on-accent bg-[#00993e] hover:bg-[#00ad46] text-white'
-              : 'bg-zinc-800 text-zinc-700 cursor-not-allowed opacity-50'
+              : 'bg-pos-surface-3 text-pos-fg cursor-not-allowed opacity-70'
           }`}
         >
-          <Banknote size={18} />
-          <span className="text-[10px] mt-1 capitalize font-bold">Pagamento</span>
+          <Banknote size={22} strokeWidth={2.25} />
+          <span className="mt-1 text-sm font-bold tracking-wide">Pagamento</span>
         </button>
       </div>
+
+      <div className="shrink-0 border-t border-pos-border bg-pos-surface px-1.5 py-1.5 space-y-1">
+        <div className="grid grid-cols-3 gap-1">
+          <CartActionButton
+            icon={<User size={15} />}
+            label="Cliente"
+            title={selectedCustomer?.name ? `Cliente: ${selectedCustomer.name}` : 'Seleccionar cliente'}
+            active={Boolean(selectedCustomer)}
+            onClick={onOpenCustomer}
+          />
+          <CartActionButton
+            icon={<Percent size={15} />}
+            label="Desconto"
+            onClick={onOpenDiscount}
+          />
+          <CartActionButton
+            icon={<FileText size={15} />}
+            label="Cotação"
+            onClick={onOpenQuotation}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          <CartActionButton
+            icon={<Printer size={15} />}
+            label="Conta"
+            title="Pré-visualizar conta"
+            disabled={cart.length === 0}
+            onClick={onOpenBill}
+          />
+          <CartActionButton
+            icon={<Archive size={15} />}
+            label="Gaveta"
+            title="Abrir gaveta de dinheiro"
+            onClick={onOpenCashDrawer}
+          />
+        </div>
+      </div>
     </div>
+  );
+}
+
+function CartActionButton({
+  icon,
+  label,
+  title,
+  active,
+  disabled,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  title?: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title ?? label}
+      aria-label={title ?? label}
+      disabled={disabled || !onClick}
+      onClick={onClick}
+      className={`flex h-14 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded border px-1.5 transition-colors ${
+        active
+          ? 'border-[#0001fb] bg-[#0001fb]/10 text-[#0001fb]'
+          : disabled
+            ? 'border-pos-border bg-pos-surface-2 text-pos-muted opacity-50 cursor-not-allowed'
+            : 'border-pos-border bg-pos-field text-pos-fg hover:border-[#0001fb] hover:text-[#0001fb]'
+      }`}
+    >
+      {icon}
+      <span className="text-[9px] font-bold leading-none tracking-wide">{label}</span>
+    </button>
   );
 }

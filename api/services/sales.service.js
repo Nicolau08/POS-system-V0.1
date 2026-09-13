@@ -570,13 +570,32 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
   try {
     await runDb('BEGIN IMMEDIATE TRANSACTION');
 
-    const nextSequenceRow = await getDb(
-      `SELECT COALESCE(MAX(COALESCE(doc_sequence, id)), 0) + 1 AS next
-         FROM vendas
-        WHERE UPPER(COALESCE(doc_type, 'VD')) = ?`,
-      [normalizedDocType]
+    // Sequência por tenant — não misturar numeração entre lojas/tenants.
+    let candidate = Number(
+      (
+        await getDb(
+          `SELECT COALESCE(MAX(COALESCE(doc_sequence, id)), 0) + 1 AS next
+             FROM vendas
+            WHERE UPPER(COALESCE(doc_type, 'VD')) = ?
+              AND tenant_id = ?`,
+          [normalizedDocType, tenantId],
+        )
+      )?.next ?? 1,
     );
-    usedSequence = Number(nextSequenceRow?.next ?? 1);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const taken = await getDb(
+        `SELECT 1 AS ok
+           FROM vendas
+          WHERE tenant_id = ?
+            AND UPPER(COALESCE(doc_type, 'VD')) = ?
+            AND CAST(COALESCE(doc_sequence, id) AS INTEGER) = ?
+          LIMIT 1`,
+        [tenantId, normalizedDocType, candidate],
+      );
+      if (!taken) break;
+      candidate += 1;
+    }
+    usedSequence = candidate;
 
     const insertResult = await runDb(
       `INSERT INTO vendas (

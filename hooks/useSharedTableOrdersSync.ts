@@ -81,6 +81,8 @@ export function useSharedTableOrdersSync(opts: {
       for (const key of Object.keys(next)) {
         if (key === activeId || key === 'direct') continue;
         if (!remoteKeys.has(key)) {
+          // Não apagar mesa com pedido local ainda não reflectido no servidor.
+          if (Array.isArray(next[key]?.cart) && next[key].cart.length > 0) continue;
           delete next[key];
           delete tableOrderUpdatedAtRef.current[key];
         }
@@ -155,6 +157,16 @@ export function useSharedTableOrdersSync(opts: {
     if (!enabled || !selectedTableId) return;
     if (salesMode !== 'table') return;
     if (!Array.isArray(cart) || cart.length === 0) return;
+    // Mantém a grelha alinhada com o carrinho activo (OCUPADA sem esperar sair).
+    setTableOrders((prev) => ({
+      ...prev,
+      [selectedTableId]: {
+        cart,
+        globalDiscount,
+        selectedCustomer,
+        docType,
+      },
+    }));
     const t = window.setTimeout(() => {
       const expectedUpdatedAt = tableOrderUpdatedAtRef.current[selectedTableId] ?? null;
       void saveSharedTableOrder(selectedTableId, {
@@ -182,6 +194,7 @@ export function useSharedTableOrdersSync(opts: {
     globalDiscount,
     selectedCustomer,
     docType,
+    setTableOrders,
     tableOrderUpdatedAtRef,
   ]);
 }

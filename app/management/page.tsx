@@ -2,7 +2,6 @@
 
 import React, { useState, useMemo, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
-import dynamic from 'next/dynamic';
 import { 
   X, 
   LayoutDashboard, 
@@ -13,20 +12,18 @@ import {
   FileText, 
   History, 
   TrendingUp, 
-  Calendar,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  RotateCcw,
   Maximize2,
   Tag,
   ShieldCheck,
   CreditCard,
   Percent,
   Building2,
-  Loader2,
   KeyRound,
   Truck,
+  User,
 } from 'lucide-react';
 import ProductsManager from './components/ProductsManager';
 import InventoryManager from './components/InventoryManager';
@@ -37,9 +34,11 @@ import {
   getCachedPermissionRules,
   setCachedDashboard,
   setCachedPermissionRules,
+  type DashboardPeriodFilter,
+  type DashboardPeriodPreset,
 } from '@/lib/posSessionCache';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
-import SyncStatusPanel from './components/SyncStatusPanel';
+import ManagementDashboard from './components/ManagementDashboard';
 import CustomersSuppliersManager from './components/CustomersSuppliersManager';
 import PaymentMethodsManager from './components/PaymentMethodsManager';
 import UsersSecurityManager from './components/UsersSecurityManager';
@@ -53,6 +52,7 @@ import {
   DOCUMENTS_MENU_SECTIONS,
   type DocumentsPartyKind,
 } from '@/app/management/documentsMenu';
+import { PosSidebarNavItem } from '@/components/PosMenuButton';
 
 const DOCUMENTS_SECTION_ICONS: Record<DocumentsPartyKind, React.ReactNode> = {
   clientes: <Users size={14} />,
@@ -61,36 +61,43 @@ const DOCUMENTS_SECTION_ICONS: Record<DocumentsPartyKind, React.ReactNode> = {
   interno: <Building2 size={14} />,
 };
 
-// Dynamically import Recharts to avoid SSR issues
-const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
-const BarChart = dynamic(() => import('recharts').then(mod => mod.BarChart), { ssr: false });
-const Bar = dynamic(() => import('recharts').then(mod => mod.Bar), { ssr: false });
-const XAxis = dynamic(() => import('recharts').then(mod => mod.XAxis), { ssr: false });
-const YAxis = dynamic(() => import('recharts').then(mod => mod.YAxis), { ssr: false });
-const CartesianGrid = dynamic(() => import('recharts').then(mod => mod.CartesianGrid), { ssr: false });
-const Tooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
-const Cell = dynamic(() => import('recharts').then(mod => mod.Cell), { ssr: false });
-
 // Optimized static data
 const initialMonthlySalesData = Array.from({ length: 12 }, (_, i) => ({
   name: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][i],
-  sales: 0
+  sales: 0,
+  vendas: 0,
 }));
-const monthlyBarColors = [
-  '#3B82F6', // Jan
-  '#06B6D4', // Fev
-  '#14B8A6', // Mar
-  '#22C55E', // Abr
-  '#84CC16', // Mai
-  '#EAB308', // Jun
-  '#F59E0B', // Jul
-  '#F97316', // Ago
-  '#EF4444', // Set
-  '#EC4899', // Out
-  '#A855F7', // Nov
-  '#6366F1', // Dez
-];
 const DOCS_VIEW_STATE_STORAGE_KEY = 'management:documents-view-state';
+
+function buildDefaultPeriodFilter(): DashboardPeriodFilter {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const from = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const to = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return { preset: 'month', from, to };
+}
+
+function buildDashboardSummaryUrl(apiBase: string, period: DashboardPeriodFilter, year: number) {
+  const periodYear = Number(period.from?.slice(0, 4));
+  const targetYear = Number.isFinite(periodYear) ? periodYear : year;
+  const params = new URLSearchParams({
+    year: String(targetYear),
+    refresh: 'true',
+    period: period.preset,
+    _: String(Date.now()),
+  });
+  if (period.preset === 'custom' || period.preset === 'month') {
+    if (period.from) params.set('from', period.from);
+    if (period.to) params.set('to', period.to);
+  }
+  return `${apiBase.replace(/\/$/, '')}/dashboard-summary?${params.toString()}`;
+}
+
+function periodFiltersEqual(a: DashboardPeriodFilter, b: DashboardPeriodFilter) {
+  return a.preset === b.preset && a.from === b.from && a.to === b.to;
+}
 
 type RouteProps = {
   params: Promise<Record<string, string | string[] | undefined>>;
@@ -117,7 +124,11 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   const [permissionRules, setPermissionRules] = useState<Record<string, number> | null>(
     () => getCachedPermissionRules()
   );
+  const [permissionsReady, setPermissionsReady] = useState(() => Boolean(getCachedPermissionRules()));
   const [isLoading, setIsLoading] = useState(() => !getCachedDashboard());
+  const [bootComplete, setBootComplete] = useState(
+    () => Boolean(getCachedPermissionRules()) && Boolean(getCachedDashboard()),
+  );
   const [isMounted, setIsMounted] = useState(false);
   const [currentDate, setCurrentDate] = useState('');
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
@@ -151,8 +162,37 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   const [topGroups, setTopGroups] = useState<{name: string, sales: number}[]>(
     () => getCachedDashboard()?.topGroups ?? []
   );
-  const [topCustomers, setTopCustomers] = useState<{name: string, total: number}[]>(
-    () => getCachedDashboard()?.topCustomers ?? []
+  const [topEmployees, setTopEmployees] = useState<{ name: string; total: number }[]>(
+    () => getCachedDashboard()?.topEmployees ?? [],
+  );
+  const [paymentTypes, setPaymentTypes] = useState<{ name: string; value: number; percent: number }[]>(
+    () => getCachedDashboard()?.paymentTypes ?? [],
+  );
+  const [periodFilter, setPeriodFilter] = useState<DashboardPeriodFilter>(() => {
+    const cachedFilter = getCachedDashboard()?.periodFilter;
+    if (cachedFilter?.preset && cachedFilter.from && cachedFilter.to) {
+      return cachedFilter;
+    }
+    const cached = getCachedDashboard()?.period;
+    if (cached?.preset && cached.from && cached.to) {
+      return { preset: cached.preset, from: cached.from, to: cached.to };
+    }
+    return buildDefaultPeriodFilter();
+  });
+  const periodFilterRef = React.useRef(periodFilter);
+  periodFilterRef.current = periodFilter;
+  const periodFetchReadyRef = React.useRef(false);
+  const skipNextPeriodFetchRef = React.useRef(false);
+  const [dashboardRefreshing, setDashboardRefreshing] = useState(false);
+  const [period, setPeriod] = useState(
+    () =>
+      getCachedDashboard()?.period ?? {
+        monthLabel: '---',
+        totalVendas: 0,
+        totalCaixa: 0,
+        creditSales: 0,
+        returns: 0,
+      },
   );
 
   const restoreAuthState = React.useCallback(() => {
@@ -181,20 +221,31 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
     return false;
   }, []);
 
-  const fetchDashboardData = React.useCallback(async (options?: { silent?: boolean }) => {
+  const fetchDashboardData = React.useCallback(
+    async (options?: { silent?: boolean }, periodOverride?: DashboardPeriodFilter) => {
     const silent = Boolean(options?.silent) || Boolean(getCachedDashboard());
+    const activePeriod = periodOverride ?? periodFilterRef.current;
     if (!silent) setIsLoading(true);
+    setDashboardRefreshing(true);
     try {
       const apiBase = getPosApiBase();
       const yearNow = new Date().getFullYear();
-      const summaryRes = await fetch(`${apiBase}/dashboard-summary?year=${yearNow}&refresh=true`, {
-        headers: { ...getPosUserAuthHeaders() },
+      const summaryRes = await fetch(buildDashboardSummaryUrl(apiBase, activePeriod, yearNow), {
+        cache: 'no-store',
+        headers: {
+          ...getPosUserAuthHeaders(),
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        },
       });
       const summaryText = await summaryRes.text();
       if (!summaryRes.ok) {
         throw new Error(
           `dashboard-summary HTTP ${summaryRes.status}: ${summaryText.slice(0, 280) || summaryRes.statusText || 'sem corpo'}`
         );
+      }
+      if (!summaryText.trim()) {
+        throw new Error('dashboard-summary: resposta vazia');
       }
       let summaryParsed: unknown = null;
       try {
@@ -208,31 +259,67 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         ? summary.monthlySalesData
         : initialMonthlySalesData;
       const topProductsData = Array.isArray(summary?.topProducts) ? summary.topProducts : [];
-      const topCustomersData = Array.isArray(summary?.topCustomers) ? summary.topCustomers : [];
       const topGroupsData = Array.isArray(summary?.topGroups) ? summary.topGroups : [];
+      const topEmployeesData = Array.isArray(summary?.topEmployees) ? summary.topEmployees : [];
+      const paymentTypesData = Array.isArray(summary?.paymentTypes) ? summary.paymentTypes : [];
+      const periodData = summary?.period ?? {
+        preset: activePeriod.preset,
+        from: activePeriod.from,
+        to: activePeriod.to,
+        monthLabel: '---',
+        totalVendas: 0,
+        totalCaixa: 0,
+        creditSales: 0,
+        returns: 0,
+      };
 
       setTotalSales(Number(summary?.totalSales ?? 0));
       setMonthlySalesData(monthly);
       setBestMonth(String(summary?.bestMonth ?? '---'));
       setBestMonthValue(Number(summary?.bestMonthValue ?? 0));
       setTopProducts(topProductsData);
-      setTopCustomers(topCustomersData);
       setTopGroups(topGroupsData);
+      setTopEmployees(topEmployeesData);
+      setPaymentTypes(paymentTypesData);
+      setPeriod(periodData);
+      if (periodData.from && periodData.to && periodData.preset) {
+        const syncedFilter: DashboardPeriodFilter = {
+          preset: periodData.preset as DashboardPeriodPreset,
+          from: periodData.from,
+          to: periodData.to,
+        };
+        if (!periodFiltersEqual(activePeriod, syncedFilter)) {
+          skipNextPeriodFetchRef.current = true;
+          periodFilterRef.current = syncedFilter;
+          setPeriodFilter(syncedFilter);
+        }
+      }
       setCachedDashboard({
         year: yearNow,
         monthlySalesData: monthly,
         totalSales: Number(summary?.totalSales ?? 0),
         bestMonth: String(summary?.bestMonth ?? '---'),
         bestMonthValue: Number(summary?.bestMonthValue ?? 0),
+        period: periodData,
+        periodFilter: activePeriod,
         topProducts: topProductsData,
         topGroups: topGroupsData,
-        topCustomers: topCustomersData,
+        topEmployees: topEmployeesData,
+        paymentTypes: paymentTypesData,
+        topCustomers: [],
       });
 
     } catch (err: unknown) {
       const errorMessage =
         err instanceof Error ? err.message : typeof err === 'string' ? err : 'Erro desconhecido';
-      console.error('Error fetching dashboard data:', errorMessage, err);
+      if (errorMessage.includes('HTTP 500') || errorMessage.includes('ECONNREFUSED')) {
+        console.error(
+          'Error fetching dashboard data: API indisponível. Reinicie o servidor (npm run dev:tenant:qa02:desktop).',
+          errorMessage,
+        );
+      } else {
+        console.error('Error fetching dashboard data:', errorMessage, err);
+      }
       if (!silent) {
         setTotalSales(0);
         setMonthlySalesData(initialMonthlySalesData);
@@ -240,13 +327,50 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         setBestMonthValue(0);
         setTopProducts([]);
         setTopGroups([]);
-        setTopCustomers([]);
+        setTopEmployees([]);
+        setPaymentTypes([]);
+        setPeriod({
+          monthLabel: '---',
+          totalVendas: 0,
+          totalCaixa: 0,
+          creditSales: 0,
+          returns: 0,
+        });
       }
     } finally {
+      setDashboardRefreshing(false);
       if (!silent) setIsLoading(false);
       else setIsLoading(false);
     }
   }, []);
+
+  const handlePeriodChange = React.useCallback((next: DashboardPeriodFilter) => {
+    periodFilterRef.current = next;
+    setPeriodFilter(next);
+    setDashboardRefreshing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== 'dashboard') return;
+
+    if (!periodFetchReadyRef.current) {
+      periodFetchReadyRef.current = true;
+      return;
+    }
+
+    if (skipNextPeriodFetchRef.current) {
+      skipNextPeriodFetchRef.current = false;
+      return;
+    }
+
+    void fetchDashboardData({ silent: true }, periodFilter);
+  }, [periodFilter, isLoggedIn, activeTab, fetchDashboardData]);
+
+  useEffect(() => {
+    if (permissionRules && permissionsReady && !isLoading) {
+      setBootComplete(true);
+    }
+  }, [permissionRules, permissionsReady, isLoading]);
 
   useEffect(() => {
     const isAuthenticated = restoreAuthState();
@@ -263,11 +387,19 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   // Loads permission rules so we can hide modules based on access level.
   useEffect(() => {
     if (!isLoggedIn) {
-      setPermissionRules(null);
+      // Não limpar regras em cache no 1.º paint (isLoggedIn ainda false) —
+      // isso fazia o menu fallback (com Stock) aparecer e depois sumir.
+      setPermissionsReady(false);
       return;
     }
 
     let cancelled = false;
+    const cached = getCachedPermissionRules();
+    if (cached) {
+      setPermissionRules(cached);
+      setPermissionsReady(true);
+    }
+
     void (async () => {
       try {
         const res = await fetch(`${getPosApiBase()}/permission-rules`, {
@@ -283,9 +415,19 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         if (!cancelled) {
           setPermissionRules(normalized);
           setCachedPermissionRules(normalized);
+          setPermissionsReady(true);
         }
       } catch (e) {
-        if (!cancelled && !getCachedPermissionRules()) setPermissionRules(null);
+        // Fail-closed: sem regras válidas, só o essencial (sem Stock).
+        if (!cancelled && !getCachedPermissionRules()) {
+          setPermissionRules({
+            'painel.painel_controle': 0,
+            'painel.documentos': 0,
+          });
+          setPermissionsReady(true);
+        } else if (!cancelled && getCachedPermissionRules()) {
+          setPermissionsReady(true);
+        }
       }
     })();
 
@@ -341,26 +483,27 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   // Memoize components to prevent unnecessary re-renders
   const sidebarItems = useMemo(() => {
     const items = [
-      { id: 'dashboard', icon: <LayoutDashboard size={18} />, label: 'Painel de Controle' },
-      { id: 'docs', icon: <FileText size={18} />, label: 'Documentos' },
-      { id: 'products', icon: <Package size={18} />, label: 'Produtos' },
-      { id: 'inventory', icon: <History size={18} />, label: 'Stock' },
-      { id: 'reports', icon: <BarChart3 size={18} />, label: 'Relatórios' },
-      { id: 'customers', icon: <Users size={18} />, label: 'Clientes & Fornecedores' },
-      { id: 'promos', icon: <Tag size={18} />, label: 'Promoções & Ações' },
-      { id: 'security', icon: <ShieldCheck size={18} />, label: 'Usuários & Acesso' },
+      { id: 'dashboard', icon: <LayoutDashboard size={16} strokeWidth={2} />, label: 'Painel' },
+      { id: 'docs', icon: <FileText size={16} strokeWidth={2} />, label: 'Documentos' },
+      { id: 'products', icon: <Package size={16} strokeWidth={2} />, label: 'Produtos' },
+      { id: 'inventory', icon: <History size={16} strokeWidth={2} />, label: 'Inventário' },
+      { id: 'reports', icon: <BarChart3 size={16} strokeWidth={2} />, label: 'Relatórios' },
+      { id: 'customers', icon: <Users size={16} strokeWidth={2} />, label: 'Clientes e fornecedores' },
+      { id: 'promos', icon: <Tag size={16} strokeWidth={2} />, label: 'Promoções' },
+      { id: 'security', icon: <ShieldCheck size={16} strokeWidth={2} />, label: 'Utilizadores e acesso' },
       // Emitir série: só em dev/browser — nunca no executável de produção.
       ...(!isPackagedDesktop
-        ? [{ id: 'license-serials', icon: <KeyRound size={18} />, label: 'Emitir série' }]
+        ? [{ id: 'license-serials', icon: <KeyRound size={16} strokeWidth={2} />, label: 'Emitir série' }]
         : []),
-      { id: 'payments', icon: <CreditCard size={18} />, label: 'Meios de pagamento' },
-      { id: 'taxes', icon: <Percent size={18} />, label: 'Taxas de impostos' },
-      { id: 'company', icon: <Building2 size={18} />, label: 'Minha Empresa' },
+      { id: 'payments', icon: <CreditCard size={16} strokeWidth={2} />, label: 'Meios de pagamento' },
+      { id: 'taxes', icon: <Percent size={16} strokeWidth={2} />, label: 'Impostos' },
+      { id: 'company', icon: <Building2 size={16} strokeWidth={2} />, label: 'A minha empresa' },
     ];
     return items;
   }, [isPackagedDesktop]);
 
   const accessLevel = Number(currentUser?.accessLevel ?? currentUser?.access_level ?? 0);
+  const loggedInUserName = String(currentUser?.name || currentUser?.userName || '').trim();
 
   const sidebarPermissionKeyById = useMemo(
     () => ({
@@ -381,23 +524,27 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   );
 
   const sidebarItemsToRender = useMemo(() => {
-    // Enquanto as regras não chegam, não listar módulos — evita flash (visíveis → desaparecem).
-    if (!permissionRules) return [];
+    // Sem regras prontas: não listar módulos (evita flash do Stock e outros).
+    if (!permissionRules || !permissionsReady) {
+      return [];
+    }
     return sidebarItems.filter((item) => {
       const permissionKey = sidebarPermissionKeyById[item.id as keyof typeof sidebarPermissionKeyById];
       if (!permissionKey) return true;
       const requiredLevel = Number(permissionRules[permissionKey] ?? 0);
       return accessLevel >= requiredLevel;
     });
-  }, [accessLevel, permissionRules, sidebarPermissionKeyById, sidebarItems]);
+  }, [accessLevel, permissionRules, permissionsReady, sidebarPermissionKeyById, sidebarItems]);
 
   const isTabAllowed = React.useCallback(
     (tabId: string) => {
-      if (!permissionRules) return false;
+      if (!permissionRules || !permissionsReady) {
+        return false;
+      }
       if (tabId === 'promos') return true;
       return sidebarItemsToRender.some((item) => item.id === tabId);
     },
-    [permissionRules, sidebarItemsToRender]
+    [permissionRules, permissionsReady, sidebarItemsToRender]
   );
 
   useEffect(() => {
@@ -437,17 +584,36 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   }, []);
 
   const currentModuleLabel = useMemo(() => {
-    return sidebarItemsToRender.find((item) => item.id === activeTab)?.label ?? 'Painel de Controle';
+    return sidebarItemsToRender.find((item) => item.id === activeTab)?.label ?? 'Painel';
   }, [activeTab, sidebarItemsToRender]);
 
-  const currentMonthSummary = useMemo(() => {
-    const monthIndex = new Date().getMonth();
-    const monthData = monthlySalesData[monthIndex];
-    return {
-      name: monthData?.name ?? '---',
-      sales: Number(monthData?.sales ?? 0),
-    };
-  }, [monthlySalesData]);
+  const dashboardSlice = useMemo(
+    () => ({
+      year: currentYear,
+      monthlySalesData,
+      totalSales,
+      bestMonth,
+      bestMonthValue,
+      period,
+      topProducts,
+      topGroups,
+      topCustomers: [],
+      topEmployees,
+      paymentTypes,
+    }),
+    [
+      currentYear,
+      monthlySalesData,
+      totalSales,
+      bestMonth,
+      bestMonthValue,
+      period,
+      topProducts,
+      topGroups,
+      topEmployees,
+      paymentTypes,
+    ],
+  );
 
   const handleBack = () => {
     try {
@@ -459,31 +625,49 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   };
 
   if (!isAuthRestored) {
-    return null;
+    return <ManagementLoadingDots />;
   }
 
   if (!isLoggedIn) {
     return null;
   }
 
+  if (!bootComplete && (!permissionRules || !permissionsReady || isLoading)) {
+    return <ManagementLoadingDots />;
+  }
+
+  // Segurança: nunca montar o menu sem regras filtradas.
+  if (!permissionsReady || !permissionRules) {
+    return <ManagementLoadingDots />;
+  }
+
   return (
-    <div className="flex flex-col h-screen bg-[#1a1a1a] text-zinc-300 font-sans overflow-hidden select-none">
-      <header className="h-10 shrink-0 bg-[#141414] border-b border-zinc-800/30 flex items-center justify-between px-4">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-zinc-300">{`Gerenciamento - ${currentModuleLabel}`}</span>
+    <div className="flex flex-col h-screen bg-pos-surface text-zinc-300 font-sans overflow-hidden select-none">
+      <header className="pos-chrome h-10 shrink-0 bg-pos-surface border-b border-pos-border flex items-center justify-between gap-3 px-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="truncate text-sm font-medium text-white">{`Gerenciamento - ${currentModuleLabel}`}</span>
         </div>
-        <button 
-          onClick={handleBack}
-          className="p-1 text-zinc-500 transition-colors hover:text-red-500"
-          aria-label="Fechar gerenciamento"
-        >
-          <X size={16} />
-        </button>
+        <div className="flex shrink-0 items-center gap-3">
+          <span
+            className="flex max-w-[220px] items-center gap-1.5 truncate text-sm font-medium text-white"
+            title={loggedInUserName || 'Operador'}
+          >
+            <User size={14} strokeWidth={2.25} className="shrink-0" />
+            <span className="truncate">{loggedInUserName || 'Operador'}</span>
+          </span>
+          <button
+            onClick={handleBack}
+            className="p-1 text-white transition-colors hover:text-red-400"
+            aria-label="Fechar gerenciamento"
+          >
+            <X size={16} />
+          </button>
+        </div>
       </header>
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside 
-          className="bg-[#171717] border-r border-zinc-800 flex flex-col transition-[width] duration-300 relative shrink-0 overflow-hidden"
+          className="pos-chrome bg-pos-surface border-r border-pos-border flex flex-col transition-[width] duration-300 relative shrink-0 overflow-hidden"
           style={{ width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH }}
         >
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-2 custom-scrollbar">
@@ -491,14 +675,15 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
               if (item.id === 'docs') {
                 return (
                   <div key={item.id} className="w-full">
-                    <button
-                      type="button"
-                      title={isSidebarCollapsed ? item.label : undefined}
+                    <PosSidebarNavItem
+                      icon={item.icon}
+                      label={item.label}
+                      collapsed={isSidebarCollapsed}
+                      active={docsSidebarExpanded || sidebarSelectedTab === 'docs'}
                       onClick={() => {
                         const comingFromOther = sidebarSelectedTab !== 'docs';
                         setActiveTab('docs');
                         setSidebarSelectedTab('docs');
-                        // Documentos tem submenu: se o menu estiver fechado, reabre para mostrar as opções.
                         if (isSidebarCollapsed) {
                           setIsSidebarCollapsed(false);
                           setDocsSidebarExpanded(true);
@@ -521,25 +706,15 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                           });
                         }
                       }}
-                      className={`w-full max-w-full flex items-center text-left text-sm transition-colors relative group overflow-hidden ${
-                        isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
-                      } ${
-                        docsSidebarExpanded || sidebarSelectedTab === 'docs'
-                          ? 'pos-on-accent bg-[#0001fb] text-white'
-                          : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
-                      }`}
-                    >
-                      <div className="flex-shrink-0">{item.icon}</div>
-                      {!isSidebarCollapsed && (
-                        <>
-                          <span className="min-w-0 flex-1 truncate leading-none">{item.label}</span>
+                      trailing={
+                        !isSidebarCollapsed ? (
                           <ChevronDown
                             size={14}
-                            className={`shrink-0 transition-transform ${docsSidebarExpanded ? 'rotate-180' : ''}`}
+                            className={`transition-transform ${docsSidebarExpanded ? 'rotate-180' : ''}`}
                           />
-                        </>
-                      )}
-                    </button>
+                        ) : undefined
+                      }
+                    />
 
                     {!isSidebarCollapsed && docsSidebarExpanded && (
                       <div>
@@ -560,11 +735,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
                                     setDocsSelectedType(null);
                                   }
                                 }}
-                                className={`flex w-full items-center justify-between gap-2 px-5 py-2.5 pl-8 text-left text-[12px] font-semibold transition-colors ${
-                                  sectionOpen
-                                    ? 'pos-on-accent bg-[#0000b8] text-white'
-                                    : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
-                                }`}
+                                className={`pos-nav-subitem ${sectionOpen ? 'is-active' : ''}`}
                               >
                                 <span className="flex min-w-0 items-center gap-2">
                                   <span className="shrink-0">{DOCUMENTS_SECTION_ICONS[section.kind]}</span>
@@ -614,33 +785,23 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
               }
 
               return (
-                <button
+                <PosSidebarNavItem
                   key={item.id}
-                  type="button"
-                  title={isSidebarCollapsed ? item.label : undefined}
+                  icon={item.icon}
+                  label={item.label}
+                  collapsed={isSidebarCollapsed}
+                  active={sidebarSelectedTab === item.id}
                   onClick={() => {
                     setActiveTab(item.id);
                     setSidebarSelectedTab(item.id);
                     setDocsSidebarExpanded(false);
                   }}
-                  className={`w-full max-w-full flex items-center text-left text-sm transition-colors relative group overflow-hidden ${
-                    isSidebarCollapsed ? 'justify-center px-0 py-2.5' : 'gap-2.5 px-5 py-2.5'
-                  } ${
-                    sidebarSelectedTab === item.id
-                      ? 'pos-on-accent bg-[#0001fb] text-white'
-                      : 'text-zinc-400 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
-                  }`}
-                >
-                  <div className="flex-shrink-0">{item.icon}</div>
-                  {!isSidebarCollapsed && (
-                    <span className="min-w-0 truncate leading-none">{item.label}</span>
-                  )}
-                </button>
+                />
               );
             })}
           </div>
 
-          <div className="border-t border-zinc-800/60 shrink-0 overflow-hidden">
+          <div className="border-t border-pos-border shrink-0 overflow-hidden">
             <button
               type="button"
               onClick={() => setIsSidebarCollapsed((prev) => !prev)}
@@ -661,7 +822,7 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         {/* Top Header Bar */}
         <header className="hidden">
           <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-zinc-300">{`Gerenciamento - ${currentModuleLabel}`}</span>
+            <span className="text-sm font-medium text-white">{`Gerenciamento - ${currentModuleLabel}`}</span>
           </div>
           <button 
             onClick={handleBack}
@@ -673,146 +834,18 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
         </header>
 
         {/* Main Content Area */}
-        <main className={`flex-1 overflow-hidden bg-[#1a1a1a] flex flex-col custom-scrollbar`}>
-          {!permissionRules ? null : (
-            <>
+        <main className={`flex-1 overflow-hidden bg-pos-bg flex flex-col custom-scrollbar`}>
           {activeTab === 'dashboard' && isTabAllowed('dashboard') && (
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {isLoading ? (
-                <div className="h-full flex flex-col items-center justify-center gap-4">
-                  <Loader2 size={48} className="text-blue-500 animate-spin" />
-                  <p className="text-zinc-500 font-medium">Carregando dados locais...</p>
-                </div>
-              ) : (
-                <>
-                  {/* Monthly Sales Chart Section */}
-                  <section className="bg-[#141414] border border-zinc-800/30 rounded transition-colors hover:border-[#0001fb]/50">
-                    <div className="flex">
-                      <div className="flex-1 p-4 border-r border-zinc-800/30">
-                        <div className="flex items-center justify-between mb-4">
-                          <div>
-                            <h2 className="text-lg font-medium text-zinc-200">Caixa mensal - {currentYear}</h2>
-                            <p className="text-[11px] text-zinc-500">Só entradas de dinheiro (VD, RC e FT pagas no momento)</p>
-                          </div>
-                          <div className="flex items-center gap-3 text-zinc-500">
-                            <button
-                              type="button"
-                              onClick={() => void fetchDashboardData()}
-                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
-                            >
-                              <RotateCcw size={16} />
-                            </button>
-                            <button
-                              type="button"
-                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
-                            >
-                              <ChevronLeft size={16} />
-                            </button>
-                            <button
-                              type="button"
-                              className="transition-colors hover:text-[#0001fb] focus-visible:outline-none"
-                            >
-                              <ChevronRight size={16} />
-                            </button>
-                          </div>
-                        </div>
-                        
-                        <div className="h-[200px] w-full relative">
-                          {isMounted && (
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
-                            <BarChart data={monthlySalesData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                              <XAxis 
-                                dataKey="name" 
-                                stroke="#444" 
-                                fontSize={10} 
-                                tickLine={false} 
-                                axisLine={false} 
-                              />
-                              <YAxis 
-                                stroke="#444" 
-                                fontSize={10} 
-                                tickLine={false} 
-                                axisLine={false} 
-                                tickFormatter={(value) => formatPrice(value)}
-                              />
-                              <Tooltip 
-                                cursor={{ fill: 'rgba(0, 1, 251, 0.12)' }}
-                                contentStyle={{ backgroundColor: '#111', border: '1px solid #0001fb', fontSize: '10px' }}
-                                formatter={(value: any) => [formatPrice(value), 'Caixa']}
-                              />
-                              <Bar dataKey="sales" fill={monthlyBarColors[0]} radius={[2, 2, 0, 0]}>
-                                {monthlySalesData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={monthlyBarColors[index % monthlyBarColors.length]} />
-                                ))}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                          )}
-                        </div>
-                        <div className="flex justify-between mt-2 px-10">
-                          {monthlySalesData.map((d, i) => (
-                            <span key={i} className="text-[10px] text-zinc-600 font-bold">{formatPrice(d.sales)}</span>
-                          ))}
-                        </div>
-                      </div>
-                      
-                      <div className="w-48 p-4 flex flex-col justify-between bg-[#111]">
-                        <div>
-                          <p className="text-[11px] font-medium text-zinc-500 capitalize tracking-wider">Caixa do mês</p>
-                          <p className="text-xs font-bold text-zinc-300 mt-1">{currentMonthSummary.name}</p>
-                          <h3 className="text-4xl font-bold text-white mt-1">{formatPrice(currentMonthSummary.sales)}</h3>
-                        </div>
-                        <div className="space-y-2">
-                          <div>
-                            <p className="text-[10px] text-zinc-500">Soma dos meses:</p>
-                            <p className="text-xs font-bold text-zinc-300">Total em caixa (ano)</p>
-                          </div>
-                          <h4 className="text-xl font-bold text-zinc-400">{formatPrice(totalSales)}</h4>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-
-                  {/* Periodic Reports Header */}
-                  <div className="flex items-center gap-2 py-1">
-                    <h3 className="text-sm font-medium text-zinc-400">Relatórios Periódicos ( {currentDate} - {currentDate} )</h3>
-                    <Calendar size={14} className="text-zinc-500 cursor-pointer hover:text-zinc-300" />
-                  </div>
-
-                  {/* Widgets Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <SyncStatusPanel />
-
-                    <DashboardWidget title="Principais produtos (mês)">
-                      {topProducts.length > 0 ? (
-                        <div className="w-full space-y-2">
-                          {topProducts.map((p, i) => (
-                            <div key={i} className="flex justify-between text-xs">
-                              <span className="text-zinc-400">{p.name}</span>
-                              <span className="text-zinc-200 font-bold">{p.sales} un.</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </DashboardWidget>
-                    
-                    <DashboardWidget title="Principais clientes (mês)">
-                      {topCustomers.length > 0 ? (
-                        <div className="w-full space-y-2">
-                          {topCustomers.map((customer, i) => (
-                            <div key={i} className="flex justify-between text-xs">
-                              <span className="text-zinc-400">{customer.name}</span>
-                              <span className="text-zinc-200 font-bold">{formatPrice(customer.total)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </DashboardWidget>
-                  </div>
-                </>
-              )}
-            </div>
+            <ManagementDashboard
+              isMounted={isMounted}
+              currentYear={currentYear}
+              data={dashboardSlice}
+              periodFilter={periodFilter}
+              onPeriodChange={handlePeriodChange}
+              isRefreshing={dashboardRefreshing}
+              onRefresh={() => void fetchDashboardData({ silent: true })}
+              formatPrice={formatPrice}
+            />
           )}
 
           {activeTab === 'products' && isTabAllowed('products') && <ProductsManager />}
@@ -850,8 +883,6 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
               <p>Módulo {activeTab} em desenvolvimento</p>
             </div>
           )}
-            </>
-          )}
         </main>
       </div>
     </div>
@@ -876,18 +907,17 @@ export default function ManagementPage({ params, searchParams }: RouteProps) {
   );
 }
 
-function DashboardWidget({ title, subtitle, isLarge, children }: { title: string, subtitle?: string, isLarge?: boolean, children?: React.ReactNode }) {
+function ManagementLoadingDots() {
   return (
-    <div className={`bg-[#141414] border border-zinc-800/50 rounded-lg p-4 flex flex-col min-h-[250px] hover:border-[#0001fb] transition-colors ${isLarge ? 'md:col-span-2' : ''}`}>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h4 className="text-xs font-bold text-zinc-300 capitalize tracking-wider">{title}</h4>
-          {subtitle && <p className="text-[10px] text-zinc-500 mt-0.5">{subtitle}</p>}
-        </div>
-        <div className="w-2 h-2 rounded-full bg-[#0001fb]/70" />
-      </div>
-      <div className="flex-1 flex flex-col items-center justify-center">
-        {children || <span className="text-xs text-zinc-600 italic">Sem dados para exibir</span>}
+    <div
+      className="flex h-screen w-screen items-center justify-center bg-pos-bg"
+      aria-label="A carregar"
+      role="status"
+    >
+      <div className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#0001fb] [animation-delay:-0.3s]" />
+        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#0001fb] [animation-delay:-0.15s]" />
+        <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-[#0001fb]" />
       </div>
     </div>
   );

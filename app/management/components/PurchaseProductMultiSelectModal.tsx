@@ -94,14 +94,14 @@ export function PurchaseProductMultiSelectModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center pos-modal-overlay p-4"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-[640px] flex-col overflow-hidden rounded-lg border border-zinc-700 bg-[#1a1a1a] shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-[640px] flex-col overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between border-b border-zinc-800 bg-[#141414] px-5 py-4">
+        <div className="flex items-start justify-between border-b border-pos-border bg-pos-card px-5 py-4">
           <div>
             <h3 className="text-base font-bold text-zinc-100">Seleccionar produtos</h3>
             <p className="mt-1 text-xs text-zinc-500">
@@ -118,7 +118,7 @@ export function PurchaseProductMultiSelectModal({
           </button>
         </div>
 
-        <div className="border-b border-zinc-800 px-5 py-3">
+        <div className="border-b border-pos-border px-5 py-3">
           <div className="relative">
             <Search
               size={14}
@@ -193,7 +193,7 @@ export function PurchaseProductMultiSelectModal({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-zinc-800 bg-[#141414] px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-pos-border bg-pos-card px-5 py-3">
           <button
             type="button"
             onClick={onClose}

@@ -7,6 +7,7 @@ import {
   initializeSetup,
   lookupSerial,
   reactivateLicenseToken,
+  resetLocalLicense,
   setAdminPassword,
   syncLicenseRegistryHandler,
 } from '../controllers/setup.controller.js';
@@ -22,5 +23,6 @@ router.post('/license/bind-serial', bindSerialLicense);
 router.post('/license/ack-file', ackLicenseFile);
 router.post('/license/sync-registry', syncLicenseRegistryHandler);
 router.post('/license/reactivate-token', reactivateLicenseToken);
+router.post('/license/reset-local', resetLocalLicense);
 
 export default router;

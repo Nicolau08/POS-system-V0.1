@@ -144,7 +144,11 @@ export async function readTenantInfo(actorUser = null) {
     commerce_type: commerceType,
     vertical,
     capabilities,
-    license_expires_at: expiry.licenseExpiresAt,
+    license_expires_at:
+      expiry.licenseExpiresAt ||
+      (licenseFile.ok
+        ? normalizeText(licenseFile.payload?.expiration || licenseFile.payload?.expires_at) || null
+        : null),
     tenant_id: tenantId,
   };
 }

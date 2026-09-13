@@ -1,14 +1,14 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, FolderOpen } from 'lucide-react';
-import { resetDatabase } from '@/lib/services/posService';
+import { listDatabaseBackups, resetDatabase } from '@/lib/services/posService';
 
 export default function DatabaseResetPanel() {
   const inputCls = () =>
-    'w-full rounded border bg-[#111] px-2.5 py-1.5 text-xs text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-[#0001fb] border-zinc-700';
+    'w-full rounded border bg-pos-bg px-2.5 py-1.5 text-xs text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-[#0001fb] border-pos-border';
 
-  const [resetBackupPath, setResetBackupPath] = useState('C:\\Users\\Nicol\\Documents\\Vorum\\Backup');
+  const [resetBackupPath, setResetBackupPath] = useState('');
   const [resetSelections, setResetSelections] = useState({
     products: true,
     customers: true,
@@ -17,6 +17,16 @@ export default function DatabaseResetPanel() {
   const [adminPassword, setAdminPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    void listDatabaseBackups()
+      .then((data) => {
+        if (data.backupsDir) setResetBackupPath(data.backupsDir);
+      })
+      .catch(() => {
+        /* ignore — utilizador pode escolher pasta */
+      });
+  }, []);
 
   const handleSelectBackupFolder = useCallback(async () => {
     try {
@@ -90,7 +100,7 @@ export default function DatabaseResetPanel() {
         </div>
       </div>
 
-      <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+      <section className="rounded border border-pos-border/80 bg-pos-card p-3">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
             1
@@ -105,7 +115,7 @@ export default function DatabaseResetPanel() {
                 className={inputCls()}
                 value={resetBackupPath}
                 onChange={(e) => setResetBackupPath(e.target.value)}
-                placeholder="Ex.: C:\\Users\\SeuUsuario\\Documents\\POS\\Backup"
+                placeholder="Ex.: C:\\Users\\SeuUsuario\\Documents\\POSly Backup"
               />
               <button
                 type="button"
@@ -121,7 +131,7 @@ export default function DatabaseResetPanel() {
         </div>
       </section>
 
-      <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+      <section className="rounded border border-pos-border/80 bg-pos-card p-3">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
             2
@@ -159,7 +169,7 @@ export default function DatabaseResetPanel() {
         </div>
       </section>
 
-      <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+      <section className="rounded border border-pos-border/80 bg-pos-card p-3">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
             3
