@@ -10,6 +10,10 @@ import {
   verifyOfflineReactivationToken,
 } from '../../lib/licensing/offlineReactivationToken.js';
 import { normalizeReactivationTokenInput } from '../../lib/licensing/reactivationToken.js';
+import {
+  readLicenseFileSealed,
+  writeSealedLicenseFile,
+} from '../../lib/licensing/sealedLocalLicense.js';
 import { getLocalMachineId } from './licenseSerial.service.js';
 import {
   resolveLicensePath,
@@ -51,23 +55,40 @@ function resolveIssuerBaseUrl() {
 
 export async function readLocalLicenseFile() {
   const licensePath = resolveLicensePath();
-  try {
-    const raw = await fs.readFile(licensePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return { ok: false, error: 'Ficheiro de licença inválido.', licensePath };
-    }
-    return { ok: true, payload: parsed, licensePath, raw };
-  } catch (err) {
-    if (err && typeof err === 'object' && err.code === 'ENOENT') {
-      return { ok: false, error: 'Licença não encontrada nesta instalação.', licensePath };
-    }
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : 'Falha ao ler licença local.',
-      licensePath,
-    };
+  const secret = resolveLicenseHmacSecret();
+  const machineId = getLocalMachineId();
+  const file = await readLicenseFileSealed(licensePath, {
+    secret,
+    machineId,
+    migrate: Boolean(secret),
+  });
+  if (!file.ok) {
+    return { ok: false, error: file.error, licensePath: file.licensePath || licensePath };
   }
+  return {
+    ok: true,
+    payload: file.payload,
+    licensePath: file.licensePath,
+    raw: JSON.stringify(file.payload),
+    sealed: Boolean(file.sealed),
+    migrated: Boolean(file.migrated),
+  };
+}
+
+async function writeLocalLicensePayload(licensePayload) {
+  const licensePath = resolveLicensePath();
+  const secret = resolveLicenseHmacSecret();
+  const machineId =
+    normalizeText(licensePayload?.machine_id) || getLocalMachineId();
+  await fs.mkdir(path.dirname(licensePath), { recursive: true });
+  if (secret) {
+    await writeSealedLicenseFile(licensePath, licensePayload, { secret, machineId });
+    return;
+  }
+  if (String(process.env.NODE_ENV ?? '').toLowerCase() === 'production') {
+    throw new Error('POS_LICENSE_HMAC_SECRET obrigatório para gravar licença local.');
+  }
+  await fs.writeFile(licensePath, JSON.stringify(licensePayload, null, 2), 'utf8');
 }
 
 function licenseKeyFromPayload(payload) {
@@ -150,9 +171,7 @@ async function persistLicenseState({
   );
 
   if (licensePayload) {
-    const licensePath = resolveLicensePath();
-    await fs.mkdir(path.dirname(licensePath), { recursive: true });
-    await fs.writeFile(licensePath, JSON.stringify(licensePayload, null, 2), 'utf8');
+    await writeLocalLicensePayload(licensePayload);
   }
 
   return { tenantId, expiresAt, licenseId };

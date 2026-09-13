@@ -437,20 +437,20 @@ export function SalesHistoryModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col bg-[#141414]">
-      <div className="flex items-center justify-between border-b border-zinc-800 bg-[#1a1a1a] px-4 py-2">
+    <div className="fixed inset-0 z-[100] flex flex-col bg-pos-card">
+      <div className="flex items-center justify-between border-b border-pos-border bg-pos-surface px-4 py-2">
         <h2 className="text-sm font-bold tracking-wide text-zinc-100">Histórico de vendas</h2>
         <button
           type="button"
           onClick={onClose}
-          className="rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white"
+          className="rounded p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white"
           aria-label="Fechar"
         >
           <X size={18} />
         </button>
       </div>
 
-      <div className="relative z-40 h-16 border-b border-zinc-800 bg-[#1a1a1a] px-2 overflow-visible">
+      <div className="relative z-40 h-16 border-b border-pos-border bg-pos-surface px-2 overflow-visible">
         <div className="flex h-full items-center gap-3 overflow-visible">
           <div className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-visible no-scrollbar">
             <ManagementToolbarButton
@@ -498,7 +498,7 @@ export function SalesHistoryModal({
             <button
               type="button"
               onClick={openPeriodModal}
-              className="flex h-10 min-w-[220px] items-center gap-2 rounded border border-zinc-700 bg-[#121212] px-3 text-left hover:border-[#0001fb] hover:bg-zinc-800"
+              className="flex h-10 min-w-[220px] items-center gap-2 rounded border border-pos-border bg-pos-bg px-3 text-left hover:border-[#0001fb] hover:bg-zinc-800"
               title="Filtrar período"
             >
               <CalendarDays size={16} className="shrink-0 text-zinc-400" />
@@ -510,8 +510,8 @@ export function SalesHistoryModal({
         </div>
       </div>
 
-      <div className="flex h-12 items-center gap-2 border-b border-zinc-800 bg-[#181818] px-2">
-        <div className="flex items-center gap-3 border-r border-zinc-800 px-3 text-zinc-500">
+      <div className="flex h-12 items-center gap-2 border-b border-pos-border bg-pos-surface px-2">
+        <div className="flex items-center gap-3 border-r border-pos-border px-3 text-zinc-500">
           <Search size={18} />
         </div>
         <div className="relative flex-1">
@@ -533,10 +533,10 @@ export function SalesHistoryModal({
       ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-[3] border-b border-zinc-800">
+        <div className="min-h-0 flex-[3] border-b border-pos-border">
           <div className="h-full overflow-auto custom-scrollbar">
             <table className="w-full min-w-[1200px] border-collapse text-xs">
-              <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
+              <thead className="sticky top-0 z-10 bg-pos-surface">
                 <tr className="text-zinc-400">
                   <Th>#</Th>
                   <Th>Tipo de documento</Th>
@@ -577,7 +577,7 @@ export function SalesHistoryModal({
                       <tr
                         key={rowId}
                         onClick={() => setSelectedSaleId(rowId)}
-                        className={`cursor-pointer border-b border-zinc-800/70 transition-colors ${
+                        className={`cursor-pointer border-b border-pos-border/70 transition-colors ${
                           selected ? 'bg-[var(--pos-brand-selected-bg)]' : 'text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)]'
                         }`}
                       >
@@ -605,12 +605,12 @@ export function SalesHistoryModal({
         </div>
 
         <div className="min-h-0 flex-[2]">
-          <div className="border-b border-zinc-800 bg-[#171717] px-3 py-1.5 text-[11px] text-zinc-400">
+          <div className="border-b border-pos-border bg-pos-surface px-3 py-1.5 text-[11px] text-zinc-400">
             Itens do documento ({selectedItems.length})
           </div>
           <div className="h-[calc(100%-28px)] overflow-auto custom-scrollbar">
             <table className="w-full min-w-[1100px] border-collapse text-xs">
-              <thead className="sticky top-0 z-10 bg-[#1f1f1f]">
+              <thead className="sticky top-0 z-10 bg-pos-surface">
                 <tr className="text-zinc-400">
                   <Th>#</Th>
                   <Th>Código</Th>
@@ -641,7 +641,7 @@ export function SalesHistoryModal({
                     const unitTaxAmount = unitPriceWithTax - unitPriceBeforeTax;
                     const rowTotal = unitPriceWithTax * qty - discount;
                     return (
-                      <tr key={String(item.id)} className="border-b border-zinc-800/70 text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)]">
+                      <tr key={String(item.id)} className="border-b border-pos-border/70 text-zinc-200 hover:bg-[var(--pos-brand-hover-bg)]">
                         <Td>{index + 1}</Td>
                         <Td>{index + 1}</Td>
                         <Td>{item.product_name || '-'}</Td>
@@ -665,7 +665,7 @@ export function SalesHistoryModal({
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-zinc-800 bg-[#1a1a1a] px-4 py-3">
+      <div className="flex items-center justify-between border-t border-pos-border bg-pos-surface px-4 py-3">
         <div className="text-xs text-zinc-400 space-y-0.5">
           <div>
             Contagem de documentos: <span className="font-semibold text-zinc-200">{filteredSales.length}</span>
@@ -685,16 +685,16 @@ export function SalesHistoryModal({
 
       {isPeriodModalOpen && (
         <div
-          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-6 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[110] flex items-center justify-center pos-modal-overlay p-6"
           onClick={() => setIsPeriodModalOpen(false)}
         >
           <div
-            className="w-full max-w-[820px] overflow-hidden rounded border border-zinc-700 bg-[#1f1f1f] shadow-2xl"
+            className="w-full max-w-[820px] overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-6 py-5 text-center">
               <h3 className="text-[18px] text-white">Período</h3>
-              <div className="mt-4 inline-flex items-center rounded border border-zinc-700 bg-[#1a1a1a] px-4 py-2 font-bold text-white">
+              <div className="mt-4 inline-flex items-center rounded border border-pos-border bg-pos-surface px-4 py-2 font-bold text-white">
                 {formatInputDateLabel(tempDateFrom)} — {formatInputDateLabel(tempDateTo)}
               </div>
             </div>
@@ -746,7 +746,7 @@ export function SalesHistoryModal({
                   <button
                     type="button"
                     onClick={() => setIsPeriodModalOpen(false)}
-                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-zinc-700 bg-[#131314] px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
+                    className="flex min-h-11 items-center justify-center gap-2 rounded border border-pos-border bg-pos-card px-3 py-3 text-sm text-white transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]"
                   >
                     <X size={16} />
                     <span className="text-sm">Cancelar</span>
@@ -787,7 +787,7 @@ export function SalesHistoryModal({
 function Th({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
     <th
-      className={`border-b border-r border-zinc-700/80 px-3 py-2 text-left font-medium whitespace-nowrap last:border-r-0 ${className}`}
+      className={`border-b border-r border-pos-border/80 px-3 py-2 text-left font-medium whitespace-nowrap last:border-r-0 ${className}`}
     >
       {children}
     </th>
@@ -795,7 +795,7 @@ function Th({ children, className = '' }: { children: React.ReactNode; className
 }
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <td className={`border-r border-zinc-800/80 px-3 py-2 whitespace-nowrap last:border-r-0 ${className}`}>{children}</td>;
+  return <td className={`border-r border-pos-border/80 px-3 py-2 whitespace-nowrap last:border-r-0 ${className}`}>{children}</td>;
 }
 
 function PresetButton({
@@ -814,7 +814,7 @@ function PresetButton({
       className={`min-h-11 rounded border px-3 py-3 text-sm transition-colors ${
         active
           ? 'border-[#0001fb]/40 bg-[var(--pos-brand-selected-bg)] text-white'
-          : 'border-zinc-700 bg-[#1a1a1a] text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
+          : 'border-pos-border bg-pos-surface text-white hover:bg-[var(--pos-brand-hover-bg)] hover:text-[#0001fb]'
       }`}
     >
       {label}
@@ -840,7 +840,7 @@ function PeriodCalendar({
   return (
     <div>
       <p className="mb-3 text-center text-sm text-zinc-100">{title}</p>
-      <div className="mx-auto max-w-[260px] rounded border border-zinc-700 bg-[#1a1a1a] p-4">
+      <div className="mx-auto max-w-[260px] rounded border border-pos-border bg-pos-surface p-4">
         <div className="flex items-center justify-between px-1 pb-4">
           <button type="button" onClick={onPrev} className="rounded p-1 text-zinc-300 transition-colors hover:text-[#0001fb] focus-visible:outline-none">
             <ChevronLeft size={16} />
@@ -890,7 +890,7 @@ function CalendarGrid({
               key={day.value}
               type="button"
               onClick={() => onSelect(day.value)}
-              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded-xl text-sm transition-colors ${
+              className={`flex aspect-square w-full min-w-0 items-center justify-center rounded text-sm transition-colors ${
                 isSelected
                   ? 'scale-105 bg-[var(--pos-brand-selected-bg)] text-white ring-1 ring-[#0001fb]/50'
                   : isToday

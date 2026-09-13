@@ -44,9 +44,9 @@ export function QuotationModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-4xl bg-[#1a1a1a] border border-zinc-800 rounded overflow-hidden" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 pos-modal-overlay" onClick={onClose}>
+      <div className="w-full max-w-4xl bg-pos-surface border border-pos-border rounded overflow-hidden" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-pos-border">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded bg-[#0001fb]/10 text-[#0001fb]">
               <FileText size={18} />
@@ -59,14 +59,14 @@ export function QuotationModal({
           <div className="flex items-center gap-2">
             <button
               onClick={onReload}
-              className="h-9 px-3 rounded bg-zinc-900 border border-zinc-700 text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-2 text-xs"
+              className="h-9 px-3 rounded bg-zinc-900 border border-pos-border text-zinc-200 hover:bg-zinc-800 transition-colors flex items-center gap-2 text-xs"
             >
               <RefreshCw size={14} />
               Atualizar
             </button>
             <button
               onClick={onClose}
-              className="h-9 w-9 rounded bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors grid place-items-center"
+              className="h-9 w-9 rounded bg-zinc-900 border border-pos-border text-zinc-300 hover:bg-zinc-800 transition-colors grid place-items-center"
               aria-label="Fechar modal de cotações"
             >
               <X size={16} />
@@ -76,13 +76,13 @@ export function QuotationModal({
 
         <div className="max-h-[70vh] overflow-auto custom-scrollbar">
           <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 bg-[#202020] z-10">
+            <thead className="sticky top-0 bg-pos-surface z-10">
               <tr className="text-zinc-400">
-                <th className="px-4 py-2.5 text-left border-b border-zinc-700">Documento</th>
-                <th className="px-4 py-2.5 text-left border-b border-zinc-700">Cliente</th>
-                <th className="px-4 py-2.5 text-left border-b border-zinc-700">Data</th>
-                <th className="px-4 py-2.5 text-left border-b border-zinc-700">Estado</th>
-                <th className="px-4 py-2.5 text-right border-b border-zinc-700">Total</th>
+                <th className="px-4 py-2.5 text-left border-b border-pos-border">Documento</th>
+                <th className="px-4 py-2.5 text-left border-b border-pos-border">Cliente</th>
+                <th className="px-4 py-2.5 text-left border-b border-pos-border">Data</th>
+                <th className="px-4 py-2.5 text-left border-b border-pos-border">Estado</th>
+                <th className="px-4 py-2.5 text-right border-b border-pos-border">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -103,7 +103,7 @@ export function QuotationModal({
                   <tr
                     key={quotation.id}
                     onDoubleClick={() => onLoadQuotation(quotation)}
-                    className="border-b border-zinc-800/70 hover:bg-[var(--pos-brand-hover-bg)] cursor-pointer"
+                    className="border-b border-pos-border/70 hover:bg-[var(--pos-brand-hover-bg)] cursor-pointer"
                     title="Duplo clique para carregar esta cotação"
                   >
                     <td className="px-4 py-2.5 text-zinc-100 font-semibold">{quotation.document_number || `DOC-${quotation.id}`}</td>

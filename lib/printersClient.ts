@@ -25,3 +25,25 @@ export async function listSystemPrinters(): Promise<SystemPrinter[]> {
   }
   return [];
 }
+
+/** Resolve a impressora de recibos configurada em Opções de impressão (Windows). */
+export async function resolveConfiguredReceiptPrinterName(
+  preferredName?: string | null,
+): Promise<string | undefined> {
+  const preferred = String(preferredName ?? '').trim();
+  const printers = await listSystemPrinters();
+
+  if (preferred && printers.length > 0) {
+    const preferredLower = preferred.toLowerCase();
+    const match =
+      printers.find((p) => p.name === preferred) ||
+      printers.find((p) => p.displayName === preferred) ||
+      printers.find((p) => p.name.toLowerCase() === preferredLower) ||
+      printers.find((p) => p.displayName.toLowerCase() === preferredLower);
+    if (match?.name) return match.name;
+  }
+
+  if (preferred) return preferred;
+  const def = printers.find((p) => p.isDefault) || printers[0];
+  return def?.name || undefined;
+}

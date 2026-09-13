@@ -1,8 +1,1 @@
-{
-  "tenant_id": "hp-pvd",
-  "machine_id": "496f8de2-a08f-4868-ae73-12e9ffdccc34",
-  "expiration": "2027-07-05T06:00:00.000Z",
-  "signature": "7044f1079f200b70f080397a32ab6559a5f30aa4196d602da0f3d6cbe3d2cf50",
-  "voucher_nonce": "d1219073-38f1-40ce-a4ae-e7c25d9db10b",
-  "activated_at": "2026-06-04T12:04:11.446Z"
-}
+{"v":1,"alg":"aes-256-gcm","iv":"qfPWv+BXLjOOlFcJ","tag":"NT7JI2EjXdw5CiVYaxhzqA==","ciphertext":"y59qEHrTKVUaEXlZdxz2jhc9O1tpIQg3iMmUErXkad0Ui6KgUKVZc706BbfHs06pzviP9K7SsKOdux2+K1CduNzseoOOPgAkJRREUe6LBEEWpS0efs3qfTUkjgAiWlrgRDO9xae9qJj0dBu9is/Q+VOb4PKdnHFSO9U23CfQizlCusPwEaZ4YocoCUI2w2925PFds4MaajMYtynqo8OEnxbU2DvP/fKwfieNHW/1TMXibR7FIKBQSEd+bxSgthAGyxAwzAc7Ch3TJw3w00c/wt0r701M1cRR5BrZtbXub1O91Zk9sfmMSFWqV8wcrwJoV+l/AtoCn9oV2JjoKuXibF90NRxQ15Lzr0lK3aHAepyJLCPurX31RFeRtzZtZkKzT10="}

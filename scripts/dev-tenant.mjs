@@ -1,5 +1,8 @@
 /**
- * Dev isolado por tenant: SQLite + config + licença em .dev-tenants/<id>/
+ * Dev isolado por tenant: SQLite + config + licença + machine ID em .dev-tenants/<id>/
+ *
+ * O app instalado continua em %APPDATA%\POSly com o Machine ID real do PC (como cliente).
+ * O dev NÃO partilha pasta nem machine ID com o instalado — testes na mesma máquina ficam sólidos.
  *
  * Uso:
  *   node scripts/dev-tenant.mjs qa03          → tenant-qa-03 (BD nova se pasta não existir)
@@ -9,6 +12,7 @@
  *   node scripts/dev-tenant.mjs default       → api/database.db (projecto)
  */
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
@@ -54,6 +58,35 @@ function resolveTenant(slugInput) {
   };
 }
 
+/** Machine ID estável por pasta de tenant (UUID v4), independente do hardware. */
+function readOrCreateDevMachineId(tenantRoot) {
+  const filePath = path.join(tenantRoot, 'machine-id.json');
+  try {
+    if (fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const id = String(parsed?.machine_id ?? parsed?.machineId ?? '').trim();
+      if (id) return id;
+    }
+  } catch {
+    // regenerar abaixo
+  }
+  const machineId = crypto.randomUUID();
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify(
+      {
+        machine_id: machineId,
+        created_at: new Date().toISOString(),
+        note: 'ID de teste POSly — não é o Machine ID do hardware / app instalado',
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  return machineId;
+}
+
 function isPortInUse(port) {
   return new Promise((resolve) => {
     const tester = net
@@ -94,29 +127,47 @@ if (tenant) {
     console.log('[dev-tenant] Migrado pos.db → database.db');
   }
 
+  const machineId = readOrCreateDevMachineId(root);
+
   env.POS_DB_PATH = databasePath;
   env.POS_BACKUP_DIR = backupsDir;
   env.POS_CONFIG_PATH = path.join(root, 'config.json');
   env.POS_LICENSE_PATH = path.join(root, 'license.json');
+  env.POS_USER_DATA_PATH = root;
+  env.POS_MACHINE_ID = machineId;
+  env.POS_ALLOW_MACHINE_ID_OVERRIDE = '1';
   env.DEFAULT_TENANT_ID = tenant.tenantId;
   env.DEFAULT_TENANT_NAME = tenant.tenantName;
   env.POS_DEV_TENANT = tenant.tenantId;
 
   const dbExists = fs.existsSync(env.POS_DB_PATH);
   console.log(`[dev-tenant] Tenant: ${tenant.tenantId} (${tenant.tenantName})`);
+  console.log(`[dev-tenant] Pasta isolada: ${root}`);
+  console.log(`[dev-tenant] Machine ID de teste: ${machineId}`);
   console.log(`[dev-tenant] SQLite: ${env.POS_DB_PATH}${dbExists ? ' (existente)' : ' (nova)'}`);
   console.log(`[dev-tenant] Licença: ${env.POS_LICENSE_PATH}`);
   console.log(`[dev-tenant] Config: ${env.POS_CONFIG_PATH}`);
+  console.log('[dev-tenant] Instalado (cliente): %APPDATA%\\POSly + Machine ID real — não partilha esta pasta');
 } else {
-  for (const key of ['POS_DB_PATH', 'POS_CONFIG_PATH', 'POS_LICENSE_PATH', 'POS_DEV_TENANT', 'POS_BACKUP_DIR']) {
+  for (const key of [
+    'POS_DB_PATH',
+    'POS_CONFIG_PATH',
+    'POS_LICENSE_PATH',
+    'POS_USER_DATA_PATH',
+    'POS_MACHINE_ID',
+    'POS_ALLOW_MACHINE_ID_OVERRIDE',
+    'POS_DEV_TENANT',
+    'POS_BACKUP_DIR',
+  ]) {
     delete env[key];
   }
-  console.log('[dev-tenant] Modo default → api/database.db');
+  console.log('[dev-tenant] Modo default → api/database.db (sem isolamento de tenant)');
 }
 
 if (withElectron) {
   env.POS_ELECTRON_USE_EXTERNAL_API = '1';
-  console.log('[dev-tenant] Electron desktop activado (--electron)');
+  env.POS_ELECTRON_DEV = '1';
+  console.log('[dev-tenant] Electron desktop activado (--electron) com userData na pasta do tenant');
 }
 
 if (withLan) {

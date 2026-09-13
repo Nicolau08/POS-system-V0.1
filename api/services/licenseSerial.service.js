@@ -1,8 +1,6 @@
 import crypto from 'crypto';
-import machineIdModule from 'node-machine-id';
 import db from '../database.js';
-
-const { machineIdSync } = machineIdModule;
+import { getLocalMachineId } from '../../lib/licensing/localMachineId.js';
 
 const runDb = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -52,9 +50,7 @@ export function extractSerialFromText(raw) {
   return `${match[1]}_${match[2]}`;
 }
 
-export function getLocalMachineId() {
-  return machineIdSync({ original: true });
-}
+export { getLocalMachineId };
 
 export async function findLicenseRowBySerial(serial) {
   const s = normalizeText(serial).toUpperCase();

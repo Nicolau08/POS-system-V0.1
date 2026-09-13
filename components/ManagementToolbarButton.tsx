@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { PosMenuButton } from '@/components/PosMenuButton';
 
 type ManagementToolbarButtonProps = {
   icon: React.ReactNode;
@@ -11,7 +12,7 @@ type ManagementToolbarButtonProps = {
   title?: string;
 };
 
-/** Toolbar padrão dos módulos de gerenciamento (referência: Taxas de impostos). */
+/** Toolbar padrão dos módulos de gestão. */
 export function ManagementToolbarButton({
   icon,
   label,
@@ -21,18 +22,15 @@ export function ManagementToolbarButton({
   title,
 }: ManagementToolbarButtonProps) {
   return (
-    <button
-      type="button"
+    <PosMenuButton
+      icon={icon}
+      label={label}
+      active={active}
       disabled={disabled}
-      onClick={onClick}
       title={title}
-      className={`group flex min-w-[82px] flex-col items-center justify-center rounded px-2 py-2 transition-colors hover:bg-[var(--pos-brand-hover-bg)] hover:text-white disabled:cursor-not-allowed disabled:opacity-35 ${
-        active ? 'bg-[var(--pos-brand-selected-bg)] text-white' : 'text-zinc-300'
-      }`}
-    >
-      <span className="mb-1 transition-transform group-hover:scale-110">{icon}</span>
-      <span className="text-center text-[11px] font-medium leading-none">{label}</span>
-    </button>
+      onClick={onClick as (() => void) | undefined}
+      className="!min-w-[84px]"
+    />
   );
 }
 
@@ -41,10 +39,10 @@ export function ManagementToolbarDivider() {
   return (
     <div
       aria-hidden="true"
-      className="mx-2 h-8 w-px shrink-0 self-center bg-zinc-700/40"
+      className="mx-1.5 h-9 w-px shrink-0 self-center bg-pos-border"
     />
   );
 }
 
 export const MANAGEMENT_TOOLBAR_CLASS =
-  'flex h-16 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-[#1a1a1a] px-2';
+  'flex h-[4.25rem] shrink-0 items-center gap-0.5 overflow-x-auto border-b border-pos-border bg-pos-surface px-2';

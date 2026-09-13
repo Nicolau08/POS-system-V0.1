@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeftRight, Loader2, X } from 'lucide-react';
 import PosSelect from '@/components/PosSelect';
+import { numberInputDisplayValue } from '@/lib/numberInput';
 import {
   fetchWarehouses,
   transferWarehouseStockApi,
@@ -117,9 +118,9 @@ export default function TransferStockModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-lg border border-zinc-700 bg-[#1a1a1a] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center pos-modal-overlay p-4">
+      <div className="w-full max-w-lg rounded border border-pos-border bg-pos-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-pos-border px-4 py-3">
           <div className="flex items-center gap-2 text-zinc-100">
             <ArrowLeftRight size={18} className="text-[#0001fb]" />
             <h2 className="text-sm font-semibold">Transferência de stock</h2>
@@ -171,9 +172,11 @@ export default function TransferStockModal({
                   type="number"
                   min="0"
                   step="any"
-                  value={quantity}
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={numberInputDisplayValue(quantity)}
                   onChange={(e) => setQuantity(e.target.value)}
-                  className="h-10 w-full rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white"
+                  className="h-10 w-full rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white placeholder:text-zinc-600"
                 />
               </label>
             </>
@@ -181,7 +184,7 @@ export default function TransferStockModal({
           {error ? <p className="text-xs text-amber-400">{error}</p> : null}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-zinc-800 px-4 py-3">
+        <div className="flex justify-end gap-2 border-t border-pos-border px-4 py-3">
           <button
             type="button"
             onClick={onClose}

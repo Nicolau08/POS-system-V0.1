@@ -1,5 +1,6 @@
 export function resolveDocCode(doc) {
   const docType = String(doc?.doc_type ?? '').trim().toUpperCase();
+  const docTypeNorm = docType.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const docNumber = String(doc?.document_number ?? '').trim().toUpperCase();
 
   if (docType === 'VD' || docType === 'VENDA') return 'VD';
@@ -7,7 +8,7 @@ export function resolveDocCode(doc) {
   if (docType === 'FP' || docType.includes('PROFORMA') || docType.includes('COTAC')) return 'FP';
   if (docType === 'RCA' || docType === 'AD') return 'RCA';
   if (docType === 'RC' || docType === 'RECIBO') return 'RC';
-  if (docType === 'NC') return 'NC';
+  if (docType === 'NC' || docTypeNorm.includes('NOTA DE CREDITO')) return 'NC';
   if (docType === 'TK' || docType === 'TICKET') return 'TK';
   if (docType === 'PAAD') return 'PAAD';
 

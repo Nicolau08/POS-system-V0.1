@@ -42,6 +42,8 @@ export default function DatabaseBackupPanel() {
   const [backups, setBackups] = useState<DatabaseBackupRow[]>([]);
   const [backupsDir, setBackupsDir] = useState<string>('');
   const [databasePath, setDatabasePath] = useState<string>('');
+  const [intervalHours, setIntervalHours] = useState<number>(1);
+  const [retentionCount, setRetentionCount] = useState<number>(48);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -68,6 +70,8 @@ export default function DatabaseBackupPanel() {
       setBackups(data.backups);
       setBackupsDir(data.backupsDir ?? '');
       setDatabasePath(data.databasePath ?? '');
+      if (data.intervalHours != null) setIntervalHours(data.intervalHours);
+      if (data.retentionCount != null) setRetentionCount(data.retentionCount);
       setEncStatus(status);
     } catch (e) {
       setMessage({
@@ -208,9 +212,11 @@ export default function DatabaseBackupPanel() {
 
   return (
     <div className="max-w-3xl space-y-4 pt-4">
-      <div className="rounded border border-zinc-800/80 bg-[#141414] px-3 py-2 text-[11px] text-zinc-400">
-        Cópias automáticas a cada algumas horas. Ficheiro da base:{' '}
-        <code className="text-zinc-300">{databasePath || 'database.db'}</code>
+      <div className="rounded border border-pos-border/80 bg-pos-card px-3 py-2 text-[11px] text-zinc-400">
+        Cópias automáticas a cada {intervalHours === 1 ? '1 hora' : `${intervalHours} horas`} enquanto a
+        app está aberta (também no arranque se a última cópia já for antiga, e após cada fecho de
+        caixa). Mantém as {retentionCount} mais recentes em Documentos\POSly Backup. Ficheiro da
+        base: <code className="text-zinc-300">{databasePath || 'database.db'}</code>
         {backupsDir ? (
           <>
             <br />
@@ -255,7 +261,7 @@ export default function DatabaseBackupPanel() {
           type="button"
           disabled={busy || loading}
           onClick={() => void load()}
-          className="inline-flex items-center gap-1.5 rounded border border-zinc-700 bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-[#0001fb] hover:text-white disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded border border-pos-border bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-[#0001fb] hover:text-white disabled:opacity-40"
         >
           <RefreshCw size={14} />
           Actualizar lista
@@ -268,7 +274,7 @@ export default function DatabaseBackupPanel() {
             setShowUnwrap(false);
             setShowExport(true);
           }}
-          className="inline-flex items-center gap-1.5 rounded border border-zinc-700 bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-amber-500 hover:text-amber-200 disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded border border-pos-border bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-amber-500 hover:text-amber-200 disabled:opacity-40"
         >
           <KeyRound size={14} />
           Exportar chave de recuperação
@@ -281,16 +287,16 @@ export default function DatabaseBackupPanel() {
             setShowExport(false);
             setShowUnwrap(true);
           }}
-          className="inline-flex items-center gap-1.5 rounded border border-zinc-700 bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded border border-pos-border bg-transparent px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white disabled:opacity-40"
         >
           <KeyRound size={14} />
           Abrir ficheiro de recuperação
         </button>
       </div>
 
-      <div className="overflow-hidden rounded border border-zinc-800">
+      <div className="overflow-hidden rounded border border-pos-border">
         <table className="w-full text-left text-[11px]">
-          <thead className="bg-[#1a1a1a] text-zinc-500">
+          <thead className="bg-pos-surface text-zinc-500">
             <tr>
               <th className="px-3 py-2 font-semibold">Ficheiro</th>
               <th className="px-3 py-2 font-semibold">Data</th>
@@ -313,7 +319,7 @@ export default function DatabaseBackupPanel() {
               </tr>
             ) : (
               backups.map((row) => (
-                <tr key={row.fileName} className="border-t border-zinc-800/80">
+                <tr key={row.fileName} className="border-t border-pos-border/80">
                   <td className="px-3 py-2 font-mono text-zinc-200">
                     {row.fileName}
                     {row.kind === 'pre-restore' ? (
@@ -327,7 +333,7 @@ export default function DatabaseBackupPanel() {
                       type="button"
                       disabled={busy}
                       onClick={() => setConfirmFile(row.fileName)}
-                      className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:border-amber-500 hover:text-amber-300 disabled:opacity-40"
+                      className="inline-flex items-center gap-1 rounded border border-pos-border px-2 py-1 text-zinc-300 hover:border-amber-500 hover:text-amber-300 disabled:opacity-40"
                     >
                       <RotateCcw size={12} />
                       Restaurar
@@ -341,8 +347,8 @@ export default function DatabaseBackupPanel() {
       </div>
 
       {confirmFile ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="w-full max-w-md rounded border border-zinc-700 bg-[#1a1a1a] p-5 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center pos-modal-overlay p-4">
+          <div className="w-full max-w-md rounded border border-pos-border bg-pos-surface p-5 space-y-4">
             <div className="flex gap-3 text-amber-300">
               <AlertTriangle size={22} className="shrink-0" />
               <div>
@@ -359,7 +365,7 @@ export default function DatabaseBackupPanel() {
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirmFile(null)}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
+                className="rounded border border-pos-border px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
               >
                 Cancelar
               </button>
@@ -377,8 +383,8 @@ export default function DatabaseBackupPanel() {
       ) : null}
 
       {showExport ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="w-full max-w-md rounded border border-zinc-700 bg-[#1a1a1a] p-5 space-y-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center pos-modal-overlay p-4">
+          <div className="w-full max-w-md rounded border border-pos-border bg-pos-surface p-5 space-y-3">
             <div className="flex gap-3 text-amber-300">
               <KeyRound size={22} className="shrink-0" />
               <div>
@@ -405,21 +411,21 @@ export default function DatabaseBackupPanel() {
               placeholder="O seu PIN de administrador"
               value={enteredPin}
               onChange={(e) => setEnteredPin(e.target.value)}
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 text-[12px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 text-[12px] text-white"
             />
             <input
               type="password"
               placeholder="Senha do ficheiro (mín. 8)"
               value={wrapPassword}
               onChange={(e) => setWrapPassword(e.target.value)}
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 text-[12px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 text-[12px] text-white"
             />
             <input
               type="password"
               placeholder="Confirmar senha do ficheiro"
               value={wrapPasswordConfirm}
               onChange={(e) => setWrapPasswordConfirm(e.target.value)}
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 text-[12px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 text-[12px] text-white"
             />
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -429,7 +435,7 @@ export default function DatabaseBackupPanel() {
                   setShowExport(false);
                   resetRecoveryForm();
                 }}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
+                className="rounded border border-pos-border px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
               >
                 Cancelar
               </button>
@@ -447,8 +453,8 @@ export default function DatabaseBackupPanel() {
       ) : null}
 
       {showUnwrap ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="w-full max-w-lg rounded border border-zinc-700 bg-[#1a1a1a] p-5 space-y-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center pos-modal-overlay p-4">
+          <div className="w-full max-w-lg rounded border border-pos-border bg-pos-surface p-5 space-y-3">
             <div>
               <h3 className="text-sm font-bold text-white">Abrir ficheiro de recuperação</h3>
               <p className="mt-1 text-[11px] text-zinc-400 leading-relaxed">
@@ -461,7 +467,7 @@ export default function DatabaseBackupPanel() {
               onChange={(e) => setUnwrapFileText(e.target.value)}
               rows={6}
               placeholder='{"v":1,"alg":"aes-256-gcm",...}'
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 font-mono text-[11px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 font-mono text-[11px] text-white"
             />
             <input
               type="password"
@@ -469,14 +475,14 @@ export default function DatabaseBackupPanel() {
               placeholder="O seu PIN de administrador"
               value={enteredPin}
               onChange={(e) => setEnteredPin(e.target.value)}
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 text-[12px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 text-[12px] text-white"
             />
             <input
               type="password"
               placeholder="Senha do ficheiro"
               value={wrapPassword}
               onChange={(e) => setWrapPassword(e.target.value)}
-              className="w-full rounded border border-zinc-700 bg-[#0f0f0f] px-3 py-2 text-[12px] text-white"
+              className="w-full rounded border border-pos-border bg-pos-bg px-3 py-2 text-[12px] text-white"
             />
             {revealedKey ? (
               <div className="space-y-2 rounded border border-emerald-800/50 bg-emerald-950/20 p-3">
@@ -499,7 +505,7 @@ export default function DatabaseBackupPanel() {
                   setShowUnwrap(false);
                   resetRecoveryForm();
                 }}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
+                className="rounded border border-pos-border px-3 py-1.5 text-[11px] font-semibold text-zinc-300"
               >
                 Fechar
               </button>

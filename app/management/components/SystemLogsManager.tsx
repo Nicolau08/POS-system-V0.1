@@ -128,17 +128,17 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
   };
 
   return (
-    <div className={`h-full flex flex-col gap-5 ${embedded ? 'p-0' : 'p-4'}`}>
+    <div className={`flex h-full flex-col gap-5 ${embedded ? 'p-0' : 'p-4 bg-pos-bg'}`}>
       {!embedded ? (
         <div>
-          <h2 className="text-xl font-semibold text-white tracking-tight">Actividade</h2>
-          <p className="text-sm text-zinc-500 mt-1">{subtitle}</p>
+          <h2 className="text-xl font-semibold text-white tracking-tight">Logs do sistema</h2>
+          <p className="mt-1 text-sm text-zinc-500">{subtitle}</p>
         </div>
       ) : (
-        <p className="text-sm text-zinc-500 -mt-1">{subtitle}</p>
+        <p className="-mt-1 text-sm text-zinc-500">{subtitle}</p>
       )}
 
-      <div className="inline-flex w-fit rounded-lg bg-zinc-900/90 p-1 border border-zinc-800">
+      <div className="inline-flex w-fit rounded border border-pos-border bg-pos-card p-1">
         {SOURCE_TABS.map((tab) => {
           const active = source === tab.id;
           return (
@@ -149,8 +149,8 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
                 setSource(tab.id);
                 setLevel('');
               }}
-              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
-                active ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+              className={`rounded px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                active ? 'bg-pos-surface-3 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
               {tab.label}
@@ -160,7 +160,7 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-[220px] max-w-md">
+        <div className="relative min-w-[220px] max-w-md flex-1">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
           <input
             value={qDraft}
@@ -169,7 +169,7 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
               if (e.key === 'Enter') applySearch();
             }}
             placeholder="Pesquisar histórico…"
-            className="w-full h-10 rounded-lg bg-zinc-900 border border-zinc-700/80 pl-9 pr-3 text-sm text-zinc-200 placeholder:text-zinc-500 outline-none focus:border-zinc-500"
+            className="h-10 w-full rounded border border-pos-border bg-pos-field pl-9 pr-3 text-sm text-zinc-200 outline-none placeholder:text-zinc-500 focus:border-[#0001fb]"
           />
         </div>
 
@@ -185,14 +185,14 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
             ]}
             size="md"
             className="w-[180px]"
-            triggerClassName="!bg-zinc-900 !border-zinc-700/80"
+            triggerClassName="!bg-pos-field !border-pos-border"
           />
         ) : null}
 
         <button
           type="button"
           onClick={handleRefresh}
-          className="h-10 px-3 rounded-lg bg-zinc-900 border border-zinc-700/80 text-zinc-300 text-sm hover:bg-zinc-800 hover:text-white inline-flex items-center gap-2"
+          className="inline-flex h-10 items-center gap-2 rounded border border-pos-border bg-pos-field px-3 text-sm text-zinc-300 hover:bg-pos-surface-3 hover:text-white"
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           Actualizar
@@ -202,19 +202,19 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
       </div>
 
       {error ? (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 text-sm px-3 py-2">
+        <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
         </div>
       ) : null}
 
-      <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-zinc-800/80 bg-[#141414]">
+      <div className="min-h-0 flex-1 overflow-auto rounded border border-pos-border bg-pos-card">
         <table className="w-full text-left text-sm">
-          <thead className="sticky top-0 z-10 bg-[#1a1a1a] text-zinc-500 text-[11px] uppercase tracking-wider">
-            <tr className="border-b border-zinc-800">
-              <th className="px-4 py-3 font-medium w-[72px]">ID</th>
-              <th className="px-4 py-3 font-medium whitespace-nowrap">Data</th>
-              <th className="px-4 py-3 font-medium whitespace-nowrap">Hora</th>
-              <th className="px-4 py-3 font-medium min-w-[140px]">Acção</th>
+          <thead className="sticky top-0 z-10 bg-pos-surface text-[11px] uppercase tracking-wider text-zinc-500">
+            <tr className="border-b border-pos-border">
+              <th className="w-[72px] px-4 py-3 font-medium">ID</th>
+              <th className="whitespace-nowrap px-4 py-3 font-medium">Data</th>
+              <th className="whitespace-nowrap px-4 py-3 font-medium">Hora</th>
+              <th className="min-w-[140px] px-4 py-3 font-medium">Acção</th>
               <th className="px-4 py-3 font-medium">Descrição</th>
             </tr>
           </thead>
@@ -235,18 +235,18 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
                 <tr
                   key={item.id}
                   onClick={() => setExpandedId(expanded ? null : item.id)}
-                  className={`border-b border-zinc-800/70 cursor-pointer transition-colors ${
-                    expanded ? 'bg-zinc-900/70' : 'hover:bg-zinc-900/40'
+                  className={`cursor-pointer border-b border-pos-border transition-colors ${
+                    expanded ? 'bg-pos-surface-2' : 'hover:bg-pos-surface/40'
                   }`}
                 >
-                  <td className="px-4 py-3.5 align-top text-zinc-500 font-mono text-xs">
+                  <td className="px-4 py-3.5 align-top font-mono text-xs text-zinc-500">
                     {String(item.id).slice(0, 8)}
                   </td>
-                  <td className="px-4 py-3.5 align-top text-zinc-300 whitespace-nowrap">{date}</td>
-                  <td className="px-4 py-3.5 align-top text-zinc-400 whitespace-nowrap">{time}</td>
+                  <td className="whitespace-nowrap px-4 py-3.5 align-top text-zinc-300">{date}</td>
+                  <td className="whitespace-nowrap px-4 py-3.5 align-top text-zinc-400">{time}</td>
                   <td className="px-4 py-3.5 align-top">
                     <span
-                      className={`inline-flex max-w-[180px] truncate px-2 py-1 rounded-md border text-[11px] font-medium ${actionBadgeClass(
+                      className={`inline-flex max-w-[180px] truncate rounded border px-2 py-1 text-[11px] font-medium ${actionBadgeClass(
                         item.level,
                         item.event,
                       )}`}
@@ -256,7 +256,7 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
                     </span>
                   </td>
                   <td className="px-4 py-3.5 align-top">
-                    <div className="text-zinc-200 leading-snug truncate">
+                    <div className="truncate leading-snug text-zinc-200">
                       {item.message}
                       {(item.why || whereLine) ? (
                         <span className="text-zinc-500">
@@ -280,13 +280,13 @@ export default function SystemLogsManager({ embedded = false }: { embedded?: boo
                           ) : null}
                         </div>
                         {item.error != null ? (
-                          <pre className="text-red-300 whitespace-pre-wrap break-all bg-black/40 rounded-lg p-2.5 border border-red-500/20">
+                          <pre className="whitespace-pre-wrap break-all rounded border border-red-500/20 bg-pos-bg p-2.5 text-red-300">
                             {typeof item.error === 'string'
                               ? item.error
                               : JSON.stringify(item.error, null, 2)}
                           </pre>
                         ) : null}
-                        <pre className="text-zinc-400 whitespace-pre-wrap break-all bg-black/40 rounded-lg p-2.5 border border-zinc-800 max-h-48 overflow-auto">
+                        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded border border-pos-border bg-pos-bg p-2.5 text-zinc-400">
                           {JSON.stringify(item.context ?? {}, null, 2)}
                         </pre>
                       </div>

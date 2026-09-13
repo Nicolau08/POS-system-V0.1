@@ -1,6 +1,16 @@
 'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
+import { numberInputDisplayValue } from '@/lib/numberInput';
+import { useEnterToConfirm } from '@/hooks/useEnterToConfirm';
+
+function typeButtonClass(active: boolean) {
+  return `py-3 rounded border text-sm transition-all font-medium ${
+    active
+      ? 'border-[#0001fb] bg-[#0001fb]/10 text-[#0001fb]'
+      : 'border-pos-border bg-pos-field text-pos-fg hover:border-[#0001fb]'
+  }`;
+}
 
 export function DiscountModal({
   isOpen,
@@ -31,43 +41,38 @@ export function DiscountModal({
   onApply: () => void;
   canApply: boolean;
 }) {
+  useEnterToConfirm(isOpen && canApply, onApply, onClose);
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pos-modal-overlay backdrop-blur-md" onClick={onClose}>
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className="bg-[#1a1a1a] border border-zinc-800 rounded p-6 w-full max-w-[400px] space-y-6"
+            className="bg-pos-surface border border-pos-border rounded p-6 w-full max-w-[400px] space-y-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="text-center">
-              <h3 className="text-xl font-bold text-white">Aplicar Desconto</h3>
-              <p className="text-sm text-zinc-500 mt-1">Configure o desconto para o pedido</p>
+              <h3 className="text-xl font-bold text-pos-fg">Aplicar desconto</h3>
+              <p className="text-sm text-pos-muted mt-1">Configure o desconto para o pedido</p>
             </div>
 
             <div className="space-y-4">
               <div className="space-y-2">
-                <span className="text-sm font-medium text-zinc-500 capitalize">Tipo de Desconto</span>
+                <span className="text-sm font-medium text-pos-muted">Tipo de desconto</span>
                 <div className="grid grid-cols-2 gap-2">
                   <button
+                    type="button"
                     onClick={() => setDiscountType('percentage')}
-                    className={`py-3 rounded border text-sm transition-all font-medium ${
-                      discountType === 'percentage'
-                        ? 'bg-zinc-900 border-[#0001fb] text-[#a5b4fc]'
-                        : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-[#0001fb]'
-                    }`}
+                    className={typeButtonClass(discountType === 'percentage')}
                   >
-                    Porcentagem (%)
+                    Percentagem (%)
                   </button>
                   <button
+                    type="button"
                     onClick={() => setDiscountType('value')}
-                    className={`py-3 rounded border text-sm transition-all font-medium ${
-                      discountType === 'value'
-                        ? 'bg-zinc-900 border-[#0001fb] text-[#a5b4fc]'
-                        : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-[#0001fb]'
-                    }`}
+                    className={typeButtonClass(discountType === 'value')}
                   >
                     Valor (MT)
                   </button>
@@ -75,50 +80,49 @@ export function DiscountModal({
               </div>
 
               <div className="space-y-2">
-                <span className="text-sm font-medium text-zinc-500 capitalize">Aplicar em</span>
+                <span className="text-sm font-medium text-pos-muted">Aplicar em</span>
                 <div className="grid grid-cols-2 gap-2">
                   <button
+                    type="button"
                     onClick={() => setDiscountTarget('all')}
-                    className={`py-3 rounded border text-sm transition-all font-medium ${
-                      discountTarget === 'all'
-                        ? 'bg-zinc-900 border-[#0001fb] text-[#a5b4fc]'
-                        : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-[#0001fb]'
-                    }`}
+                    className={typeButtonClass(discountTarget === 'all')}
                   >
-                    Todos os Itens
+                    Todos os itens
                   </button>
                   <button
+                    type="button"
                     onClick={() => setDiscountTarget('selected')}
                     disabled={!selectedCartItemId}
                     className={`py-3 rounded border text-sm transition-all font-medium ${
                       discountTarget === 'selected'
-                        ? 'bg-zinc-900 border-[#0001fb] text-[#a5b4fc]'
+                        ? 'border-[#0001fb] bg-[#0001fb]/10 text-[#0001fb]'
                         : !selectedCartItemId
-                          ? 'bg-zinc-900/50 border-zinc-800/50 text-zinc-700 cursor-not-allowed'
-                          : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-[#0001fb]'
+                          ? 'border-pos-border bg-pos-surface-2 text-pos-muted cursor-not-allowed opacity-50'
+                          : 'border-pos-border bg-pos-field text-pos-fg hover:border-[#0001fb]'
                     }`}
                   >
-                    Item Selecionado
+                    Item seleccionado
                   </button>
                 </div>
                 {!selectedCartItemId && discountTarget === 'selected' && (
-                  <p className="text-sm text-red-400 italic">Selecione um item no carrinho primeiro</p>
+                  <p className="text-sm text-red-600 italic">Seleccione um item no carrinho primeiro</p>
                 )}
               </div>
 
               <div className="space-y-2">
-                <span className="text-sm font-medium text-zinc-500 capitalize">Valor do Desconto</span>
+                <span className="text-sm font-medium text-pos-muted">Valor do desconto</span>
                 <div className="relative">
                   <input
                     type="number"
                     step="any"
-                    value={discountAmount ?? ''}
+                    inputMode="decimal"
+                    value={numberInputDisplayValue(discountAmount)}
                     onChange={(e) => setDiscountAmount(e.target.value)}
                     placeholder="0.00"
-                    className="w-full bg-zinc-950 border border-zinc-700 rounded py-3 px-4 text-sm text-right text-[#a5b4fc] font-mono font-bold outline-none focus:border-[#0001fb] transition-colors"
+                    className="w-full bg-pos-field border border-pos-border rounded py-3 px-4 text-sm text-right text-pos-fg font-mono font-bold outline-none focus:border-[#0001fb] transition-colors placeholder:text-pos-muted"
                     autoFocus
                   />
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm pointer-events-none">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-pos-muted font-mono text-sm pointer-events-none">
                     {discountType === 'percentage' ? '%' : 'MT'}
                   </span>
                 </div>
@@ -129,28 +133,28 @@ export function DiscountModal({
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-zinc-900/50 border border-zinc-800 rounded p-4 space-y-2"
+                className="bg-pos-field border border-pos-border rounded p-4 space-y-2"
               >
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-zinc-500 capitalize">Resumo do Desconto</span>
+                  <span className="text-sm font-medium text-pos-muted">Resumo do desconto</span>
                   <span className="text-sm font-medium text-[#0001fb] capitalize px-2 py-0.5 bg-[#0001fb]/10 rounded-full">Preview</span>
                 </div>
                 <div className="space-y-1">
                   <div className="flex justify-between text-sm">
-                    <span className="text-zinc-400">Alvo:</span>
-                    <span className="text-zinc-200 font-bold">{previewDiscount.name}</span>
+                    <span className="text-pos-muted">Alvo:</span>
+                    <span className="text-pos-fg font-bold">{previewDiscount.name}</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-zinc-400">Valor Atual:</span>
-                    <span className="text-zinc-200 font-mono">{formatPrice(previewDiscount.current)}</span>
+                    <span className="text-pos-muted">Valor actual:</span>
+                    <span className="text-pos-fg font-mono">{formatPrice(previewDiscount.current)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-zinc-400">Desconto:</span>
-                    <span className="text-[#a5b4fc] font-mono">-{formatPrice(previewDiscount.discount)}</span>
+                    <span className="text-pos-muted">Desconto:</span>
+                    <span className="text-[#0001fb] font-mono">-{formatPrice(previewDiscount.discount)}</span>
                   </div>
-                  <div className="pt-2 mt-2 border-t border-zinc-800 flex justify-between items-center">
-                    <span className="text-sm font-medium text-white capitalize">Novo Total:</span>
-                    <span className="text-lg font-bold text-white font-mono">
+                  <div className="pt-2 mt-2 border-t border-pos-border flex justify-between items-center">
+                    <span className="text-sm font-medium text-pos-fg">Novo total:</span>
+                    <span className="text-lg font-bold text-pos-fg font-mono">
                       {formatPrice(Math.max(0, previewDiscount.current - previewDiscount.discount))}
                     </span>
                   </div>
@@ -160,18 +164,20 @@ export function DiscountModal({
 
             <div className="flex gap-3 pt-4">
               <button
+                type="button"
                 onClick={onClose}
-                className="flex-1 h-12 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded font-medium transition-all"
+                className="flex-1 h-12 border border-pos-border bg-pos-field hover:bg-pos-surface-2 text-pos-fg text-sm rounded font-medium transition-all"
               >
                 Cancelar
               </button>
               <button
+                type="button"
                 onClick={onApply}
                 disabled={!canApply}
                 className={`flex-1 h-12 rounded text-sm font-medium transition-all ${
                   canApply
-                    ? 'bg-[#0001fb] hover:bg-[#1a1bff] text-white'
-                    : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
+                    ? 'pos-on-accent bg-[#0001fb] hover:bg-[#1a1bff] text-white'
+                    : 'border border-pos-border bg-pos-surface-3 text-pos-muted cursor-not-allowed'
                 }`}
               >
                 Aplicar

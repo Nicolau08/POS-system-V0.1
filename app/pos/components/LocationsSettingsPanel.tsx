@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import {
   createLocationApi,
-  createLocationTableApi,
   deleteLocationApi,
   fetchLocations,
   fetchWarehouses,
@@ -43,7 +42,7 @@ function DarkInput({
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}
-      className={`h-9 w-full rounded border border-zinc-600 bg-[#171717] px-3 text-sm text-white outline-none focus:border-[#0001fb] ${className}`}
+      className={`h-9 w-full rounded border border-zinc-600 bg-pos-surface px-3 text-sm text-white outline-none focus:border-[#0001fb] ${className}`}
     />
   );
 }
@@ -51,6 +50,13 @@ function DarkInput({
 function locationTablesSummary(location: PosLocation): string {
   if (location.tablesSummary) return location.tablesSummary;
   return formatTablesRange(location.tables.map((t) => t.name));
+}
+
+function locationFoSummary(location: PosLocation): string | null {
+  const fo = formatTablesRange(location.tables.map((t) => t.displayName || t.name));
+  const sys = locationTablesSummary(location);
+  if (!location.displayStart || fo === sys) return null;
+  return fo;
 }
 
 function warehouseSelectValue(warehouseId: string | null | undefined): string {
@@ -67,8 +73,10 @@ export function LocationsSettingsPanel() {
   const [newType, setNewType] = useState('dining');
   const [newCode, setNewCode] = useState('');
   const [newTablesSpec, setNewTablesSpec] = useState('');
+  const [newDisplayStart, setNewDisplayStart] = useState('');
   const [newWarehouseId, setNewWarehouseId] = useState(DEFAULT_WAREHOUSE_OPTION);
   const [editSpecs, setEditSpecs] = useState<Record<string, string>>({});
+  const [editDisplayStarts, setEditDisplayStarts] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -123,11 +131,13 @@ export function LocationsSettingsPanel() {
         tablesSpec: newTablesSpec.trim() || undefined,
         allowCustomNames: false,
         warehouseId: newWarehouseId === DEFAULT_WAREHOUSE_OPTION ? null : newWarehouseId,
+        displayStart: newDisplayStart.trim() ? Number(newDisplayStart.trim()) : null,
       });
       setNewName('');
       setNewCode('');
       setNewType('dining');
       setNewTablesSpec('');
+      setNewDisplayStart('');
       setNewWarehouseId(DEFAULT_WAREHOUSE_OPTION);
       await refresh();
       flash('Local criado.');
@@ -200,17 +210,22 @@ export function LocationsSettingsPanel() {
   const handleReplaceTables = async (location: PosLocation) => {
     const spec = String(editSpecs[location.id] ?? locationTablesSummary(location)).trim();
     if (!spec || spec === '—') {
-      setError('Indique as mesas (ex.: 1:20 ou 1,3,4).');
+      setError('Indique as mesas (ex.: 40:59 ou 1,3,4).');
+      return;
+    }
+    const foRaw = String(editDisplayStarts[location.id] ?? location.displayStart ?? '').trim();
+    const displayStart = foRaw ? Number(foRaw) : null;
+    if (foRaw && (!Number.isFinite(displayStart) || Number(displayStart) < 1)) {
+      setError('A numeração no POS deve ser um número a partir de 1.');
       return;
     }
     setBusyId(`table-${location.id}`);
     setError('');
     try {
-      const { deleteLocationTableApi } = await import('@/lib/services/posService');
-      for (const table of location.tables) {
-        await deleteLocationTableApi(table.id);
-      }
-      await createLocationTableApi(location.id, { tablesSpec: spec });
+      await updateLocationApi(location.id, {
+        tablesSpec: spec,
+        displayStart,
+      });
       setEditingId(null);
       await refresh();
       flash('Mesas actualizadas.');
@@ -232,19 +247,16 @@ export function LocationsSettingsPanel() {
   return (
     <div className="max-w-3xl space-y-6">
       <p className="text-xs text-zinc-500">
-        Locais servem o <strong className="font-semibold text-zinc-300">multiposto</strong> (salão /
-        zona). Em restauração, o local{' '}
-        <strong className="font-semibold text-zinc-300">Balcão</strong> vem com{' '}
-        <strong className="font-semibold text-zinc-300">20 mesas (1:20)</strong> — basta o intervalo.
-        Em retalho/farmácia a venda é sempre directa (sem mesas no POS). Com{' '}
-        <strong className="font-semibold text-zinc-300">Dar nome às mesas</strong>, o nome só é pedido
-        na 1ª abertura; mesa ocupada abre directo; após pagar e ficar vazia, volta a pedir.
+        Cada número de mesa só pode existir num local. Se o 40 já estiver no Balcão, outro local não
+        o pode usar. As mesas no sistema ficam com esse número; opcionalmente indique a{' '}
+        <strong className="font-semibold text-zinc-300">numeração no POS</strong> (ex.: começar em 1)
+        e as mesas seguintes seguem a sequência no front office, sem alterar o número interno.
       </p>
 
       {error ? <p className="text-xs text-amber-400/90">{error}</p> : null}
       {message ? <p className="text-xs text-[#a5b4fc]">{message}</p> : null}
 
-      <div className="rounded border border-zinc-700 bg-[#171717] p-4">
+      <div className="rounded border border-pos-border bg-pos-surface p-4">
         <p className="mb-3 text-sm font-medium text-zinc-200">Novo local</p>
         <div className="grid gap-3">
           <div className="grid gap-3 sm:grid-cols-[1fr_120px_160px]">
@@ -263,7 +275,7 @@ export function LocationsSettingsPanel() {
                 onChange={setNewType}
                 options={LOCATION_TYPES}
                 size="md"
-                triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+                triggerClassName="!bg-pos-field !border-zinc-600"
               />
             </div>
           </div>
@@ -274,20 +286,28 @@ export function LocationsSettingsPanel() {
               onChange={setNewWarehouseId}
               options={warehouseOptions}
               size="md"
-              triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+              triggerClassName="!bg-pos-field !border-zinc-600"
             />
             <p className="mt-1 text-[11px] text-zinc-500">
               Vendas neste local debitam stock deste armazém. Se escolher o principal, segue o default
               das configurações de Armazéns.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          <div className="grid gap-3 sm:grid-cols-[1fr_140px_auto] sm:items-end">
             <div>
-              <label className="mb-1 block text-xs text-zinc-500">Mesas (ex.: 1:20 ou 1,3,4)</label>
+              <label className="mb-1 block text-xs text-zinc-500">Mesas no sistema (ex.: 40:59)</label>
               <DarkInput
                 value={newTablesSpec}
                 onChange={setNewTablesSpec}
-                placeholder="1:20"
+                placeholder="40:59"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-zinc-500">POS a partir de</label>
+              <DarkInput
+                value={newDisplayStart}
+                onChange={setNewDisplayStart}
+                placeholder="Opcional, ex.: 1"
               />
             </div>
             <button
@@ -309,9 +329,21 @@ export function LocationsSettingsPanel() {
         ) : (
           locations.map((location) => {
             const summary = locationTablesSummary(location);
+            const foSummary = locationFoSummary(location);
             const isEditing = editingId === location.id;
+            const beginEdit = () => {
+              setEditingId(location.id);
+              setEditSpecs((prev) => ({
+                ...prev,
+                [location.id]: summary === '—' ? '' : summary,
+              }));
+              setEditDisplayStarts((prev) => ({
+                ...prev,
+                [location.id]: location.displayStart ? String(location.displayStart) : '',
+              }));
+            };
             return (
-              <div key={location.id} className="rounded border border-zinc-700 bg-[#171717] p-4">
+              <div key={location.id} className="rounded border border-pos-border bg-pos-surface p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold text-white">
@@ -352,7 +384,7 @@ export function LocationsSettingsPanel() {
                     onChange={(value) => void handleWarehouseChange(location, value)}
                     options={warehouseOptions}
                     size="md"
-                    triggerClassName="!bg-[#2a2a2a] !border-zinc-600"
+                    triggerClassName="!bg-pos-field !border-zinc-600"
                     disabled={busyId === `wh-${location.id}`}
                   />
                   <p className="mt-1 text-[11px] text-zinc-500">
@@ -361,34 +393,25 @@ export function LocationsSettingsPanel() {
                   </p>
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-3">
+                <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-pos-border pt-3">
                   <span className="text-sm text-zinc-300">
                     {location.tables.length} mesa{location.tables.length === 1 ? '' : 's'}
                   </span>
                   <button
                     type="button"
                     onClick={() => {
-                      setEditingId(isEditing ? null : location.id);
-                      setEditSpecs((prev) => ({
-                        ...prev,
-                        [location.id]: summary === '—' ? '' : summary,
-                      }));
+                      if (isEditing) setEditingId(null);
+                      else beginEdit();
                     }}
                     className="rounded border border-[#0001fb]/50 bg-[#0001fb]/10 px-3 py-1.5 text-sm font-semibold text-[#a5b4fc] hover:bg-[#0001fb]/20"
                     title="Intervalo de mesas"
                   >
-                    {summary}
+                    {foSummary ? `${foSummary} · sistema ${summary}` : summary}
                   </button>
                   {!isEditing ? (
                     <button
                       type="button"
-                      onClick={() => {
-                        setEditingId(location.id);
-                        setEditSpecs((prev) => ({
-                          ...prev,
-                          [location.id]: summary === '—' ? '' : summary,
-                        }));
-                      }}
+                      onClick={beginEdit}
                       className="text-xs text-zinc-500 hover:text-zinc-300"
                     >
                       Alterar
@@ -397,15 +420,29 @@ export function LocationsSettingsPanel() {
                 </div>
 
                 {isEditing ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <DarkInput
-                      value={editSpecs[location.id] ?? ''}
-                      onChange={(value) =>
-                        setEditSpecs((prev) => ({ ...prev, [location.id]: value }))
-                      }
-                      placeholder="1:20 ou 1,3,4"
-                      className="max-w-[200px]"
-                    />
+                  <div className="mt-3 flex flex-wrap items-end gap-2">
+                    <div>
+                      <label className="mb-1 block text-[11px] text-zinc-500">Mesas no sistema</label>
+                      <DarkInput
+                        value={editSpecs[location.id] ?? ''}
+                        onChange={(value) =>
+                          setEditSpecs((prev) => ({ ...prev, [location.id]: value }))
+                        }
+                        placeholder="40:59"
+                        className="max-w-[160px]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] text-zinc-500">POS a partir de</label>
+                      <DarkInput
+                        value={editDisplayStarts[location.id] ?? ''}
+                        onChange={(value) =>
+                          setEditDisplayStarts((prev) => ({ ...prev, [location.id]: value }))
+                        }
+                        placeholder="1"
+                        className="max-w-[100px]"
+                      />
+                    </div>
                     <button
                       type="button"
                       disabled={busyId === `table-${location.id}`}
@@ -424,7 +461,7 @@ export function LocationsSettingsPanel() {
                   </div>
                 ) : null}
 
-                <div className="mt-4 flex items-center justify-between gap-3 border-t border-zinc-800 pt-3">
+                <div className="mt-4 flex items-center justify-between gap-3 border-t border-pos-border pt-3">
                   <div>
                     <p className="text-sm text-zinc-200">Dar nome às mesas</p>
                     <p className="text-xs text-zinc-500">

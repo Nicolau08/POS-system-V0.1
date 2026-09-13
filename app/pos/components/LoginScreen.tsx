@@ -169,7 +169,7 @@ export function LoginScreen({
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#121212] text-zinc-100 font-sans overflow-hidden select-none relative p-8">
+    <div className="flex flex-col h-screen bg-pos-bg text-zinc-100 font-sans overflow-hidden select-none relative p-8">
       <img
         src="/posly-p-mark.svg"
         alt=""
@@ -238,64 +238,66 @@ export function LoginScreen({
       <AnimatePresence>
         {isModalOpen && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 pt-[max(8px,env(safe-area-inset-top))] pb-[max(8px,env(safe-area-inset-bottom))]"
+            className="fixed inset-0 z-50 flex items-center justify-center pos-modal-overlay p-2 pt-[max(8px,env(safe-area-inset-top))] pb-[max(8px,env(safe-area-inset-bottom))]"
             onClick={closeModal}
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="bg-zinc-900 w-[min(360px,calc(100vw-16px))] max-h-full rounded border border-zinc-800 flex flex-col overflow-hidden"
+              initial={{ opacity: 0, scale: 0.92, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.92, y: 8 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 260 }}
+              className="bg-pos-surface w-[min(380px,calc(100vw-16px))] max-h-full rounded border border-pos-border shadow-2xl flex flex-col overflow-hidden"
               onClick={(e) => e.stopPropagation()}
               data-posly-pin-modal="1"
             >
-              <div className="bg-zinc-800 px-3 py-1.5 flex flex-col items-center justify-center border-b border-zinc-700 gap-0.5 shrink-0">
-                <span className="text-base sm:text-xl text-zinc-100 font-medium">
+              {/* Cabeçalho */}
+              <div className="px-5 py-4 flex flex-col items-center justify-center border-b border-pos-border gap-0.5 shrink-0">
+                <span className="text-base font-semibold text-pos-fg">
                   {isSetupMode ? 'Configurar senha' : 'Senha'}
                 </span>
                 {isSetupMode ? (
-                  <span className="text-[11px] text-zinc-400">Defina o PIN do Administrador</span>
+                  <span className="text-[11px] text-pos-muted">Defina o PIN do Administrador</span>
                 ) : null}
               </div>
 
-              <div className="p-2 sm:p-4 flex flex-col gap-2 sm:gap-4 min-h-0 overflow-y-auto">
+              <div className="p-4 flex flex-col gap-3 min-h-0 overflow-y-auto">
                 {isSetupMode ? (
-                  <div className="flex flex-col gap-1.5 shrink-0">
+                  <div className="flex flex-col gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => setActiveField('pin')}
-                      className={`h-[clamp(2.25rem,9vh,3.5rem)] bg-zinc-800 border rounded flex items-center px-3 transition-all ${
-                        activeField === 'pin' ? 'border-[#0001fb]' : 'border-zinc-700'
+                      className={`h-12 bg-pos-field border rounded flex items-center px-3 transition-all ${
+                        activeField === 'pin' ? 'border-[#0001fb]' : 'border-pos-border'
                       }`}
                     >
-                      <span className="w-full text-center text-xl sm:text-2xl tracking-widest text-white">
+                      <span className="w-full text-center text-2xl tracking-widest text-pos-fg">
                         {password ? (
                           '•'.repeat(password.length)
                         ) : (
-                          <span className="text-sm tracking-normal text-zinc-500">Nova senha</span>
+                          <span className="text-sm tracking-normal text-pos-muted">Nova senha</span>
                         )}
                       </span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setActiveField('confirm')}
-                      className={`h-[clamp(2.25rem,9vh,3.5rem)] bg-zinc-800 border rounded flex items-center px-3 transition-all ${
-                        activeField === 'confirm' ? 'border-[#0001fb]' : 'border-zinc-700'
+                      className={`h-12 bg-pos-field border rounded flex items-center px-3 transition-all ${
+                        activeField === 'confirm' ? 'border-[#0001fb]' : 'border-pos-border'
                       }`}
                     >
-                      <span className="w-full text-center text-xl sm:text-2xl tracking-widest text-white">
+                      <span className="w-full text-center text-2xl tracking-widest text-pos-fg">
                         {confirmPassword ? (
                           '•'.repeat(confirmPassword.length)
                         ) : (
-                          <span className="text-sm tracking-normal text-zinc-500">Confirmar senha</span>
+                          <span className="text-sm tracking-normal text-pos-muted">Confirmar senha</span>
                         )}
                       </span>
                     </button>
                   </div>
                 ) : (
-                  <div className="flex gap-2 shrink-0">
+                  <div className="shrink-0">
                     <div
-                      className={`flex-grow h-[clamp(2.25rem,9vh,4rem)] bg-zinc-800 border rounded flex items-center px-3 transition-all duration-200 ${error ? 'border-red-500 animate-shake' : 'border-zinc-700'}`}
+                      className={`h-14 bg-pos-field border rounded flex items-center px-4 transition-all duration-200 ${error ? 'border-red-500 animate-shake' : 'border-pos-border'}`}
                     >
                       <input
                         type="password"
@@ -304,7 +306,7 @@ export function LoginScreen({
                         inputMode="none"
                         tabIndex={-1}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="w-full text-xl sm:text-3xl tracking-widest focus:outline-none bg-transparent text-white text-center pointer-events-none"
+                        className="w-full text-3xl tracking-widest focus:outline-none bg-transparent text-pos-fg text-center pointer-events-none"
                         aria-label="PIN"
                       />
                     </div>
@@ -312,21 +314,22 @@ export function LoginScreen({
                 )}
 
                 {setupError ? (
-                  <div className="rounded border border-red-700/50 bg-red-950/40 px-3 py-1.5 text-xs sm:text-sm text-red-300 shrink-0">
+                  <div className="rounded border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-400 shrink-0">
                     {setupError}
                   </div>
                 ) : null}
 
-                <div className="grid grid-cols-3 gap-1 sm:gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   {keypad.flat().map((key) => (
                     <button
                       key={key}
                       onClick={() => handleKeyClick(key)}
                       disabled={isSavingPassword}
                       className={`
-                        h-[clamp(2rem,8.5vh,4rem)] text-sm sm:text-xl font-medium flex items-center justify-center transition-colors rounded disabled:opacity-50
-                        ${key === 'enter' ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff]' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700'}
-                        ${key === 'back' || key === 'enter' ? 'text-xs sm:text-lg' : ''}
+                        h-14 text-base font-semibold flex items-center justify-center transition-colors rounded disabled:opacity-50
+                        ${key === 'enter'
+                          ? 'bg-[#0001fb] text-white hover:bg-[#1a1bff] shadow-sm'
+                          : 'bg-pos-field text-pos-fg hover:bg-pos-surface-3 border border-pos-border'}
                       `}
                     >
                       {key === 'enter'
@@ -349,7 +352,7 @@ export function LoginScreen({
                       type="button"
                       onClick={() => void handleResetAdminPin()}
                       disabled={isResettingAdminPin}
-                      className="h-[clamp(2rem,7vh,2.75rem)] shrink-0 rounded border border-amber-700/60 bg-amber-900/20 text-amber-300 text-xs sm:text-sm font-medium transition-colors hover:bg-amber-900/35 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="h-10 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-500 text-xs font-medium transition-colors hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isResettingAdminPin ? 'A redefinir...' : 'Redefinir PIN do Admin (1234)'}
                     </button>
@@ -382,7 +385,7 @@ export function LoginScreen({
         <button
           type="button"
           onClick={() => setIsQuitConfirmOpen(true)}
-          className="w-16 h-16 flex items-center justify-center bg-zinc-800/50 hover:bg-red-600/20 text-zinc-500 hover:text-red-500 rounded-full transition-all duration-300 group border border-zinc-700/50"
+          className="w-16 h-16 flex items-center justify-center bg-zinc-800/50 hover:bg-red-600/20 text-zinc-500 hover:text-red-500 rounded-full transition-all duration-300 group border border-pos-border/50"
           title="Fechar o sistema"
         >
           <Power size={32} className="group-hover:scale-110 transition-transform" />

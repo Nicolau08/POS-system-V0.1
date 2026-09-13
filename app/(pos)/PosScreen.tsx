@@ -51,9 +51,10 @@ import {
   Sliders
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import PosToast from '@/components/PosToast';
 import { isConfigured } from '@/lib/supabase';
 import { getPosApiBase } from '@/lib/apiBase';
-import { POS_DRAFT_SCHEMA_VERSION, type PosDraftSnapshot } from '@/lib/posDraftStorage';
+import { POS_DRAFT_SCHEMA_VERSION, clearPosDraft, type PosDraftSnapshot } from '@/lib/posDraftStorage';
 import type {
   CartItem,
   CompanyProfile,
@@ -72,6 +73,7 @@ import { CustomerModal } from '@/app/pos/components/CustomerModal';
 import { ReceiptPreview } from '@/app/pos/components/ReceiptPreview';
 import { AdminPanel } from '@/app/pos/components/AdminPanel';
 import { EndOfDayModal } from '@/app/pos/components/EndOfDayModal';
+import { CashMovementModal } from '@/app/pos/components/CashMovementModal';
 import { ensureCashSession } from '@/lib/cashSession';
 import { formatPaymentMethodLabel } from '@/lib/paymentMethodLabel';
 import { SalesHistoryModal } from '@/app/pos/components/SalesHistoryModal';
@@ -104,14 +106,21 @@ import {
   fetchPaymentMethods as posFetchPaymentMethods,
   acknowledgeLicenseFileOnServer,
   redeemReactivationTokenOnServer,
+  resetLocalLicenseOnServer,
+  initializeFromSerial,
+  lookupSerialStores,
   fetchCompanyProfile,
   PosApiError,
   saveCustomer,
   syncNextVDNumber as posSyncNextVDNumber,
-  fetchLocations,
   type SetupStatusPayload,
 } from '@/lib/services/posService';
-import { resolveCategoryColor } from '@/lib/categoryColors';
+import {
+  applyCatalogCacheToPosHandlers,
+  buildFamilyColorsFromCategories,
+  CATALOG_CHANGED_EVENT,
+  notifyCatalogChanged,
+} from '@/lib/catalogLocalSync';
 import { isSupplierPartyRecord, readPartyMetaById, type PartyMeta } from '@/lib/partyMeta';
 import {
   clearPosCatalogCache,
@@ -123,7 +132,6 @@ import {
   getPosCatalogCache,
   setCachedActivationState,
   setCachedCategories,
-  setCachedLocationsTables,
   setCachedLoginUsers,
   setCachedSetupStatus,
   setPosCatalogCache,
@@ -133,14 +141,16 @@ import {
 import LicenseExpiredScreen from '@/components/LicenseExpiredScreen';
 import { useLicenseGuard } from '@/components/LicenseGuardProvider';
 import { isReactivationTokenInput } from '@/lib/licensing/reactivationToken.js';
+import { tryParseSerialFormat } from '@/lib/licensing/serialNumber.js';
 import { TableFloorPanel } from '@/app/pos/components/TableFloorPanel';
 import { PosStatusFooter } from '@/app/pos/components/PosStatusFooter';
-import { formatTablesRange } from '@/lib/tableRange';
 import { useCommerceProfile } from '@/lib/useCommerceProfile';
 import { releaseTableLock } from '@/lib/tableLocks';
+import { readPosFloorContext, writePosFloorContext } from '@/lib/posFloorContext';
 import { loadStationClientSettings } from '@/lib/stationClientSettings';
 import {
   fetchSharedTableOrders,
+  saveSharedTableOrder,
 } from '@/lib/sharedTableOrders';
 import { useSharedTableOrdersSync } from '@/hooks/useSharedTableOrdersSync';
 import { useTableFloor } from '@/hooks/useTableFloor';
@@ -151,139 +161,18 @@ import { formatDocumentNumber, useReceiptPrint } from '@/hooks/useReceiptPrint';
 import { useDiscountForm } from '@/hooks/useDiscountForm';
 import { useQuotations } from '@/hooks/useQuotations';
 import { useTableOrderSession } from '@/hooks/useTableOrderSession';
-
-const DEFAULT_TABLE_IDS = Array.from({ length: 20 }, (_, i) => String(i + 1));
-const POS_UI_BOOTSTRAP_KEY = 'pos-ui-bootstrapped';
-
-function isPosUiBootstrapped() {
-  if (typeof window === 'undefined') return false;
-  try {
-    return sessionStorage.getItem(POS_UI_BOOTSTRAP_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function markPosUiBootstrapped() {
-  try {
-    sessionStorage.setItem(POS_UI_BOOTSTRAP_KEY, '1');
-  } catch {
-    // ignore
-  }
-}
 import SetupWizard from '@/components/SetupWizard';
 import ActivationScreen from '@/components/ActivationScreen';
-
-type RouteProps = {
-  params: Promise<Record<string, string | string[] | undefined>>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-};
-
-type ActivationStatePayload = {
-  success: boolean;
-  isActivated: boolean;
-  machineId: string;
-  activationCode: string;
-  reason?: string;
-  licensePath?: string;
-};
-
-const FALLBACK_PAYMENT_METHODS: PaymentMethodOption[] = [
-  {
-    id: 'cash',
-    name: 'DINHEIRO',
-    code: 'cash',
-    shortcut: null,
-    position: 1,
-    enabled: true,
-    quickPayment: true,
-    requiredCustomer: false,
-    allowChange: true,
-    markAsPaid: true,
-    printReceipt: true,
-    openCashDrawer: true,
-  },
-  {
-    id: 'conta-corrente',
-    name: 'CONTA CORRENTE',
-    code: 'conta-corrente',
-    shortcut: null,
-    position: 2,
-    enabled: true,
-    quickPayment: true,
-    requiredCustomer: true,
-    allowChange: false,
-    markAsPaid: false,
-    printReceipt: true,
-    openCashDrawer: false,
-  },
-];
-
-const normalizeUnknownError = (error: any) => {
-  if (error instanceof Error) {
-    return {
-      message: error.message || 'Erro desconhecido',
-      details: (error as any).details || 'Sem detalhes adicionais',
-      hint: (error as any).hint || 'Sem sugestões',
-      code: (error as any).code || 'Sem código de erro',
-      raw: error,
-    };
-  }
-
-  if (typeof Event !== 'undefined' && error instanceof Event) {
-    return {
-      message: `Evento inesperado: ${error.type || 'desconhecido'}`,
-      details: 'O navegador retornou um evento em vez de um erro estruturado.',
-      hint: 'Verifique a ligação com a internet ou tente novamente.',
-      code: 'BROWSER_EVENT',
-      raw: error,
-    };
-  }
-
-  if (typeof error === 'string') {
-    return {
-      message: error,
-      details: 'Sem detalhes adicionais',
-      hint: 'Sem sugestões',
-      code: 'STRING_ERROR',
-      raw: error,
-    };
-  }
-
-  return {
-    message: error?.message || error?.error_description || error?.error || 'Erro desconhecido',
-    details: error?.details || 'Sem detalhes adicionais',
-    hint: error?.hint || 'Sem sugestões',
-    code: error?.code || 'Sem código de erro',
-    raw: error,
-  };
-};
-
-// --- Error Handling ---
-const handleSupabaseError = (error: any, operation: string) => {
-  const normalized = normalizeUnknownError(error);
-  console.error(`Supabase Error (${operation}): ${normalized.message}`, normalized.raw);
-  return {
-    message: normalized.message,
-    details: normalized.details,
-    hint: normalized.hint,
-    code: normalized.code,
-  };
-  let message = 'Erro desconhecido';
-  if (typeof error === 'string') message = error;
-  else if (error?.message) message = error.message;
-  else if (error?.error_description) message = error.error_description;
-  else if (error?.error) message = error.error;
-  
-  console.error(`Supabase Error (${operation}): ${message}`, error);
-  
-  // If it's a network error or similar, it might not have the standard Supabase error fields
-  const details = error?.details || 'Sem detalhes adicionais';
-  const hint = error?.hint || 'Sem sugestões';
-  const code = error?.code || 'Sem código de erro';
-
-  return { message, details, hint, code };
-};
+import {
+  DEFAULT_TABLE_IDS,
+  FALLBACK_PAYMENT_METHODS,
+  handleSupabaseError,
+  isPosUiBootstrapped,
+  markPosUiBootstrapped,
+  normalizeUnknownError,
+  type ActivationStatePayload,
+  type RouteProps,
+} from './posScreen.helpers';
 
 export default function POSPage({ params, searchParams }: RouteProps) {
   // Next 16 passes route props as Promises in app router.
@@ -370,6 +259,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   });
   const [isSalesHistoryOpen, setIsSalesHistoryOpen] = useState(false);
   const [isEndOfDayOpen, setIsEndOfDayOpen] = useState(false);
+  const [isCashMovementOpen, setIsCashMovementOpen] = useState(false);
 
   // Login State (isolated hook to keep session handling centralized)
   const auth = useAuth();
@@ -390,7 +280,12 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   const { can, denyMessage } = usePermissions(currentUser?.accessLevel);
   const [nextVDNumber, setNextVDNumber] = useState(1);
   const [currentReceiptNumber, setCurrentReceiptNumber] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    type: 'success' | 'error' | 'info';
+    id: number;
+  } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [salesMode, setSalesMode] = useState<'customer' | 'table'>(
     () => getCachedPosWorkspace()?.salesMode ?? 'customer'
   );
@@ -416,7 +311,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     () => ({ cart, globalDiscount, selectedCustomer, docType }),
     [cart, globalDiscount, selectedCustomer, docType],
   );
-  const { isTableFloorOpen, setIsTableFloorOpen, openTableFloor, activeLocationId } = useTableFloor({
+  const { isTableFloorOpen, setIsTableFloorOpen, activeLocationId, floorLocations, selectLocation, refreshLocations, resumeFloorAfterLogin } = useTableFloor({
     tablesEnabled: commerceFeatures.tables,
     selectedTableId,
     currentOrder: floorCurrentOrder,
@@ -424,7 +319,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     setPosTableIds,
     setPosTablesSummary,
     setAllowTableCustomNames,
+    tableOrderUpdatedAtRef,
   });
+  const floorRestoreDoneRef = useRef(false);
+  const tableNumberLabels = useMemo(() => {
+    const location = floorLocations.find((row) => String(row.id) === String(activeLocationId));
+    if (!location) return {} as Record<string, string>;
+    return Object.fromEntries(
+      location.tables.map((table) => [String(table.name), String(table.displayName || table.name)]),
+    );
+  }, [activeLocationId, floorLocations]);
   const currentDate = useMemo(() => {
     const now = new Date();
     const day = String(now.getDate()).padStart(2, '0');
@@ -475,18 +379,24 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   }, []);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 6000); // Increased to 6 seconds
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast({ message, type, id: Date.now() });
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 6000);
   };
 
   const requireAccess = useCallback(
     (key: string, label: string) => {
       if (can(key)) return true;
-      setToast({ message: denyMessage(label), type: 'error' });
-      setTimeout(() => setToast(null), 6000);
+      showToast(denyMessage(label), 'error');
       return false;
     },
-    [can, denyMessage]
+    [can, denyMessage],
   );
 
   const formatPrice = (value: number) => {
@@ -771,6 +681,14 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       ) {
         return;
       }
+      const cached = getCachedLoginUsers();
+      if (cached && cached.length > 0) {
+        setUsers(cached);
+        setSelectedLoginUser((previous) =>
+          cached.find((user) => user.id === previous?.id) ?? cached[0]
+        );
+        return;
+      }
       handleSupabaseError(error, 'fetchUsers');
       setUsers([]);
       setSelectedLoginUser(null);
@@ -842,7 +760,27 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     async (licenseKey: string) => {
       setIsActivatingLicense(true);
       try {
-        if (isReactivationTokenInput(licenseKey)) {
+        const serial = tryParseSerialFormat(licenseKey);
+        if (serial) {
+          // Não bloquear por lookup.redeemed: após desvincular na consola o activate
+          // é a fonte de verdade. O flag redeemed gerava falso "Licença em uso".
+          const lookup = await lookupSerialStores(serial);
+          const stores = Array.isArray(lookup?.stores) ? lookup.stores : [];
+          const tenantId = String(stores[0]?.tenant_id ?? '').trim();
+          if (!tenantId) {
+            throw new Error(
+              lookup?.redeemed
+                ? 'Esta licença parece ligada noutro sítio. Confirme o desvínculo na consola e tente de novo.'
+                : 'Nenhuma loja encontrada para este número de série.',
+            );
+          }
+          await initializeFromSerial({ serial, tenantId });
+          try {
+            await acknowledgeLicenseFileOnServer();
+          } catch {
+            // A escrita do ficheiro já activa a BD; ack é melhor esforço.
+          }
+        } else if (isReactivationTokenInput(licenseKey)) {
           const redeemData = await redeemReactivationTokenOnServer(licenseKey);
           const notify = redeemData?.ack?.issuerNotify;
           if (notify && notify.skipped === false && notify.ok === false && notify.error) {
@@ -930,16 +868,23 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
   // --- Effects ---
   useEffect(() => {
-    if (!isAuthRestored) return;
+    if (!isAuthRestored || !isLoggedIn) return;
     let cancelled = false;
 
     void (async () => {
       try {
-        const nextSequence = 1;
+        const nextSequence = await posSyncNextVDNumber();
         if (cancelled) return;
-        setNextVDNumber(nextSequence);
+        setNextVDNumber(Number(nextSequence) > 0 ? Number(nextSequence) : 1);
       } catch (error) {
         if (cancelled) return;
+        // Sem sessão / 401: não poluir a consola — fica 1 até haver login válido.
+        const status = Number((error as { status?: number })?.status ?? 0);
+        const message = String((error as { message?: string })?.message ?? '');
+        if (status === 401 || /unauthorized/i.test(message)) {
+          setNextVDNumber(1);
+          return;
+        }
         handleSupabaseError(error, 'syncNextVDNumber');
         setNextVDNumber(1);
       }
@@ -948,7 +893,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     return () => {
       cancelled = true;
     };
-  }, [isAuthRestored]);
+  }, [isAuthRestored, isLoggedIn]);
 
   useEffect(() => {
     if (!isAuthRestored || licenseExpired) return;
@@ -958,61 +903,77 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   useEffect(() => {
     if (!isAuthRestored || !isLoggedIn) return;
 
+    // Offline-first: aplicar cache local imediatamente (ex.: veio do Gerenciamento).
+    applyCatalogCacheToPosHandlers({
+      setProducts,
+      setFamilyColors,
+      setCustomers,
+    });
+
     const fetchData = async () => {
       try {
-        const [productsData, customersData, companyData, categoriesData] = await Promise.all([
-          posFetchProducts(),
-          posFetchCustomers(),
-          fetchCompanyProfile().catch(() => null),
-          posFetchCategories().catch(() => []),
-        ]);
-        const paymentMethodsData = await posFetchPaymentMethods();
-  
-        console.log('🔥 PRODUTOS DO BACKEND:', productsData);
-  
-        setProducts(productsData || []);
-        const colorMap: Record<string, string> = {};
-        for (const cat of Array.isArray(categoriesData) ? categoriesData : []) {
-          const name = String(cat?.name ?? '').trim();
-          if (!name) continue;
-          colorMap[name] = resolveCategoryColor(cat?.color, name);
-        }
+        const [productsData, customersData, companyData, categoriesData, paymentMethodsData] =
+          await Promise.all([
+            posFetchProducts(),
+            posFetchCustomers(),
+            fetchCompanyProfile().catch(() => null),
+            posFetchCategories().catch(() => []),
+            posFetchPaymentMethods().catch(() => []),
+          ]);
+
+        const nextProducts = productsData || [];
+        const nextCategories = Array.isArray(categoriesData) ? categoriesData : [];
+        const colorMap = buildFamilyColorsFromCategories(nextCategories, nextProducts);
+
+        setProducts(nextProducts);
         setFamilyColors(colorMap);
         setCustomers(customersData || []);
         setCompanyProfile(companyData);
-        const normalizedMethods = Array.isArray(paymentMethodsData) ? paymentMethodsData : [];
+        const normalizedMethods = Array.isArray(paymentMethodsData) && paymentMethodsData.length
+          ? paymentMethodsData
+          : FALLBACK_PAYMENT_METHODS;
         setPaymentMethods(normalizedMethods);
-        if (Array.isArray(categoriesData)) {
-          setCachedCategories(categoriesData);
+        if (nextCategories.length) {
+          setCachedCategories(nextCategories);
         }
         setPosCatalogCache({
-          products: productsData || [],
+          products: nextProducts,
           customers: customersData || [],
           familyColors: colorMap,
           paymentMethods: normalizedMethods,
           companyProfile: companyData,
         });
+        notifyCatalogChanged();
         const firstEnabledMethod = normalizedMethods.find((method) => method.enabled);
         if (firstEnabledMethod?.code) {
           setMultiplePaymentMethod(firstEnabledMethod.code);
         }
       } catch (error) {
-        console.error('Erro ao carregar dados:', error);
-        setProducts([]);
-        setFamilyColors({});
-        setCustomers([]);
-        setCompanyProfile(null);
-        setPaymentMethods(FALLBACK_PAYMENT_METHODS);
-        clearPosCatalogCache();
+        console.warn(
+          'Erro ao carregar dados:',
+          error instanceof Error ? error.message : String(error),
+        );
+        // Mantém cache local se a rede falhar — não limpar grelha.
+        applyCatalogCacheToPosHandlers({
+          setProducts,
+          setFamilyColors,
+          setCustomers,
+        });
+        if (!getPosCatalogCache()?.products?.length) {
+          setProducts([]);
+          setFamilyColors({});
+          setCustomers([]);
+          setCompanyProfile(null);
+          setPaymentMethods(FALLBACK_PAYMENT_METHODS);
+          clearPosCatalogCache();
+        }
       }
     };
 
     void fetchData();
 
-    // Check for query param to open sidebar
     const params = new URLSearchParams(window.location.search);
     if (params.get('sidebar') === 'open') {
-      // Clean up the URL
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, [isAuthRestored, isLoggedIn]);
@@ -1026,6 +987,68 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     window.addEventListener('company-profile-changed', refreshCompany);
     return () => window.removeEventListener('company-profile-changed', refreshCompany);
   }, []);
+
+  // Gerenciamento publicou catálogo local → grelha actualiza sem esperar novo fetch.
+  useEffect(() => {
+    const onCatalogChanged = () => {
+      applyCatalogCacheToPosHandlers({
+        setProducts,
+        setFamilyColors,
+        setCustomers,
+      });
+    };
+    window.addEventListener(CATALOG_CHANGED_EVENT, onCatalogChanged);
+    return () => window.removeEventListener(CATALOG_CHANGED_EVENT, onCatalogChanged);
+  }, []);
+
+  // Ao voltar do Gerenciamento / foco da janela: cache primeiro, reconcile em background.
+  useEffect(() => {
+    if (!isLoggedIn || !isAuthRestored) return;
+
+    const refreshFromLocalApi = () => {
+      applyCatalogCacheToPosHandlers({
+        setProducts,
+        setFamilyColors,
+        setCustomers,
+      });
+      void (async () => {
+        try {
+          const [productsData, categoriesData] = await Promise.all([
+            posFetchProducts(),
+            posFetchCategories().catch(() => []),
+          ]);
+          const nextProducts = productsData || [];
+          const nextCategories = Array.isArray(categoriesData) ? categoriesData : [];
+          const colorMap = buildFamilyColorsFromCategories(nextCategories, nextProducts);
+          setProducts(nextProducts);
+          setFamilyColors(colorMap);
+          if (nextCategories.length) setCachedCategories(nextCategories);
+          const prev = getPosCatalogCache();
+          setPosCatalogCache({
+            products: nextProducts,
+            customers: prev?.customers ?? [],
+            familyColors: colorMap,
+            paymentMethods: prev?.paymentMethods ?? [],
+            companyProfile: prev?.companyProfile ?? null,
+          });
+        } catch {
+          // ignore — mantém o que já está no ecrã/cache
+        }
+      })();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshFromLocalApi();
+    };
+    const onFocus = () => refreshFromLocalApi();
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isLoggedIn, isAuthRestored]);
 
   const buildPosDraftSnapshot = useCallback((): PosDraftSnapshot => {
     return {
@@ -1055,7 +1078,55 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   ]);
 
   const applyPosDraft = useCallback((d: PosDraftSnapshot) => {
+    const resumeFloor = readPosFloorContext().resumeFloor;
+    const draftTableId = d.selectedTableId ?? null;
     const nextCart = Array.isArray(d.cart) ? d.cart : [];
+    const draftOrders =
+      d.tableOrders && typeof d.tableOrders === 'object' ? { ...d.tableOrders } : {};
+
+    // Logout → login: não reabrir a mesa no ecrã de produtos (evita flash).
+    if (resumeFloor) {
+      if (draftTableId && (nextCart.length > 0 || draftOrders[draftTableId])) {
+        draftOrders[draftTableId] = draftOrders[draftTableId] ?? {
+          cart: nextCart,
+          globalDiscount: d.globalDiscount ?? null,
+          selectedCustomer: d.selectedCustomer ?? null,
+          docType: (d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT',
+        };
+      }
+      setTableOrders(draftOrders);
+      setCart([]);
+      setSelectedCustomer(null);
+      setCustomerName('');
+      setTableNumber('');
+      setGlobalDiscount(null);
+      setDocType((d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT');
+      setSalesMode('customer');
+      setCachedPosWorkspace({
+        docType: (d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT',
+        salesMode: 'customer',
+      });
+      setSelectedTableId(null);
+      setSelectedCartItemId(null);
+      setIsTableFloorOpen(true);
+      void fetchSharedTableOrders().then((orders) => {
+        if (!orders) return;
+        setTableOrders((prev) => {
+          const next = { ...prev };
+          for (const [key, order] of Object.entries(orders)) {
+            next[key] = {
+              cart: Array.isArray(order.cart) ? order.cart : [],
+              globalDiscount: order.globalDiscount ?? null,
+              selectedCustomer: order.selectedCustomer ?? null,
+              docType: (order.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT',
+            };
+          }
+          return next;
+        });
+      });
+      return;
+    }
+
     setCart(nextCart);
     setSelectedCustomer(d.selectedCustomer ?? null);
     setCustomerName(typeof d.customerName === 'string' ? d.customerName : '');
@@ -1067,17 +1138,16 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       docType: (d.docType ?? 'VD') as 'VD' | 'TK' | 'FP' | 'FT',
       salesMode: d.salesMode === 'table' ? 'table' : 'customer',
     });
-    setSelectedTableId(d.selectedTableId ?? null);
-    setTableOrders(d.tableOrders && typeof d.tableOrders === 'object' ? d.tableOrders : {});
+    setSelectedTableId(draftTableId);
+    setTableOrders(draftOrders);
     const sid = typeof d.selectedCartItemId === 'string' ? d.selectedCartItemId : null;
     setSelectedCartItemId(sid && nextCart.some((item) => item.id === sid) ? sid : null);
-    // Depois do rascunho local, puxar mesas partilhadas dos postos
     void fetchSharedTableOrders().then((orders) => {
       if (!orders) return;
       setTableOrders((prev) => {
         const next = { ...prev };
         for (const [key, order] of Object.entries(orders)) {
-          if (key === (d.selectedTableId ?? null)) continue;
+          if (key === draftTableId) continue;
           next[key] = {
             cart: Array.isArray(order.cart) ? order.cart : [],
             globalDiscount: order.globalDiscount ?? null,
@@ -1088,7 +1158,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         return next;
       });
     });
-  }, []);
+  }, [setIsTableFloorOpen]);
 
   const { flushDraftNow, clearDraftEverywhere } = usePosDraftPersistence({
     enabled: Boolean(isLoggedIn && isAuthRestored),
@@ -1122,6 +1192,135 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   };
 
   useEffect(() => {
+    if (!isLoggedIn) return;
+    // Enquanto a sessão está activa, memoriza local/mesa — sem mexer em resumeFloor.
+    writePosFloorContext({
+      locationId: activeLocationId,
+      tableId: selectedTableId,
+    });
+  }, [activeLocationId, isLoggedIn, selectedTableId]);
+
+  /**
+   * Logout sem flash: grava o pedido de resume, limpa o rascunho ainda autenticado,
+   * sai já para o login; grava/liberta a mesa em background.
+   */
+  const logoutFromPos = useCallback(() => {
+    const ctx = readPosFloorContext();
+    let locationId = activeLocationId || ctx.locationId;
+    const leavingTableId = selectedTableId;
+    const wasOnFloorOrTable = Boolean(leavingTableId || isTableFloorOpen);
+    const orderSnapshot = {
+      cart,
+      globalDiscount,
+      selectedCustomer,
+      docType,
+    };
+    const expectedUpdatedAt = leavingTableId
+      ? (tableOrderUpdatedAtRef.current[leavingTableId] ?? null)
+      : null;
+    const userId = currentUser?.id;
+
+    if (leavingTableId) {
+      const owner = floorLocations.find((location) =>
+        location.tables.some((table) => String(table.name) === String(leavingTableId)),
+      );
+      if (owner) locationId = String(owner.id);
+    }
+
+    const resumeFloor = wasOnFloorOrTable;
+    writePosFloorContext({
+      locationId,
+      // Mantém tableId para descobrir o local no próximo login se locationId falhar.
+      tableId: leavingTableId || ctx.tableId,
+      resumeFloor,
+    });
+
+    // Limpar rascunho local ainda com sessão (evita reabrir a mesa no próximo login).
+    if (userId) {
+      clearPosDraft(userId);
+    }
+
+    setIsAdminSidebarOpen(false);
+    clearPosSessionCache();
+    logout();
+
+    // Atrás do ecrã de login (mesmo batch): próximo login já não pinta a mesa aberta.
+    if (leavingTableId || resumeFloor) {
+      setSelectedTableId(null);
+      setSalesMode('customer');
+      setCart([]);
+      setGlobalDiscount(null);
+      setSelectedCustomer(null);
+      setSelectedCartItemId(null);
+    }
+    if (resumeFloor) {
+      setIsTableFloorOpen(true);
+    }
+
+    // Background: pedido fica na mesa ocupada.
+    if (leavingTableId) {
+      void (async () => {
+        const saveResult = await saveSharedTableOrder(leavingTableId, {
+          ...orderSnapshot,
+          expectedUpdatedAt,
+        });
+        if (saveResult.ok) {
+          tableOrderUpdatedAtRef.current[leavingTableId] = saveResult.updatedAt;
+        }
+        await releaseTableLock(leavingTableId);
+      })();
+    }
+  }, [
+    activeLocationId,
+    cart,
+    currentUser?.id,
+    docType,
+    floorLocations,
+    globalDiscount,
+    isTableFloorOpen,
+    logout,
+    selectedCustomer,
+    selectedTableId,
+    setIsTableFloorOpen,
+  ]);
+
+  // Após login: grelha do local da mesa (sem flash / sem depender do rascunho).
+  useEffect(() => {
+    if (!isLoggedIn || !isAuthRestored || !commerceFeatures.tables) {
+      if (!isLoggedIn) floorRestoreDoneRef.current = false;
+      return;
+    }
+    if (floorRestoreDoneRef.current) return;
+    floorRestoreDoneRef.current = true;
+
+    const ctx = readPosFloorContext();
+    if (!ctx.resumeFloor) {
+      void refreshLocations();
+      return;
+    }
+
+    // Estado limpo já no 1.º paint autenticado.
+    setSelectedTableId(null);
+    setSalesMode('customer');
+    setCart([]);
+    setGlobalDiscount(null);
+    setSelectedCustomer(null);
+    setSelectedCartItemId(null);
+    setIsTableFloorOpen(true);
+
+    void resumeFloorAfterLogin().then((didResume) => {
+      if (!didResume) void refreshLocations();
+    });
+  }, [
+    commerceFeatures.tables,
+    isAuthRestored,
+    isLoggedIn,
+    refreshLocations,
+    resumeFloorAfterLogin,
+    setIsTableFloorOpen,
+  ]);
+
+  useEffect(() => {
     if (!isLoggedIn || !isAuthRestored) return;
     // Aplica perfil da licença: retalho/farmácia = venda directa; restauração = mesas.
     if (!commerceFeatures.tables) {
@@ -1147,38 +1346,19 @@ export default function POSPage({ params, searchParams }: RouteProps) {
 
   useEffect(() => {
     if (!isLoggedIn || !isAuthRestored || !currentUser?.id) return;
-    void ensureCashSession().catch(() => undefined);
-  }, [isLoggedIn, isAuthRestored, currentUser?.id]);
-
-  useEffect(() => {
-    if (!isLoggedIn || !isAuthRestored) return;
-    void (async () => {
-      try {
-        const locations = await fetchLocations();
-        const balcao =
-          locations.find((l) => l.active && (l.code === 'BALCAO' || l.name.toLowerCase() === 'balcão' || l.type === 'counter')) ||
-          locations.find((l) => l.active && l.tables.length > 0) ||
-          locations[0];
-        if (!balcao) return;
-        const ids = balcao.tables
-          .map((t) => String(t.name))
-          .filter(Boolean)
-          .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
-        if (ids.length) {
-          setPosTableIds(ids);
-          setPosTablesSummary(balcao.tablesSummary || formatTablesRange(ids));
+    void ensureCashSession()
+      .then((snapshot) => {
+        if (snapshot?.dayCarryOver?.pending) {
+          showToast(
+            snapshot.dayCarryOver.message ||
+              'Caixa de ontem não esvaziado — retire o valor para abrir o dia de hoje.',
+            'error',
+          );
+          setIsCashMovementOpen(true);
         }
-        setAllowTableCustomNames(Boolean(balcao.allowCustomNames));
-        setCachedLocationsTables({
-          tableIds: ids.length ? ids : DEFAULT_TABLE_IDS,
-          tablesSummary: balcao.tablesSummary || formatTablesRange(ids.length ? ids : DEFAULT_TABLE_IDS),
-          allowCustomNames: Boolean(balcao.allowCustomNames),
-        });
-      } catch {
-        // mantém 1:20 por defeito
-      }
-    })();
-  }, [isLoggedIn, isAuthRestored]);
+      })
+      .catch(() => undefined);
+  }, [isLoggedIn, isAuthRestored, currentUser?.id]);
 
   const handleFinalizePayment = async () => {
     if (isFinalizingPayment) return;
@@ -1368,8 +1548,8 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           tableKey: selectedTableId ?? null,
           tableLabel: selectedTableId
             ? tableLabels[selectedTableId]
-              ? `${selectedTableId} (${tableLabels[selectedTableId]})`
-              : String(selectedTableId)
+              ? `${tableNumberLabels[selectedTableId] || selectedTableId} (${tableLabels[selectedTableId]})`
+              : String(tableNumberLabels[selectedTableId] || selectedTableId)
             : null,
           docLabel: `${saleDocType} ${String(result.usedDocumentNumber ?? '')}`.trim(),
           timeLabel: new Date().toLocaleString('pt-MZ'),
@@ -1760,6 +1940,22 @@ export default function POSPage({ params, searchParams }: RouteProps) {
             await refreshActivationState();
           }}
           onActivate={handleElectronLicenseActivate}
+          onClearLocalLicense={async () => {
+            if (!window.electronAPI?.clearLocalLicense) {
+              throw new Error('Limpar licença só está disponível na app Electron.');
+            }
+            try {
+              await resetLocalLicenseOnServer();
+            } catch {
+              // Electron IPC ainda faz fallback (apaga ficheiro).
+            }
+            const result = await window.electronAPI.clearLocalLicense();
+            if (!result?.success) {
+              throw new Error(result?.error || 'Falha ao limpar licença local.');
+            }
+            await refreshActivationState();
+            await refreshSetupStatus({ skipRegistrySync: true });
+          }}
           onRestartNow={async () => {
             if (!window.electronAPI?.restartApp) {
               window.location.reload();
@@ -1795,7 +1991,7 @@ export default function POSPage({ params, searchParams }: RouteProps) {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#121212] text-zinc-300 font-sans selection:bg-[rgba(0,1,251,0.45)]">
+    <div className="flex flex-col h-screen overflow-hidden bg-pos-bg text-zinc-300 font-sans selection:bg-[rgba(0, 1, 251,0.45)]">
       {!isConfigured && (
         <div className="bg-amber-700/90 text-white text-[10px] font-bold py-1 px-4 text-center z-[9999]">
           Sync cloud desactivado: configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY para sincronizar com a nuvem. As vendas funcionam offline.
@@ -1804,57 +2000,15 @@ export default function POSPage({ params, searchParams }: RouteProps) {
       
       {/* --- Top Header --- */}
       <Header
-        selectedCustomerName={selectedCustomer?.name ?? null}
-        selectedTableId={selectedTableId}
-        tableDisplayLabel={selectedTableId ? tableLabels[selectedTableId] || null : null}
-        salesMode={salesMode}
         showTables={commerceFeatures.tables}
-        onOpenCustomer={() => setIsCustomerModalOpen(true)}
-        onOpenDiscount={() => {
-          if (!requireAccess('vendas.aplicar_desconto', 'Aplicar desconto')) return;
-          setIsDiscountModalOpen(true);
-        }}
-        onOpenQuotation={handleOpenQuotationModal}
-        onOpenCashDrawer={() => {
-          if (!requireAccess('vendas.abrir_gaveta_dinheiro', 'Abrir a gaveta do dinheiro')) return;
-          void (async () => {
-            if (!window.electronAPI?.openCashDrawer) {
-              showToast('Abertura de gaveta disponível na app desktop (Electron).', 'info');
-              return;
-            }
-            const settings = loadPosSettings();
-            const printer = String(settings.printJobs?.receipt?.printer || '').trim();
-            if (!printer) {
-              showToast('Configure a impressora de recibos em Opções de impressão.', 'error');
-              return;
-            }
-            try {
-              const result = await window.electronAPI.openCashDrawer({
-                printer,
-                command: settings.printDrawerCommand || '1B700019FA',
-                tryBothPins: true,
-              });
-              if (!result?.success) {
-                showToast(result?.error || 'Falha ao abrir gaveta.', 'error');
-              }
-            } catch (error) {
-              showToast(error instanceof Error ? error.message : 'Falha ao abrir gaveta.', 'error');
-            }
-          })();
-        }}
-        onOpenTable={openTableFloor}
         tablesFloorOpen={isTableFloorOpen}
-        onOpenBillPreview={() => {
-          if (cart.length === 0) return;
-          setIsReceiptModalOpen(true);
-        }}
-        billPreviewEnabled={cart.length > 0}
+        locations={floorLocations}
+        activeLocationId={activeLocationId}
+        selectedTableId={selectedTableId}
+        onSelectLocation={selectLocation}
         onOpenAdminSidebar={() => setIsAdminSidebarOpen(true)}
         userName={currentUser?.name ?? null}
-        onLogout={() => {
-          clearPosSessionCache();
-          logout();
-        }}
+        onLogout={logoutFromPos}
       />
 
       <main className="flex flex-1 flex-col overflow-hidden">
@@ -1869,6 +2023,8 @@ export default function POSPage({ params, searchParams }: RouteProps) {
                 salesMode={salesMode}
                 tableOrders={tableOrders}
                 tableLabels={tableLabels}
+                tableNumberLabels={tableNumberLabels}
+                formatPrice={formatPrice}
                 onSelect={handleTableSelect}
                 onClose={() => setIsTableFloorOpen(false)}
               />
@@ -1931,6 +2087,15 @@ export default function POSPage({ params, searchParams }: RouteProps) {
                 setTempQuantity(item.quantity.toString());
                 setIsQuantityModalOpen(true);
               }}
+              onChangeQuantity={(item, quantity) => {
+                void updateQuantity(item.id, quantity);
+              }}
+              onOpenLineDiscount={(item) => {
+                if (!requireAccess('vendas.aplicar_desconto', 'Aplicar desconto')) return;
+                setSelectedCartItemId(item.id);
+                setDiscountTarget('selected');
+                setIsDiscountModalOpen(true);
+              }}
               allowItemNotes={Boolean(commerceFeatures.printCenters)}
               onEditItemNotes={(item) => {
                 setNotesEditingItem(item);
@@ -1959,6 +2124,43 @@ export default function POSPage({ params, searchParams }: RouteProps) {
                 if (cart.length <= 0) return;
                 setPaymentFinalizeError(null);
                 setIsPaymentModalOpen(true);
+              }}
+              onOpenCustomer={() => setIsCustomerModalOpen(true)}
+              onOpenDiscount={() => {
+                if (!requireAccess('vendas.aplicar_desconto', 'Aplicar desconto')) return;
+                setIsDiscountModalOpen(true);
+              }}
+              onOpenQuotation={handleOpenQuotationModal}
+              onOpenBill={() => {
+                if (cart.length === 0) return;
+                setIsReceiptModalOpen(true);
+              }}
+              onOpenCashDrawer={() => {
+                if (!requireAccess('vendas.abrir_gaveta_dinheiro', 'Abrir a gaveta do dinheiro')) return;
+                void (async () => {
+                  if (!window.electronAPI?.openCashDrawer) {
+                    showToast('Abertura de gaveta disponível na app desktop (Electron).', 'info');
+                    return;
+                  }
+                  const settings = loadPosSettings();
+                  const printer = String(settings.printJobs?.receipt?.printer || '').trim();
+                  if (!printer) {
+                    showToast('Configure a impressora de recibos em Opções de impressão.', 'error');
+                    return;
+                  }
+                  try {
+                    const result = await window.electronAPI.openCashDrawer({
+                      printer,
+                      command: settings.printDrawerCommand || '1B700019FA',
+                      tryBothPins: true,
+                    });
+                    if (!result?.success) {
+                      showToast(result?.error || 'Falha ao abrir gaveta.', 'error');
+                    }
+                  } catch (error) {
+                    showToast(error instanceof Error ? error.message : 'Falha ao abrir gaveta.', 'error');
+                  }
+                })();
               }}
             />
           ) : null}
@@ -2093,7 +2295,10 @@ export default function POSPage({ params, searchParams }: RouteProps) {
         }}
         selectedCustomer={selectedCustomer}
         customerName={customerName}
-        tableNumber={tableNumber}
+        tableNumber={
+          tableNumber ||
+          (selectedTableId ? tableNumberLabels[selectedTableId] || selectedTableId : '')
+        }
         cart={cart}
         globalDiscount={globalDiscount}
         originalTotal={originalTotal}
@@ -2187,43 +2392,32 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           setIsAdminSidebarOpen(false);
           setIsEndOfDayOpen(true);
         }}
-        onLogout={() => {
-          void clearDraftEverywhere();
-          clearPosSessionCache();
-          logout();
+        onOpenCashMovement={() => {
+          if (!requireAccess('vendas.abrir_caixa', 'Movimento de caixa')) return;
           setIsAdminSidebarOpen(false);
+          setIsCashMovementOpen(true);
         }}
+        onLogout={logoutFromPos}
       />
 
       <EndOfDayModal
         isOpen={isEndOfDayOpen}
         onClose={() => setIsEndOfDayOpen(false)}
         companyName={companyProfile?.name || 'POSly'}
+        operatorName={currentUser?.name || null}
+        onToast={showToast}
+      />
+
+      <CashMovementModal
+        isOpen={isCashMovementOpen}
+        onClose={() => setIsCashMovementOpen(false)}
+        operatorName={currentUser?.name || null}
         onToast={showToast}
       />
 
       <SalesHistoryModal isOpen={isSalesHistoryOpen} onClose={() => setIsSalesHistoryOpen(false)} />
 
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded flex items-center gap-3 border border-zinc-800 bg-[#1a1a1a]"
-          >
-            <div className={`p-2 rounded ${
-              toast.type === 'success' ? 'bg-[#0001fb]/20 text-[#a5b4fc]' :
-              toast.type === 'error' ? 'bg-red-500/20 text-red-500' :
-              'bg-blue-500/20 text-blue-500'
-            }`}>
-              <AlertTriangle size={20} />
-            </div>
-            <span className="text-sm font-medium text-white">{toast.message}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <PosToast toast={toast} placement="center" />
     </div>
   );
 }

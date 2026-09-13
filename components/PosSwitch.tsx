@@ -42,7 +42,7 @@ export function PosSwitch({
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0001fb]/45 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950',
         'disabled:cursor-not-allowed disabled:opacity-45',
         checked
-          ? 'border-[#0001fb] bg-[#0001fb] shadow-[0_0_0_3px_rgba(0,1,251,0.18)]'
+          ? 'border-[#0001fb] bg-[#0001fb] shadow-[0_0_0_3px_rgba(0, 1, 251,0.18)]'
           : 'border-zinc-500/80 bg-zinc-600',
         !label ? className : '',
       ]
@@ -51,7 +51,7 @@ export function PosSwitch({
     >
       <span
         className={[
-          'pointer-events-none absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-md',
+          'pointer-events-none absolute top-[2px] h-[18px] w-[18px] rounded-full bg-[#f5f4fb] shadow-md',
           'transition-[left,right] duration-200 ease-out',
           checked ? 'left-auto right-[2px]' : 'left-[2px] right-auto',
         ].join(' ')}
@@ -72,7 +72,7 @@ export function PosSwitch({
         .join(' ')}
     >
       {switchControl}
-      <span className="text-xs text-zinc-200">{label}</span>
+      <span className="text-xs text-pos-fg-soft">{label}</span>
     </label>
   );
 }

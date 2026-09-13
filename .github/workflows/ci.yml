@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  typecheck-and-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # @journeyapps/sqlcipher (SQLCipher, usado por api/utils/dbEncryption.js e
+      # exercitado em tests/unit/db-encryption.test.mjs) traz um binário nativo
+      # pré-compilado contra OpenSSL 1.1 — o ubuntu-latest actual já não inclui
+      # essa biblioteca por omissão (só tem OpenSSL 3).
+      - name: Install libssl1.1 (required by @journeyapps/sqlcipher prebuilt binary)
+        run: |
+          curl -sSL -o /tmp/libssl1.1.deb http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb
+          sudo dpkg -i /tmp/libssl1.1.deb
+
+      - run: npm ci
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm run test:unit

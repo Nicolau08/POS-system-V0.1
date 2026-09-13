@@ -3,7 +3,11 @@ import { logAudit, logError } from '../utils/logger.js';
 import { sendError, sendSuccess } from '../utils/response.js';
 
 function controllerError(res, error) {
-  console.error('❌ controller error:', error);
+  logError('controller_error', {
+    module: 'sales',
+    reason: 'Erro não tratado no controller',
+    error,
+  });
   return sendError(res, 500, 'Erro interno do servidor', 'INTERNAL_ERROR');
 }
 

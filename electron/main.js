@@ -8,7 +8,6 @@ import crypto from 'crypto';
 import os from 'os';
 import dotenv from 'dotenv';
 import electronUpdaterModule from 'electron-updater';
-import machineIdModule from 'node-machine-id';
 import {
   isReactivationTokenInput,
   normalizeReactivationTokenInput,
@@ -18,6 +17,11 @@ import {
   resignMachineLicensePayload,
   verifyOfflineReactivationToken,
 } from '../lib/licensing/offlineReactivationToken.js';
+import { getLocalMachineId as resolveSharedLocalMachineId } from '../lib/licensing/localMachineId.js';
+import {
+  readLicenseFileSealed,
+  writeSealedLicenseFile,
+} from '../lib/licensing/sealedLocalLicense.js';
 import { electronLogError, electronLogInfo, electronLogWarn } from './logger.js';
 import { getOrCreateDbEncryptionKey } from './dbEncryptionKey.js';
 
@@ -33,6 +37,15 @@ const loadPackagedBuildSecrets = () => {
     path.join(process.resourcesPath || '', 'app.asar', 'electron', '.build-secrets.json'),
     path.join(process.resourcesPath || '', 'electron', '.build-secrets.json'),
   ];
+  // Em instalado, o ficheiro do build é a fonte de verdade. Variáveis de utilizador
+  // no Windows (ex.: POS_LICENSE_HMAC_SECRET antigo/curto) não podem ganhar —
+  // isso marcava licenças válidas como "tampering".
+  let preferPackagedSecrets = false;
+  try {
+    preferPackagedSecrets = Boolean(app?.isPackaged);
+  } catch {
+    preferPackagedSecrets = false;
+  }
   for (const candidate of candidates) {
     try {
       if (!candidate || !fsSync.existsSync(candidate)) continue;
@@ -41,7 +54,7 @@ const loadPackagedBuildSecrets = () => {
       for (const [key, value] of Object.entries(parsed)) {
         const text = String(value ?? '').trim();
         if (!text) continue;
-        if (!String(process.env[key] ?? '').trim()) {
+        if (preferPackagedSecrets || !String(process.env[key] ?? '').trim()) {
           process.env[key] = text;
         }
       }
@@ -102,8 +115,10 @@ const resolveDevWebUrl = () => {
   return `http://localhost:${port}/`;
 };
 
-const { machineIdSync } = machineIdModule;
 const { autoUpdater } = electronUpdaterModule;
+
+/** Machine ID: em dev pode ser POS_MACHINE_ID (pasta .dev-tenants); instalado = hardware real. */
+const resolveLocalMachineId = () => resolveSharedLocalMachineId();
 
 let backendProcess = null;
 let webProcess = null;
@@ -127,15 +142,146 @@ const ensureDir = async (targetPath) => {
 
 const getRuntimePaths = () => {
   const userDataPath = app.getPath('userData');
+  // Backups em Documentos (fácil de encontrar/copiar); BD/licença ficam em AppData.
+  const backupsPath = path.join(app.getPath('documents'), 'POSly Backup');
   return {
     userDataPath,
     databasePath: path.join(userDataPath, 'data', 'database.db'),
-    backupsPath: path.join(userDataPath, 'backups'),
+    backupsPath,
     configPath: path.join(userDataPath, 'config.json'),
     licensePath: path.join(userDataPath, 'license.json'),
     stationRuntimePath: path.join(userDataPath, 'station-runtime.json'),
   };
 };
+
+/** Pasta canónica em %APPDATA%\POSly (ou POS_APP_USERDATA_SUBDIR). Deve correr ANTES de app.ready.
+ * Dev: POS_USER_DATA_PATH aponta para .dev-tenants/<id>/ e isola do instalado.
+ * BD/licença/config ficam em AppData; backups em Documentos\POSly Backup.
+ * Updates/NSIS só substituem Program Files (deleteAppDataOnUninstall=false). */
+const configureCanonicalUserDataPath = () => {
+  try {
+    const explicit = String(process.env.POS_USER_DATA_PATH ?? '').trim();
+    if (explicit) {
+      const target = path.resolve(explicit);
+      app.setPath('userData', target);
+      console.log('[electron] userData DEV isolado:', target);
+      return target;
+    }
+    const override = String(process.env.POS_APP_USERDATA_SUBDIR ?? '').trim();
+    const subdir = override || 'POSly';
+    const appDataRoot =
+      typeof app.getPath === 'function'
+        ? app.getPath('appData')
+        : process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    const target = path.join(appDataRoot, subdir);
+    app.setPath('userData', target);
+    console.log('[electron] userData canónico:', target);
+    return target;
+  } catch (error) {
+    console.warn('[electron] Falha a fixar userData canónico:', error?.message ?? error);
+    return null;
+  }
+};
+
+const userDataHasBusinessPayload = async (dir) => {
+  if (!dir) return false;
+  const checks = [
+    path.join(dir, 'license.json'),
+    path.join(dir, 'db-encryption.key'),
+    path.join(dir, 'data', 'database.db'),
+    path.join(dir, 'data', 'pos.db'),
+  ];
+  for (const candidate of checks) {
+    if (await fileExists(candidate)) return true;
+  }
+  return false;
+};
+
+const copyIfExists = async (fromPath, toPath) => {
+  if (!(await fileExists(fromPath))) return false;
+  await ensureDir(path.dirname(toPath));
+  await fs.cp(fromPath, toPath, { recursive: true, force: true });
+  return true;
+};
+
+/**
+ * Se a pasta actual estiver vazia (pós-update / rename), recupera licença+BD+chave
+ * de pastas legadas em AppData / LocalAppData.
+ */
+const migrateLegacyUserDataIfNeeded = async () => {
+  // Dev isolado (.dev-tenants): nunca copiar dados do AppData do instalado.
+  if (String(process.env.POS_USER_DATA_PATH ?? '').trim()) {
+    return { migrated: false, reason: 'dev-user-data-override' };
+  }
+  const current = app.getPath('userData');
+  await ensureDir(current);
+
+  const markerPath = path.join(current, '.userdata-migrated');
+  if (await fileExists(markerPath)) return { migrated: false, reason: 'already-migrated' };
+  if (await userDataHasBusinessPayload(current)) {
+    return { migrated: false, reason: 'current-has-data' };
+  }
+
+  const appDataRoot = app.getPath('appData');
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const legacyNames = [
+    'POSly',
+    'posly',
+    'NINO POS',
+    'Nino POS',
+    'nino-pos',
+    'NINO-POS',
+    'POS system',
+    'pos system',
+    'POS-system',
+  ];
+
+  const candidates = [];
+  for (const name of legacyNames) {
+    candidates.push(path.join(appDataRoot, name));
+    candidates.push(path.join(localAppData, name));
+  }
+
+  const currentNorm = path.normalize(current).toLowerCase();
+  for (const candidate of candidates) {
+    const candidateNorm = path.normalize(candidate).toLowerCase();
+    if (candidateNorm === currentNorm) continue;
+    if (!(await userDataHasBusinessPayload(candidate))) continue;
+
+    electronLogInfo(
+      'electron.userdata_migrate',
+      `A recuperar dados de pasta legada: ${candidate} → ${current}`,
+      { module: 'main', from: candidate, to: current },
+    );
+
+    const files = [
+      'license.json',
+      'db-encryption.key',
+      'config.json',
+      'station-runtime.json',
+    ];
+    for (const fileName of files) {
+      await copyIfExists(path.join(candidate, fileName), path.join(current, fileName));
+    }
+    await copyIfExists(path.join(candidate, 'data'), path.join(current, 'data'));
+    await copyIfExists(path.join(candidate, 'backups'), path.join(current, 'backups'));
+
+    try {
+      await fs.writeFile(
+        markerPath,
+        JSON.stringify({ from: candidate, at: new Date().toISOString() }, null, 2),
+        'utf8',
+      );
+    } catch {
+      /* ignore */
+    }
+
+    return { migrated: true, from: candidate, to: current };
+  }
+
+  return { migrated: false, reason: 'no-legacy-found' };
+};
+
 
 const readStationRuntimeConfig = async () => {
   const { stationRuntimePath } = getRuntimePaths();
@@ -195,7 +341,7 @@ const waitForHttp = async (url, timeoutMs = 45000) => {
     } catch {
       // keep polling until timeout
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`Timeout aguardando ${probeUrl}`);
 };
@@ -204,8 +350,39 @@ const resolveLicenseHmacSecret = () =>
   String(process.env.POS_LICENSE_HMAC_SECRET || process.env.LICENSE_HMAC_SECRET || '').trim();
 
 const allowUnsignedLicenseFallback = () => {
+  // Empacotado / produção: nunca aceitar licença sem assinatura HMAC.
+  if (isPackagedBuild() || String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
+    return false;
+  }
   const raw = String(process.env.POS_LICENSE_ALLOW_UNSIGNED || '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'y'].includes(raw);
+};
+
+/** Lê license.json (selado ou legado) e migra one-shot para selado quando possível. */
+const readLocalLicensePayload = async (licensePath) => {
+  const secret = resolveLicenseHmacSecret();
+  const machineId = resolveLocalMachineId();
+  return readLicenseFileSealed(licensePath, {
+    secret,
+    machineId,
+    migrate: Boolean(secret),
+  });
+};
+
+/** Grava licença como envelope selado (após validação da consola / resign offline). */
+const writeLocalLicensePayload = async (licensePath, payload) => {
+  const secret = resolveLicenseHmacSecret();
+  const machineId =
+    String(payload?.machine_id ?? '').trim() || resolveLocalMachineId();
+  if (secret) {
+    await writeSealedLicenseFile(licensePath, payload, { secret, machineId });
+    return;
+  }
+  if (isPackagedBuild() || String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
+    throw new Error('POS_LICENSE_HMAC_SECRET obrigatório para gravar licença local.');
+  }
+  await ensureDir(path.dirname(licensePath));
+  await fs.writeFile(licensePath, JSON.stringify(payload, null, 2), 'utf8');
 };
 
 const buildCanonicalLicensePayload = (payload) => ({
@@ -433,7 +610,7 @@ const validateLicensePayload = ({ payload, expectedTenantId = null }) => {
     };
   }
 
-  const localMachineId = machineIdSync({ original: true });
+  const localMachineId = resolveLocalMachineId();
   if (machineId !== localMachineId) {
     return {
       ok: false,
@@ -470,11 +647,14 @@ const resolveExpectedTenantId = async () => {
   );
   if (!licenseActivated) return null;
   const id = status.tenantId ?? status.tenant_id;
-  return id ? String(id).trim() : null;
+  const tenantId = id ? String(id).trim() : '';
+  // Seed legado nunca deve bloquear licença real (loja-teste, etc.).
+  if (!tenantId || tenantId.toLowerCase() === 'tenant-1') return null;
+  return tenantId;
 };
 
 const getActivationStateInternal = async () => {
-  const machineId = machineIdSync({ original: true });
+  const machineId = resolveLocalMachineId();
   const activationCode = buildActivationCode(machineId);
   const { licensePath } = getRuntimePaths();
   const expectedTenantId = await resolveExpectedTenantId();
@@ -517,9 +697,21 @@ const getActivationStateInternal = async () => {
   }
 
   try {
-    const raw = await fs.readFile(licensePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    const validation = validateLicensePayload({ payload: parsed, expectedTenantId });
+    const file = await readLocalLicensePayload(licensePath);
+    if (!file.ok) {
+      return {
+        success: true,
+        isActivated: false,
+        machineId,
+        activationCode,
+        licensePath,
+        reason: file.error || 'Licença inválida.',
+      };
+    }
+    const validation = validateLicensePayload({
+      payload: file.payload,
+      expectedTenantId,
+    });
     if (!validation.ok) {
       return {
         success: true,
@@ -584,12 +776,15 @@ const tryOfflineReactivationInElectron = async (
 
   let localPayload;
   try {
-    const raw = await fs.readFile(licensePath, 'utf8');
-    const parsed = parseLicenseInput(raw);
-    if (!parsed.payload) {
-      return { ok: false, offlineInvalid: true, error: 'Licença local não encontrada.' };
+    const file = await readLocalLicensePayload(licensePath);
+    if (!file.ok || !file.payload) {
+      return {
+        ok: false,
+        offlineInvalid: true,
+        error: file.error || 'Licença local não encontrada.',
+      };
     }
-    localPayload = parsed.payload;
+    localPayload = file.payload;
   } catch {
     return { ok: false, offlineInvalid: true, error: 'Licença local não encontrada.' };
   }
@@ -615,13 +810,12 @@ const tryOfflineReactivationInElectron = async (
     return { ok: false, error: validation.reason || 'Licença inválida após reativação offline.' };
   }
 
-  await ensureDir(path.dirname(licensePath));
-  await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
+  await writeLocalLicensePayload(licensePath, licenseToWrite);
   return { ok: true, offline: true };
 };
 
 const activateLicenseInternal = async (rawLicenseKey) => {
-  const machineId = machineIdSync({ original: true });
+  const machineId = resolveLocalMachineId();
   const activationCode = buildActivationCode(machineId);
   const { licensePath } = getRuntimePaths();
   const expectedTenantId = await resolveExpectedTenantId();
@@ -657,8 +851,7 @@ const activateLicenseInternal = async (rawLicenseKey) => {
         redeem.license && typeof redeem.license === 'object'
           ? redeem.license
           : { ...parsedInput.payload, activated_at: new Date().toISOString() };
-      await ensureDir(path.dirname(licensePath));
-      await fs.writeFile(licensePath, JSON.stringify(licenseToWrite, null, 2), 'utf8');
+      await writeLocalLicensePayload(licensePath, licenseToWrite);
       return {
         success: true,
         machineId,
@@ -767,20 +960,11 @@ const activateLicenseInternal = async (rawLicenseKey) => {
         error: 'Falha ao gerar licença para esta máquina.',
       };
     }
-    await ensureDir(path.dirname(licensePath));
-    await fs.writeFile(
-      licensePath,
-      JSON.stringify(
-        {
-          ...finalLicense,
-          activated_at: new Date().toISOString(),
-          voucher_nonce: voucherCheck.nonce,
-        },
-        null,
-        2
-      ),
-      'utf8'
-    );
+    await writeLocalLicensePayload(licensePath, {
+      ...finalLicense,
+      activated_at: new Date().toISOString(),
+      voucher_nonce: voucherCheck.nonce,
+    });
     return {
       success: true,
       machineId,
@@ -803,19 +987,10 @@ const activateLicenseInternal = async (rawLicenseKey) => {
     };
   }
 
-  await ensureDir(path.dirname(licensePath));
-  await fs.writeFile(
-    licensePath,
-    JSON.stringify(
-      {
-        ...parsedInput.payload,
-        activated_at: new Date().toISOString(),
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
+  await writeLocalLicensePayload(licensePath, {
+    ...parsedInput.payload,
+    activated_at: new Date().toISOString(),
+  });
 
   return {
     success: true,
@@ -832,9 +1007,11 @@ const readAndValidateLicenseFromFile = async (expectedTenantId) => {
   }
 
   try {
-    const raw = await fs.readFile(licensePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    return validateLicensePayload({ payload: parsed, expectedTenantId });
+    const file = await readLocalLicensePayload(licensePath);
+    if (!file.ok) {
+      return { ok: false, reason: file.error || 'Ficheiro local de licença está inválido.' };
+    }
+    return validateLicensePayload({ payload: file.payload, expectedTenantId });
   } catch {
     return { ok: false, reason: 'Ficheiro local de licença está inválido.' };
   }
@@ -843,21 +1020,23 @@ const readAndValidateLicenseFromFile = async (expectedTenantId) => {
 /** Alinha o processo Node da API com o tenant da licença (ficheiro escrito pelo Electron). */
 const licenseEnvForBackend = async () => {
   if (!isPackagedBuild()) return {};
-  const v = await readAndValidateLicenseFromFile(null);
-  if (!v.ok || !v.tenantId) return {};
   const { licensePath } = getRuntimePaths();
-  let storeName = '';
+  if (!(await fileExists(licensePath))) return {};
   try {
-    const raw = await fs.readFile(licensePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    storeName = String(parsed?.store_name ?? parsed?.tenant_name ?? parsed?.storeName ?? '').trim();
+    const file = await readLocalLicensePayload(licensePath);
+    if (!file.ok || !file.payload) return {};
+    const v = validateLicensePayload({ payload: file.payload, expectedTenantId: null });
+    if (!v.ok || !v.tenantId) return {};
+    const storeName = String(
+      file.payload?.store_name ?? file.payload?.tenant_name ?? file.payload?.storeName ?? '',
+    ).trim();
+    return {
+      DEFAULT_TENANT_ID: String(v.tenantId).trim(),
+      DEFAULT_TENANT_NAME: storeName || 'Loja',
+    };
   } catch {
-    // ignore
+    return {};
   }
-  return {
-    DEFAULT_TENANT_ID: String(v.tenantId).trim(),
-    DEFAULT_TENANT_NAME: storeName || 'Loja',
-  };
 };
 
 /** Raiz lógica do app (app.asar) — resolução de `node_modules` no pacote. */
@@ -931,6 +1110,10 @@ const spawnNodeService = ({ entryPath, env, cwd, onLog, onExitLogPrefix }) => {
         }
       : {}),
   };
+  // Empacotado: nunca propagar fallback de licença sem assinatura para a API.
+  if (isPackagedBuild()) {
+    delete childEnv.POS_LICENSE_ALLOW_UNSIGNED;
+  }
 
   const options = {
     cwd: workDir,
@@ -968,7 +1151,7 @@ const shouldSkipLocalLicenseGate = () => {
   return useExternalApi() && !isPackagedBuild();
 };
 
-const isApiAlreadyUp = async (timeoutMs = 1500) => {
+const isApiAlreadyUp = async (timeoutMs = 400) => {
   const apiPort = resolveAppApiPort();
   try {
     await waitForHttp(`http://127.0.0.1:${apiPort}`, timeoutMs);
@@ -980,17 +1163,20 @@ const isApiAlreadyUp = async (timeoutMs = 1500) => {
 
 const startBackend = async () => {
   const apiPort = resolveAppApiPort();
+  setSplashStatus('A ler configuração do posto…');
   const stationRuntime = await readStationRuntimeConfig();
 
   // Posto remoto: não inicia API local — a UI fala com o servidor LAN.
   if (stationRuntime.mode === 'client' && stationRuntime.serverApiBaseUrl) {
+    setSplashStatus('A ligar ao servidor da loja…');
     console.log(
       `[electron] Modo posto remoto — API no servidor ${stationRuntime.serverApiBaseUrl} (não inicia api/server.js).`,
     );
     return;
   }
 
-  if (useExternalApi() || (await isApiAlreadyUp())) {
+  if (useExternalApi()) {
+    setSplashStatus('A ligar à API local…');
     console.log(
       `[electron] A usar API externa em http://127.0.0.1:${apiPort} (não inicia api/server.js).`,
     );
@@ -998,7 +1184,20 @@ const startBackend = async () => {
     return;
   }
 
+  // Em instalado nunca reutilizar um processo 3731 “órfão” (ex.: crash / outro teste no
+  // mesmo PC) — esse processo pode gravar license.json noutro sítio e a UI fica em
+  // “Licença não encontrada” depois do número de série.
+  if (!isPackagedBuild() && (await isApiAlreadyUp())) {
+    setSplashStatus('A ligar à API em execução…');
+    console.log(
+      `[electron] A usar API já activa em http://127.0.0.1:${apiPort} (dev).`,
+    );
+    await waitForHttp(`http://127.0.0.1:${apiPort}`, 10_000);
+    return;
+  }
+
   const paths = getRuntimePaths();
+  setSplashStatus('A preparar pastas de dados…');
   await ensureDir(path.dirname(paths.databasePath));
   await ensureDir(paths.backupsPath);
 
@@ -1008,6 +1207,7 @@ const startBackend = async () => {
     const legacyExists = await fileExists(legacyDbPath);
     const newExists = await fileExists(paths.databasePath);
     if (legacyExists && !newExists) {
+      setSplashStatus('A migrar base de dados…');
       await fs.rename(legacyDbPath, paths.databasePath);
       for (const suffix of ['-wal', '-shm']) {
         const from = `${legacyDbPath}${suffix}`;
@@ -1024,23 +1224,45 @@ const startBackend = async () => {
 
   const dbExistedBeforeBoot =
     (await fileExists(paths.databasePath)) || (await fileExists(legacyDbPath));
+  setSplashStatus('A verificar licença…');
   const backendEntry = await resolveBackendEntry();
   const licenseEnv = await licenseEnvForBackend();
   const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
   const licenseHmacSecret = String(
     process.env.POS_LICENSE_HMAC_SECRET ?? process.env.LICENSE_HMAC_SECRET ?? '',
   ).trim();
+  const supabaseUrl = String(
+    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+  ).trim();
+  const supabaseServiceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+  const supabaseAnonKey = String(
+    process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+  ).trim();
 
   const lanAccess = Boolean(stationRuntime.lanAccessEnabled);
   const bindHost = lanAccess ? '0.0.0.0' : '127.0.0.1';
-  // Segredo estável por instalação para Bearer em login LAN
+  // Segredo estável por instalação para Bearer (env → ficheiro existente → derivar).
+  const secretPath = path.join(path.dirname(paths.databasePath), 'auth-hmac.secret');
   let authHmac = String(process.env.POS_AUTH_HMAC_SECRET || process.env.AUTH_BEARER_SHARED_SECRET || '').trim();
   if (!authHmac) {
+    try {
+      authHmac = String(await fs.readFile(secretPath, 'utf8')).trim();
+    } catch {
+      authHmac = '';
+    }
+  }
+  if (!authHmac) {
     authHmac = crypto.createHash('sha256').update(`posly-auth:${paths.userDataPath}`).digest('hex').slice(0, 48);
+  }
+  try {
+    await fs.writeFile(secretPath, `${authHmac}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch (err) {
+    console.warn('[electron] Não foi possível gravar auth-hmac.secret:', err?.message ?? err);
   }
 
   let dbEncryptionKeyHex = '';
   try {
+    setSplashStatus('A preparar encriptação da base de dados…');
     const dbKey = getOrCreateDbEncryptionKey(paths.userDataPath);
     dbEncryptionKeyHex = dbKey.keyHex;
     if (dbKey.created) {
@@ -1053,6 +1275,7 @@ const startBackend = async () => {
     throw err;
   }
 
+  setSplashStatus('A iniciar base de dados…');
   backendStartupLogs = '';
   backendProcess = spawnNodeService({
     entryPath: backendEntry,
@@ -1073,6 +1296,9 @@ const startBackend = async () => {
       POS_DB_ENCRYPTION: '1',
       ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
       ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
+      ...(supabaseUrl ? { SUPABASE_URL: supabaseUrl } : {}),
+      ...(supabaseServiceRoleKey ? { SUPABASE_SERVICE_ROLE_KEY: supabaseServiceRoleKey } : {}),
+      ...(supabaseAnonKey ? { SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
       ...licenseEnv,
       // Nunca activar AUTH_ALLOW_LEGACY_LOCAL em builds empacotados: o proxy
       // Next (/pos-backend → 127.0.0.1) faria a API tratar pedidos LAN como
@@ -1085,7 +1311,9 @@ const startBackend = async () => {
   });
 
   try {
+    setSplashStatus('A aguardar serviço local…');
     await waitForHttp(`http://127.0.0.1:${apiPort}`);
+    setSplashStatus('Base de dados pronta');
   } catch (error) {
     const details = backendStartupLogs.trim();
     const suffix = details ? `\n\n${details}` : '';
@@ -1098,6 +1326,7 @@ const startStandaloneWeb = async () => {
 
   const webPort = resolveAppWebPort();
   const apiPort = resolveAppApiPort();
+  setSplashStatus('A carregar interface…');
   const webEntry = await resolveWebEntry();
   webStartupLogs = '';
   webProcess = spawnNodeService({
@@ -1118,6 +1347,7 @@ const startStandaloneWeb = async () => {
   });
 
   try {
+    setSplashStatus('A preparar ecrã principal…');
     await waitForHttp(`http://127.0.0.1:${webPort}`);
   } catch (error) {
     const details = webStartupLogs.trim();
@@ -1214,7 +1444,8 @@ const buildLicenseBlockedHtml = (reason) => `
 </html>
 `;
 
-const buildSplashHtml = () => `
+const buildSplashHtml = () => {
+  return `
 <!doctype html>
 <html>
   <head>
@@ -1238,20 +1469,46 @@ const buildSplashHtml = () => `
         justify-content: center;
         gap: 18px;
         font-family: Segoe UI, sans-serif;
+        padding: 0 28px;
+        box-sizing: border-box;
       }
       .mark {
         width: 104px;
         height: 104px;
         border-radius: 22px;
-        box-shadow: 0 18px 48px rgba(0, 1, 251, 0.35);
         animation: pulse 1.4s ease-in-out infinite;
       }
-      .label {
+      .brand {
         font-size: 12px;
         letter-spacing: 0.18em;
         text-transform: uppercase;
         color: #a1a1aa;
-        animation: fade 1.4s ease-in-out infinite;
+      }
+      .status {
+        margin: -8px 0 0;
+        min-height: 2.6em;
+        max-width: 260px;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        line-height: 1.35;
+        color: #a1a1aa;
+        text-align: center;
+      }
+      .bar {
+        width: 160px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(161, 161, 170, 0.22);
+        overflow: hidden;
+      }
+      .bar > i {
+        display: block;
+        height: 100%;
+        width: 40%;
+        border-radius: inherit;
+        background: #0001fb;
+        animation: barSlide 1.1s ease-in-out infinite;
       }
       @keyframes pulse {
         0%,
@@ -1264,19 +1521,23 @@ const buildSplashHtml = () => `
           opacity: 0.65;
         }
       }
-      @keyframes fade {
-        0%,
-        100% {
-          opacity: 1;
+      @keyframes barSlide {
+        0% {
+          transform: translateX(-120%);
         }
-        50% {
-          opacity: 0.45;
+        100% {
+          transform: translateX(320%);
         }
       }
       @media (prefers-reduced-motion: reduce) {
         .mark,
-        .label {
+        .bar > i {
           animation: none;
+        }
+        .bar > i {
+          width: 100%;
+          transform: none;
+          opacity: 0.85;
         }
       }
     </style>
@@ -1290,18 +1551,46 @@ const buildSplashHtml = () => `
           d="M296.5,122.76v103.43c0,13.72-11.12,24.84-24.84,24.84h-83.25c-5.34,0-10.2,3.07-12.48,7.9l-18,38.1c-2.28,4.82-7.14,7.9-12.48,7.9h-67.95v-108.01c0-4.1,1.62-8.03,4.52-10.93l23.56-23.56c2.9-2.9,6.82-4.52,10.92-4.52h126.65c3.17,0,5.74,2.57,5.74,5.74,0,1.59-.64,3.02-1.68,4.07-1.03,1.03-2.47,1.68-4.06,1.68h-92.64c-14.61,0-26.45,11.84-26.45,26.45v79.65h14.12c5.39,0,10.29-3.14,12.54-8.04l7.55-16.44,17.71-38.53c2.25-4.89,7.15-8.03,12.54-8.03h39.21c7.68,0,14.9-1.97,21.16-5.43,11.07-6.11,19.2-16.86,21.78-29.63.58-2.83.88-5.76.88-8.76v-2.72h-.08c-.28-4.45-1.19-8.71-2.7-12.7-3.68-9.81-10.8-17.96-19.88-22.97-6.26-3.48-13.48-5.45-21.16-5.45h-76.5l.03-47.75h91.54c4.09,0,8.02,1.62,10.92,4.52l17.83,17.83,20.43,20.42c2.9,2.9,4.53,6.82,4.53,10.93Z"
         />
       </svg>
-      <div class="label">A iniciar POSly…</div>
+      <div class="brand">Posly</div>
+      <div class="status" id="boot-status" role="status" aria-live="polite">A iniciar…</div>
+      <div class="bar" role="progressbar" aria-label="A carregar">
+        <i></i>
+      </div>
     </div>
   </body>
 </html>
 `;
+};
+
+/** Actualiza a mensagem de arranque no splash (sem versão). */
+const setSplashStatus = (message) => {
+  const text = String(message ?? '').trim() || 'A iniciar…';
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  const apply = () => {
+    if (!splashWindow || splashWindow.isDestroyed()) return;
+    void splashWindow.webContents
+      .executeJavaScript(
+        `(() => {
+          const el = document.getElementById('boot-status');
+          if (el) el.textContent = ${JSON.stringify(text)};
+        })();`,
+        true,
+      )
+      .catch(() => {});
+  };
+  if (splashWindow.webContents.isLoadingMainFrame?.() || splashWindow.webContents.isLoading()) {
+    splashWindow.webContents.once('did-finish-load', apply);
+    return;
+  }
+  apply();
+};
 
 /** Feedback visual imediato: sem isto o arranque fica sem janela e o utilizador reabre a app várias vezes. */
 const createSplashWindow = () => {
   if (splashWindow && !splashWindow.isDestroyed()) return splashWindow;
   const splash = new BrowserWindow({
-    width: 320,
-    height: 320,
+    width: 340,
+    height: 360,
     frame: false,
     transparent: true,
     resizable: false,
@@ -1351,7 +1640,7 @@ const createWindow = async (opts = {}) => {
     title: 'POSly',
     icon: winIcon,
     show: false,
-    backgroundColor: '#121212',
+    backgroundColor: '#4a4ed4',
     webPreferences: {
       contextIsolation: true,
       sandbox: false,
@@ -1370,6 +1659,7 @@ const createWindow = async (opts = {}) => {
   mainWindow = win;
 
   if (blockedReason) {
+    setSplashStatus('Licença inválida');
     await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(blockedReason))}`);
     revealMainWindow(win);
     return;
@@ -1378,6 +1668,7 @@ const createWindow = async (opts = {}) => {
   if (!isPackagedBuild()) {
     const targetUrl = resolveDevWebUrl();
     try {
+      setSplashStatus('A ligar ao ambiente de desenvolvimento…');
       await waitForHttp(targetUrl, 90_000);
     } catch (error) {
       const hint =
@@ -1389,6 +1680,7 @@ const createWindow = async (opts = {}) => {
       return;
     }
     try {
+      setSplashStatus('A abrir a aplicação…');
       await win.loadURL(targetUrl);
     } catch (error) {
       console.error('[electron] loadURL failed:', error);
@@ -1399,14 +1691,17 @@ const createWindow = async (opts = {}) => {
     revealMainWindow(win);
     return;
   }
+  setSplashStatus('A abrir a aplicação…');
   await win.loadURL(`http://127.0.0.1:${resolveAppWebPort()}`);
   revealMainWindow(win);
 };
 
 ipcMain.handle('dialog:selectFolder', async () => {
+  const paths = getRuntimePaths();
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
     title: 'Selecionar pasta de backup',
+    defaultPath: paths.backupsPath,
   });
 
   if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
@@ -1420,6 +1715,7 @@ ipcMain.handle('app:getPaths', async () => {
   return {
     userDataPath: paths.userDataPath,
     databasePath: paths.databasePath,
+    backupsPath: paths.backupsPath,
     configPath: paths.configPath,
     licensePath: paths.licensePath,
     databaseExists: await fileExists(paths.databasePath),
@@ -1514,7 +1810,7 @@ ipcMain.handle('system:getMachineId', async () => {
   try {
     return {
       success: true,
-      machineId: machineIdSync({ original: true }),
+      machineId: resolveLocalMachineId(),
     };
   } catch (error) {
     return {
@@ -1549,6 +1845,54 @@ ipcMain.handle('activation:activate', async (_event, payload) => {
     return {
       success: false,
       error: String(error?.message ?? error ?? 'Falha ao ativar licença.'),
+    };
+  }
+});
+
+ipcMain.handle('activation:clearLocalLicense', async () => {
+  try {
+    const { licensePath } = getRuntimePaths();
+    // Preferir API: também reabre o wizard (setup_completed / license_activated).
+    try {
+      const apiPort = resolveAppApiPort();
+      const response = await fetch(`http://127.0.0.1:${apiPort}/setup/license/reset-local`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (response.ok) {
+        electronLogInfo('electron.license_cleared', 'Licença local limpa via API (wizard reaberto)', {
+          module: 'main',
+          action: 'clearLocalLicense',
+          licensePath,
+        });
+        return {
+          success: true,
+          licensePath,
+          ...(await getActivationStateInternal()),
+        };
+      }
+    } catch {
+      // Fallback: só apaga o ficheiro se a API ainda não estiver pronta.
+    }
+
+    if (await fileExists(licensePath)) {
+      await fs.unlink(licensePath);
+    }
+    electronLogInfo('electron.license_cleared', 'Licença local apagada (ficheiro)', {
+      module: 'main',
+      action: 'clearLocalLicense',
+      licensePath,
+    });
+    return {
+      success: true,
+      licensePath,
+      ...(await getActivationStateInternal()),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message ?? error ?? 'Falha ao limpar licença local.'),
     };
   }
 });
@@ -2159,6 +2503,29 @@ const resolveAutoUpdaterChannel = () => {
   return { allowPrerelease: false, label: 'stable' };
 };
 
+/** Estado partilhado com o renderer (UI embutida). */
+let updateUiState = {
+  status: 'idle', // idle | available | downloading | downloaded | error
+  version: null,
+  percent: 0,
+  transferred: 0,
+  total: 0,
+  error: null,
+  dismissed: false,
+};
+
+const broadcastUpdateStatus = (patch = {}) => {
+  updateUiState = { ...updateUiState, ...patch };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send('update:status', updateUiState);
+    } catch {
+      /* ignore */
+    }
+  }
+};
+
 const safeCheckForUpdates = () => {
   void autoUpdater.checkForUpdates().catch((error) => {
     if (isBenignUpdateCheckFailure(error)) {
@@ -2169,14 +2536,84 @@ const safeCheckForUpdates = () => {
       return;
     }
     console.warn('[autoUpdater]', error);
+    broadcastUpdateStatus({
+      status: 'error',
+      error: String(error?.message ?? error ?? 'Erro ao verificar atualização'),
+    });
+  });
+};
+
+let autoUpdatesReady = false;
+
+const registerUpdateIpcHandlers = () => {
+  for (const channel of ['update:getStatus', 'update:dismiss', 'update:download', 'update:install']) {
+    try {
+      ipcMain.removeHandler(channel);
+    } catch {
+      /* not registered yet */
+    }
+  }
+
+  ipcMain.handle('update:getStatus', async () => updateUiState);
+
+  ipcMain.handle('update:dismiss', async () => {
+    broadcastUpdateStatus({ dismissed: true, status: 'idle', error: null });
+    return { ok: true };
+  });
+
+  ipcMain.handle('update:download', async () => {
+    if (!autoUpdatesReady) {
+      return { ok: false, error: 'Atualizações automáticas indisponíveis neste modo.' };
+    }
+    try {
+      broadcastUpdateStatus({
+        status: 'downloading',
+        percent: Math.max(1, Number(updateUiState.percent) || 1),
+        error: null,
+        dismissed: false,
+      });
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (error) {
+      const message = String(error?.message ?? error ?? 'Falha ao baixar atualização');
+      console.warn('[autoUpdater] download failed', message);
+      broadcastUpdateStatus({ status: 'error', error: message });
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle('update:install', async () => {
+    if (!autoUpdatesReady) {
+      return { ok: false, error: 'Atualizações automáticas indisponíveis neste modo.' };
+    }
+    try {
+      // isSilent=false, isForceRunAfter=true — reinicia de imediato no Windows.
+      setImmediate(() => {
+        try {
+          autoUpdater.quitAndInstall(false, true);
+        } catch (error) {
+          console.warn('[autoUpdater] quitAndInstall', error);
+        }
+      });
+      return { ok: true };
+    } catch (error) {
+      const message = String(error?.message ?? error ?? 'Falha ao instalar atualização');
+      broadcastUpdateStatus({ status: 'error', error: message });
+      return { ok: false, error: message };
+    }
   });
 };
 
 const setupAutoUpdates = () => {
+  // Sempre expor os canais IPC — em dev/unpackaged o renderer ainda pergunta o estado.
+  registerUpdateIpcHandlers();
+
   if (!isPackagedBuild()) return;
   if (process.platform !== 'win32') return;
   if (process.env.PORTABLE_EXECUTABLE_FILE) return;
   if (String(process.env.POS_DISABLE_AUTO_UPDATE ?? '').trim() === '1') return;
+
+  autoUpdatesReady = true;
 
   const channel = resolveAutoUpdaterChannel();
   autoUpdater.allowPrerelease = channel.allowPrerelease;
@@ -2187,50 +2624,56 @@ const setupAutoUpdates = () => {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('update-available', async (info) => {
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['Atualizar agora', 'Depois'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Atualização disponível',
-      message: `Nova versão disponível (${info.version}).`,
-      detail: 'Deseja baixar e instalar agora?',
-    });
-
-    if (result.response === 0) {
-      autoUpdater.downloadUpdate();
-    }
-  });
-
-  autoUpdater.on('update-downloaded', async () => {
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['Reiniciar e instalar', 'Mais tarde'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Atualização pronta',
-      message: 'A atualização foi baixada com sucesso.',
-      detail: 'Reiniciar o app agora para concluir a instalação?',
-    });
-
-    if (result.response === 0) {
-      autoUpdater.quitAndInstall();
-    }
-  });
-
-  autoUpdater.on('error', async (error) => {
-    if (isBenignUpdateCheckFailure(error)) {
-      console.warn('[autoUpdater]', String(error?.message ?? error ?? ''));
+  autoUpdater.on('update-available', (info) => {
+    const version = String(info?.version ?? '').trim() || null;
+    console.log('[autoUpdater] update-available', version);
+    if (updateUiState.dismissed && updateUiState.version === version) {
       return;
     }
-    await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      buttons: ['OK'],
-      defaultId: 0,
-      title: 'Erro ao atualizar',
-      message: 'Não foi possível verificar/baixar atualização.',
-      detail: String(error?.message ?? error ?? 'Erro desconhecido'),
+    broadcastUpdateStatus({
+      status: 'available',
+      version,
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      error: null,
+      dismissed: false,
+    });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Math.max(0, Math.min(100, Number(progress?.percent) || 0));
+    broadcastUpdateStatus({
+      status: 'downloading',
+      percent,
+      transferred: Number(progress?.transferred) || 0,
+      total: Number(progress?.total) || 0,
+      error: null,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    const version = String(info?.version ?? updateUiState.version ?? '').trim() || null;
+    console.log('[autoUpdater] update-downloaded', version);
+    broadcastUpdateStatus({
+      status: 'downloaded',
+      version,
+      percent: 100,
+      error: null,
+      dismissed: false,
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    const message = String(error?.message ?? error ?? 'Erro desconhecido');
+    if (isBenignUpdateCheckFailure(error) && updateUiState.status === 'idle') {
+      console.warn('[autoUpdater]', message);
+      return;
+    }
+    console.warn('[autoUpdater] error', message);
+    broadcastUpdateStatus({
+      status: 'error',
+      error: message,
     });
   });
 
@@ -2242,6 +2685,8 @@ const setupAutoUpdates = () => {
 
 // Windows: tem de ser ANTES do ready — caso contrário a taskbar fica com o
 // ícone Atom em cache associado ao AppUserModelId antigo.
+// userData canónico também ANTES do ready (senão AppData pode divergir após updates).
+configureCanonicalUserDataPath();
 if (typeof app.setName === 'function') {
   app.setName('POSly');
 }
@@ -2275,13 +2720,32 @@ app.whenReady().then(async () => {
     mode: resolvePosAppMode(),
   });
   createSplashWindow();
+  setSplashStatus('A iniciar…');
   try {
-    await startBackend();
-    electronLogInfo('electron.api_started', 'API local iniciada ou já disponível', {
+    setSplashStatus('A preparar dados locais…');
+    const migration = await migrateLegacyUserDataIfNeeded();
+    if (migration?.migrated) {
+      setSplashStatus('A recuperar dados anteriores…');
+      electronLogInfo('electron.userdata_migrated', 'Dados/licença recuperados de pasta anterior', {
+        module: 'main',
+        from: migration.from,
+        to: migration.to,
+      });
+    } else {
+      electronLogInfo('electron.userdata_path', 'Pasta de dados da instalação', {
+        module: 'main',
+        userDataPath: app.getPath('userData'),
+        reason: migration?.reason ?? 'ok',
+      });
+    }
+    // API + frontend standalone em paralelo (antes era sequencial e somava os tempos).
+    setSplashStatus('A iniciar serviços…');
+    await Promise.all([startBackend(), startStandaloneWeb()]);
+    electronLogInfo('electron.services_started', 'API e frontend prontos (ou web ignorado em dev)', {
       module: 'main',
-      action: 'startBackend',
+      action: 'startServices',
+      packaged: isPackagedBuild(),
     });
-    await startStandaloneWeb();
   } catch (error) {
     electronLogError('electron.boot_failed', 'Falha ao iniciar serviços do Electron', {
       module: 'main',
@@ -2297,6 +2761,7 @@ app.whenReady().then(async () => {
   }
 
   try {
+    setSplashStatus('A abrir a aplicação…');
     await createWindow();
     electronLogInfo('electron.window_created', 'Janela principal criada', {
       module: 'main',

@@ -8,6 +8,7 @@ import {
   fetchCompanyProfile,
   saveCompanyProfile,
   resetDatabase,
+  listDatabaseBackups,
 } from '@/lib/services/posService';
 import { getPosCatalogCache, patchPosCatalogCache } from '@/lib/posSessionCache';
 import { ensureCompactReceiptLogo } from '@/lib/compressReceiptLogo';
@@ -62,7 +63,7 @@ function FieldRow({
   return (
     <div
       className={`${gridColsClass} gap-x-4 gap-y-1 items-center ${
-        showDivider ? 'border-b border-zinc-800/60 py-2.5' : 'py-2.5'
+        showDivider ? 'border-b border-pos-border/60 py-2.5' : 'py-2.5'
       }`}
     >
       <label className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
@@ -92,7 +93,7 @@ export default function MyCompanyManager() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
-  const [resetBackupPath, setResetBackupPath] = useState('C:\\Users\\Nicol\\Documents\\Vorum\\Backup');
+  const [resetBackupPath, setResetBackupPath] = useState('');
   const [resetSelections, setResetSelections] = useState({
     products: true,
     customers: true,
@@ -105,6 +106,16 @@ export default function MyCompanyManager() {
     license.name && license.name !== '—' ? license.name.trim() : '';
   const licenseNuit =
     license.nuit && license.nuit !== '—' ? license.nuit.trim() : '';
+
+  useEffect(() => {
+    void listDatabaseBackups()
+      .then((data) => {
+        if (data.backupsDir) setResetBackupPath(data.backupsDir);
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, []);
 
   const load = useCallback(async () => {
     const hasCache = Boolean(getPosCatalogCache()?.companyProfile);
@@ -341,8 +352,8 @@ export default function MyCompanyManager() {
   ];
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#1a1a1a] text-zinc-300">
-      <div className="shrink-0 border-b border-zinc-800/50 px-4 pt-3">
+    <div className="flex flex-col h-full min-h-0 bg-pos-surface text-zinc-300">
+      <div className="shrink-0 border-b border-pos-border/50 px-4 pt-3">
         <div className="flex flex-wrap gap-1">
           {tabs.map((t) => (
             <button
@@ -383,7 +394,7 @@ export default function MyCompanyManager() {
       </div>
 
       {showHelp && (
-        <div className="mx-4 mt-2 rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] text-zinc-500 leading-relaxed">
+        <div className="mx-4 mt-2 rounded border border-pos-border bg-pos-card px-3 py-2 text-[10px] text-zinc-500 leading-relaxed">
           Os dados de identificação da empresa (Nome, NUIT, morada e contactos) vêm da{' '}
           <strong className="text-zinc-400">licença</strong> e são apenas de leitura. Pode adicionar várias contas
           bancárias (titular, número, NIB, SWIFT e moeda) e o logo; as contas aparecem no rodapé das faturas A4. Use{' '}
@@ -414,7 +425,7 @@ export default function MyCompanyManager() {
               <p className="mb-2 text-[10px] text-zinc-600">
                 Dados provenientes da licença — apenas leitura.
               </p>
-              <div className="rounded border border-zinc-800/80 bg-[#141414] px-3">
+              <div className="rounded border border-pos-border/80 bg-pos-card px-3">
                 <FieldRow label="Nome">
                   <input
                     className={readOnlyCls}
@@ -498,7 +509,7 @@ export default function MyCompanyManager() {
                       className={`rounded border px-3 py-2 ${
                         editingBankId === account.id
                           ? 'border-[#0001fb]/50 bg-[#0001fb]/5'
-                          : 'border-zinc-800/80 bg-[#141414]'
+                          : 'border-pos-border/80 bg-pos-card'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -520,7 +531,7 @@ export default function MyCompanyManager() {
                           <button
                             type="button"
                             onClick={() => handleEditBankAccount(account)}
-                            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-[#0001fb]"
+                            className="inline-flex items-center gap-1 rounded border border-pos-border px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-[#0001fb]"
                             title="Editar conta"
                           >
                             <Pencil size={12} />
@@ -529,7 +540,7 @@ export default function MyCompanyManager() {
                           <button
                             type="button"
                             onClick={() => handleRemoveBankAccount(account.id)}
-                            className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-rose-300"
+                            className="inline-flex items-center gap-1 rounded border border-pos-border px-2 py-1 text-[10px] font-semibold text-zinc-300 transition-colors hover:text-rose-300"
                             title="Remover conta"
                           >
                             <Trash2 size={12} />
@@ -541,12 +552,12 @@ export default function MyCompanyManager() {
                   ))}
                 </div>
               ) : (
-                <p className="mb-3 rounded border border-dashed border-zinc-800 bg-[#141414] px-3 py-3 text-[11px] text-zinc-600">
+                <p className="mb-3 rounded border border-dashed border-pos-border bg-pos-card px-3 py-3 text-[11px] text-zinc-600">
                   Ainda não há contas bancárias. Preencha o formulário abaixo e clique em Adicionar conta.
                 </p>
               )}
 
-              <div className="rounded border border-zinc-800/80 bg-[#141414] px-3">
+              <div className="rounded border border-pos-border/80 bg-pos-card px-3">
                 <div className="py-2.5">
                   <p className="text-[11px] font-semibold text-zinc-400">
                     {editingBankId ? 'Editar conta seleccionada' : 'Nova conta bancária'}
@@ -618,7 +629,7 @@ export default function MyCompanyManager() {
                     <button
                       type="button"
                       onClick={resetBankDraft}
-                      className="inline-flex items-center gap-1.5 rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-400 transition-colors hover:text-zinc-200"
+                      className="inline-flex items-center gap-1.5 rounded border border-pos-border px-3 py-1.5 text-[11px] font-semibold text-zinc-400 transition-colors hover:text-zinc-200"
                     >
                       Cancelar edição
                     </button>
@@ -629,7 +640,7 @@ export default function MyCompanyManager() {
 
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Logo</h3>
-              <div className="rounded border border-zinc-800/80 bg-[#141414] p-3 space-y-3">
+              <div className="rounded border border-pos-border/80 bg-pos-card p-3 space-y-3">
                 <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onLogoPick} />
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -649,7 +660,7 @@ export default function MyCompanyManager() {
                     Limpar
                   </button>
                 </div>
-                <div className="flex min-h-[100px] items-center justify-center rounded border border-dashed border-zinc-700 bg-[#0d0d0d] p-4">
+                <div className="flex min-h-[100px] items-center justify-center rounded border border-dashed border-pos-border bg-[#0d0d0d] p-4">
                   {form.logoDataUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={form.logoDataUrl} alt="Logo" className="max-h-24 max-w-full object-contain" />
@@ -673,7 +684,7 @@ export default function MyCompanyManager() {
               </div>
             </div>
 
-            <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+            <section className="rounded border border-pos-border/80 bg-pos-card p-3">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   1
@@ -688,7 +699,7 @@ export default function MyCompanyManager() {
                       className={inputCls()}
                       value={resetBackupPath}
                       onChange={(e) => setResetBackupPath(e.target.value)}
-                      placeholder="Ex.: C:\\Users\\SeuUsuario\\Documents\\POS\\Backup"
+                      placeholder="Ex.: C:\\Users\\SeuUsuario\\Documents\\POSly Backup"
                     />
                     <button
                       type="button"
@@ -704,7 +715,7 @@ export default function MyCompanyManager() {
               </div>
             </section>
 
-            <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+            <section className="rounded border border-pos-border/80 bg-pos-card p-3">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   2
@@ -744,7 +755,7 @@ export default function MyCompanyManager() {
               </div>
             </section>
 
-            <section className="rounded border border-zinc-800/80 bg-[#141414] p-3">
+            <section className="rounded border border-pos-border/80 bg-pos-card p-3">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#0001fb] text-[12px] font-bold text-white">
                   3

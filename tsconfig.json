@@ -22,7 +22,7 @@
         "name": "next"
       }
     ],
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "baseUrl": ".",
     "paths": {
       "@/*": [
@@ -42,6 +42,7 @@
     "POS system",
     "dist-electron",
     ".build-skip",
-    "license-console"
+    "license-console",
+    "apps"
   ]
 }

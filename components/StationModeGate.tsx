@@ -29,8 +29,8 @@ export function StationModeGate({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center bg-[#121212] px-6 text-zinc-200">
-      <div className="w-full max-w-md space-y-6 rounded border border-zinc-800 bg-[#1a1a1a] p-8 shadow-xl">
+    <div className="flex h-screen flex-col items-center justify-center bg-pos-bg px-6 text-zinc-200">
+      <div className="w-full max-w-md space-y-6 rounded border border-pos-border bg-pos-surface p-8 shadow-xl">
         <div>
           <h1 className="text-xl font-semibold text-white">Como vai usar este PC?</h1>
           <p className="mt-2 text-sm text-zinc-400">

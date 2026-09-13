@@ -82,6 +82,7 @@ export type PaymentMethodOption = {
   markAsPaid: boolean;
   printReceipt: boolean;
   openCashDrawer: boolean;
+  color?: string | null;
 };
 
 export type PaymentEntry = {

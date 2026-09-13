@@ -5,6 +5,7 @@ import { FileMinus2, Loader2, X } from 'lucide-react';
 import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
 import { extractApiErrorMessage, unwrapApiSuccessPayload } from '@/lib/apiResponse';
 import { formatMoneyMt } from '@/lib/currency';
+import { numberInputDisplayValue, parseNumberInput } from '@/lib/numberInput';
 import PosSelect from '@/components/PosSelect';
 import { PosSwitch } from '@/components/PosSwitch';
 import {
@@ -487,16 +488,16 @@ export function SupplierDebitNoteModal({
 
   return (
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-[120] flex items-center justify-center pos-modal-overlay p-4 backdrop-blur-[2px]"
       onClick={() => {
         if (!saving) onClose();
       }}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded border border-zinc-700 bg-[#1a1a1a] shadow-2xl"
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded border border-pos-border bg-pos-surface shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-zinc-800 px-5 py-4">
+        <div className="flex items-start justify-between gap-3 border-b border-pos-border px-5 py-4">
           <div>
             <h2 className="text-base font-bold text-white">{cfg.title}</h2>
             <p className="mt-1 text-xs text-zinc-400">{cfg.subtitle}</p>
@@ -515,7 +516,7 @@ export function SupplierDebitNoteModal({
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 custom-scrollbar">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {initialSourceOrderId ? (
-              <div className="rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-sm md:col-span-2">
+              <div className="rounded border border-pos-border bg-pos-card px-3 py-2 text-sm md:col-span-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                   {cfg.sourceLabel}
                 </p>
@@ -547,7 +548,7 @@ export function SupplierDebitNoteModal({
               </label>
             )}
 
-            <div className="rounded border border-zinc-800 bg-[#141414] px-3 py-2 text-sm">
+            <div className="rounded border border-pos-border bg-pos-card px-3 py-2 text-sm">
               <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                 {cfg.partyLabel}
               </p>
@@ -589,7 +590,7 @@ export function SupplierDebitNoteModal({
             </p>
           ) : null}
 
-          <div className="rounded border border-zinc-800 bg-[#141414] px-4 py-3">
+          <div className="rounded border border-pos-border bg-pos-card px-4 py-3">
             <label className="flex cursor-pointer items-center gap-3 text-sm text-zinc-200">
               <input
                 type="checkbox"
@@ -623,8 +624,8 @@ export function SupplierDebitNoteModal({
             ) : null}
           </div>
 
-          <div className="overflow-hidden rounded border border-zinc-800">
-            <div className="grid grid-cols-[48px_minmax(0,1.4fr)_72px_72px_88px_100px] gap-2 border-b border-zinc-800 bg-[#141414] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+          <div className="overflow-hidden rounded border border-pos-border">
+            <div className="grid grid-cols-[48px_minmax(0,1.4fr)_72px_72px_88px_100px] gap-2 border-b border-pos-border bg-pos-card px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
               <span className="text-center">Incluir</span>
               <span>Produto</span>
               <span className="text-right">{cfg.qtyHeader}</span>
@@ -689,12 +690,14 @@ export function SupplierDebitNoteModal({
                         min={0}
                         max={line.maxQty}
                         step="any"
-                        value={line.quantity}
+                        inputMode="decimal"
+                        placeholder="0"
+                        value={numberInputDisplayValue(line.quantity)}
                         disabled={saving || !line.selected || blocked}
                         onChange={(event) =>
-                          updateLineQty(line.key, Number(event.target.value) || 0)
+                          updateLineQty(line.key, parseNumberInput(event.target.value))
                         }
-                        className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm"
+                        className="pos-field h-9 w-full border border-[#3f3f46] px-2 text-right text-sm placeholder:text-zinc-600"
                       />
                       <span className="text-right text-sm font-semibold text-zinc-200 tabular-nums">
                         {formatMoneyMt(lineGross)}
@@ -720,7 +723,7 @@ export function SupplierDebitNoteModal({
           {error ? <p className="text-xs text-rose-400">{error}</p> : null}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+        <div className="flex items-center justify-end gap-2 border-t border-pos-border px-5 py-4">
           <button
             type="button"
             disabled={saving}

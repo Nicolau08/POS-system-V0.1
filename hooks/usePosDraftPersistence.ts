@@ -35,6 +35,7 @@ export function usePosDraftPersistence({
   applyDraft,
 }: UsePosDraftPersistenceArgs) {
   const [hydrateToken, setHydrateToken] = useState(0);
+  const [draftHydrated, setDraftHydrated] = useState(false);
   const activeUserRef = useRef<string | null>(null);
   const hydrateDoneRef = useRef(false);
   const pausedRef = useRef(paused);
@@ -113,6 +114,7 @@ export function usePosDraftPersistence({
       activeUserRef.current = null;
       hydrateDoneRef.current = false;
       blockPersistRef.current = false;
+      setDraftHydrated(false);
       return;
     }
     const uid = String(userId ?? '').trim();
@@ -122,6 +124,7 @@ export function usePosDraftPersistence({
     let cancelled = false;
     activeUserRef.current = uid;
     hydrateDoneRef.current = false;
+    setDraftHydrated(false);
     blockPersistRef.current = true; // não gravar durante o restore
 
     void (async () => {
@@ -150,6 +153,7 @@ export function usePosDraftPersistence({
       if (!cancelled) {
         hydrateDoneRef.current = true;
         blockPersistRef.current = false;
+        setDraftHydrated(true);
         setHydrateToken((value) => value + 1);
       }
     })();
@@ -208,5 +212,5 @@ export function usePosDraftPersistence({
     };
   }, [enabled, flushDraftNow]);
 
-  return { flushDraftNow, clearDraftEverywhere };
+  return { flushDraftNow, clearDraftEverywhere, draftHydrated };
 }

@@ -38,8 +38,16 @@ async function main() {
       POS_API_PORT: '3731',
       NEXT_PUBLIC_POS_API_DIRECT_URL: 'http://127.0.0.1:3731',
     });
+    run('ofuscar pack (api/electron/lib)', process.execPath, ['scripts/obfuscate-pack.mjs']);
     run('limpar dist-electron', npmCmd, ['run', 'electron:clean']);
-    run('electron-builder', 'npx', builderArgs, { POS_APP_MODE: 'pos' });
+    // Config gerada por obfuscate-pack.mjs — usa pastas ofuscadas em vez do source.
+    const packConfig = 'build/electron-builder.pack.json';
+    run(
+      'electron-builder',
+      'npx',
+      [...builderArgs, '--config', packConfig],
+      { POS_APP_MODE: 'pos' },
+    );
   } catch (error) {
     throw error;
   }

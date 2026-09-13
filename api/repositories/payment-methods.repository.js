@@ -3,7 +3,7 @@ import { all, get, run } from '../dbUtils.js';
 export function listPaymentMethods(whereSql, params) {
   return all(
     `SELECT
-      id, name, code, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer
+      id, name, code, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, color
      FROM payment_methods
      ${whereSql}
      ORDER BY position ASC, name ASC`,
@@ -14,7 +14,7 @@ export function listPaymentMethods(whereSql, params) {
 export function listPaymentMethodsPaginated(whereSql, params, limit, offset) {
   return all(
     `SELECT
-      id, name, code, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer
+      id, name, code, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, color
      FROM payment_methods
      ${whereSql}
      ORDER BY position ASC, name ASC
@@ -31,8 +31,8 @@ export async function countPaymentMethods(whereSql, params) {
 export function insertPaymentMethod(payload) {
   return run(
     `INSERT INTO payment_methods
-      (name, code, tenant_id, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (name, code, tenant_id, shortcut, position, enabled, quick_payment, required_customer, allow_change, mark_as_paid, print_receipt, open_cash_drawer, color, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     payload
   );
 }
@@ -52,6 +52,7 @@ export function updatePaymentMethod(id, tenantId, payload) {
       mark_as_paid = ?,
       print_receipt = ?,
       open_cash_drawer = ?,
+      color = ?,
       updated_at = ?
      WHERE id = ?
        AND tenant_id = ?`,

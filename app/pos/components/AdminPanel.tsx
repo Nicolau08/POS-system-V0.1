@@ -4,9 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
-  ArrowRight,
+  Banknote,
   Download,
-  FileText,
   History,
   Layers,
   LogOut,
@@ -17,6 +16,7 @@ import {
   Sliders,
   UserCircle,
   Wrench,
+  X,
 } from 'lucide-react';
 import { SettingsModal } from '@/app/pos/components/SettingsModal';
 import { ConfirmDialog, quitPoslyApp } from '@/app/pos/components/ConfirmDialog';
@@ -30,6 +30,7 @@ export function AdminPanel({
   onGoToManagement,
   onOpenSalesHistory,
   onOpenEndOfDay,
+  onOpenCashMovement,
   onLogout,
   accessLevel,
   onAccessDenied,
@@ -41,6 +42,7 @@ export function AdminPanel({
   onGoToManagement: () => void;
   onOpenSalesHistory: () => void;
   onOpenEndOfDay?: () => void;
+  onOpenCashMovement?: () => void;
   onLogout: () => void;
   accessLevel?: number | null;
   onAccessDenied?: (message: string) => void;
@@ -133,125 +135,161 @@ export function AdminPanel({
       <AnimatePresence>
         {isOpen && (
           <>
+            {/* Overlay */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={onClose}
-              className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm"
+              className="fixed inset-0 z-[80] pos-modal-overlay"
             />
+
+            {/* Modal centrado */}
             <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed right-0 top-0 bottom-0 z-[90] w-full max-w-[320px] bg-[#1a1a1a] border-l border-zinc-800 flex flex-col overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 260 }}
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 pointer-events-none"
             >
-              <div className="p-6 flex items-center justify-between border-b border-zinc-800/50">
-                <h2 className="text-xl font-bold text-white tracking-tight">{currentUserName || 'POS - Admin'}</h2>
-                <button onClick={onClose} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400 hover:text-white transition-colors">
-                  <ArrowRight size={20} />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto py-4 scrollbar-hide">
-                <div className="px-2 space-y-1">
-                  {can('gerenciamento.acesso') && (
-                    <SidebarItem
-                      icon={<Wrench size={18} />}
-                      label="Gerenciamento"
-                      onClick={() => guard('gerenciamento.acesso', 'Gerenciamento', onGoToManagement)}
-                    />
-                  )}
-                  <div className="h-px bg-zinc-800/50 mx-4 my-2" />
-                  {can('vendas.ver_historico_vendas') && (
-                    <SidebarItem
-                      icon={<History size={18} />}
-                      label="Ver histórico de vendas"
-                      onClick={() =>
-                        guard('vendas.ver_historico_vendas', 'Ver histórico de vendas', onOpenSalesHistory)
-                      }
-                    />
-                  )}
-                  {can('vendas.ver_pedidos_em_aberto') && (
-                    <SidebarItem icon={<Layers size={18} />} label="Ver vendas abertas" />
-                  )}
-                  {can('vendas.abrir_caixa') && (
-                    <SidebarItem icon={<Download size={18} />} label="Entrada / Saída de Dinheiro" />
-                  )}
-                  {can('vendas.credit_payments') && (
-                    <SidebarItem icon={<FileText size={18} />} label="Credit payments" />
-                  )}
-                  {can('gerenciamento.fechamento_diario') && (
-                    <SidebarItem
-                      icon={<Activity size={18} />}
-                      label="Fim do dia"
-                      onClick={() =>
-                        guard('gerenciamento.fechamento_diario', 'Fim do dia', () => {
-                          onOpenEndOfDay?.();
-                          onClose();
-                        })
-                      }
-                    />
-                  )}
+              <div
+                className="pointer-events-auto w-full max-w-md bg-pos-surface border border-pos-border rounded shadow-2xl flex flex-col overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Cabeçalho */}
+                <div className="flex items-center justify-between gap-3 px-5 pt-5 pb-4">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-pos-muted">Sessão</p>
+                    <h2 className="mt-0.5 truncate text-lg font-semibold text-pos-fg-soft">
+                      {currentUserName || 'POS'}
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded p-2 text-pos-muted transition-colors hover:bg-pos-surface-3 hover:text-pos-fg"
+                    aria-label="Fechar menu"
+                  >
+                    <X size={18} />
+                  </button>
                 </div>
 
-                <div className="px-6 mt-6 mb-2">
-                  <span className="text-xs font-medium capitalize text-zinc-600">Usuário</span>
-                  <div className="h-px bg-zinc-800/50 flex-1 ml-2 inline-block align-middle w-24" />
+                {/* Separador */}
+                <div className="h-px bg-pos-border mx-5" />
+
+                {/* Grelha de acções — Operações */}
+                <div className="px-5 pt-4 pb-2">
+                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-pos-muted">Operações</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    {can('gerenciamento.acesso') && (
+                      <button
+                        type="button"
+                        onClick={() => guard('gerenciamento.acesso', 'Gestão', onGoToManagement)}
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5"
+                      >
+                        <Wrench size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide">Gestão</span>
+                      </button>
+                    )}
+                    {can('vendas.ver_historico_vendas') && (
+                      <button
+                        type="button"
+                        onClick={() => guard('vendas.ver_historico_vendas', 'Histórico de vendas', onOpenSalesHistory)}
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5"
+                      >
+                        <History size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide leading-tight text-center">Histórico</span>
+                      </button>
+                    )}
+                    {can('vendas.ver_pedidos_em_aberto') && (
+                      <button
+                        type="button"
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5 opacity-50 cursor-not-allowed"
+                        disabled
+                      >
+                        <Layers size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide leading-tight text-center">Em aberto</span>
+                      </button>
+                    )}
+                    {can('vendas.abrir_caixa') && (
+                      <button
+                        type="button"
+                        onClick={() => guard('vendas.abrir_caixa', 'Movimento de caixa', () => { onOpenCashMovement?.(); onClose(); })}
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5"
+                      >
+                        <Download size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide leading-tight text-center">Movimento</span>
+                      </button>
+                    )}
+                    {can('vendas.credit_payments') && (
+                      <button
+                        type="button"
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5 opacity-50 cursor-not-allowed"
+                        disabled
+                      >
+                        <Banknote size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide leading-tight text-center">Crédito</span>
+                      </button>
+                    )}
+                    {can('gerenciamento.fechamento_diario') && (
+                      <button
+                        type="button"
+                        onClick={() => guard('gerenciamento.fechamento_diario', 'Fecho do dia', () => { onOpenEndOfDay?.(); onClose(); })}
+                        className="pos-header-action !min-h-[64px] !min-w-0 w-full flex-col gap-1.5"
+                      >
+                        <Activity size={20} strokeWidth={2} />
+                        <span className="text-[10px] font-bold uppercase tracking-wide leading-tight text-center">Fecho dia</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <div className="px-2 space-y-1">
-                  {can('gerenciamento.perfil_usuario') && (
-                    <SidebarItem icon={<UserCircle size={18} />} label="Info do Usuário" />
-                  )}
-                  <SidebarItem icon={<LogOut size={18} />} label="Logout" onClick={onLogout} />
+                {/* Separador */}
+                <div className="h-px bg-pos-border mx-5 mt-4" />
+
+                {/* Fila de acções — Sessão + Janela */}
+                <div className="px-5 pt-4 pb-5 grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={handleOpenSettings}
+                    disabled={!can('gerenciamento.configuracoes')}
+                    className="pos-header-action !min-h-[52px] !min-w-0 w-full disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Sliders size={18} strokeWidth={2.25} />
+                    <span className="text-[10px] font-bold uppercase tracking-wide">Configurações</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleMaximize()}
+                    className="pos-header-action !min-h-[52px] !min-w-0 w-full"
+                  >
+                    {isMaximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                    <span className="text-[10px] font-bold uppercase tracking-wide">
+                      {isMaximized ? 'Restaurar' : 'Ecrã inteiro'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onLogout}
+                    className="pos-header-action pos-header-action--danger !min-h-[52px] !min-w-0 w-full"
+                  >
+                    <LogOut size={18} strokeWidth={2.25} />
+                    <span className="text-[10px] font-bold uppercase tracking-wide">Sair</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsQuitConfirmOpen(true)}
+                    className="pos-header-action pos-header-action--danger !min-h-[52px] !min-w-0 w-full"
+                  >
+                    <Power size={18} />
+                    <span className="text-[10px] font-bold uppercase tracking-wide">Fechar app</span>
+                  </button>
                 </div>
 
-                <div className="h-px bg-zinc-800/50 mx-6 my-4" />
-
-                <div className="px-2">
-                  <SidebarItem icon={<MessageSquare size={18} />} label="Comentários" />
+                {/* Data */}
+                <div className="pb-4 text-center">
+                  <span className="text-xs text-pos-muted">{currentDate}</span>
                 </div>
-
-                <div className="mt-8 text-center">
-                  <span className="text-xl font-bold text-zinc-700 tracking-tighter">{currentDate}</span>
-                </div>
-              </div>
-
-              <div className="p-4 grid grid-cols-3 gap-2 border-t border-zinc-800/50">
-                <button
-                  type="button"
-                  title="Configurações"
-                  aria-label="Configurações"
-                  onClick={handleOpenSettings}
-                  className={`flex items-center justify-center p-3 rounded transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb] ${
-                    can('gerenciamento.configuracoes')
-                      ? 'text-zinc-500 hover:bg-[var(--pos-brand-hover-bg)] hover:text-white'
-                      : 'text-zinc-700 cursor-not-allowed'
-                  }`}
-                >
-                  <Sliders size={20} />
-                </button>
-                <button
-                  type="button"
-                  title={isMaximized ? 'Sair do ecrã inteiro' : 'Ecrã inteiro'}
-                  aria-label={isMaximized ? 'Sair do ecrã inteiro' : 'Ecrã inteiro'}
-                  onClick={() => void handleToggleMaximize()}
-                  className="flex items-center justify-center p-3 rounded text-zinc-500 transition-all hover:bg-[var(--pos-brand-hover-bg)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0001fb]"
-                >
-                  {isMaximized ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
-                </button>
-                <button
-                  type="button"
-                  title="Fechar sistema"
-                  aria-label="Fechar sistema"
-                  onClick={() => setIsQuitConfirmOpen(true)}
-                  className="flex items-center justify-center p-3 rounded text-zinc-500 transition-all hover:bg-red-500/15 hover:text-red-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-500"
-                >
-                  <Power size={20} />
-                </button>
               </div>
             </motion.div>
           </>
@@ -275,27 +313,5 @@ export function AdminPanel({
         initialSection="basicas"
       />
     </>
-  );
-}
-
-function SidebarItem({
-  icon,
-  label,
-  onClick,
-  className,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full flex items-center gap-4 px-4 py-3 text-zinc-400 hover:text-white hover:bg-[var(--pos-brand-hover-bg)] rounded transition-all group ${className || ''}`}
-    >
-      <div className="text-zinc-500 group-hover:text-white transition-colors">{icon}</div>
-      <span className="text-sm font-medium tracking-tight">{label}</span>
-    </button>
   );
 }

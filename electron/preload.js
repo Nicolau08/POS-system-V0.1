@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   activateLicense: async (licenseKey) => {
     return ipcRenderer.invoke('activation:activate', { licenseKey });
   },
+  clearLocalLicense: async () => {
+    return ipcRenderer.invoke('activation:clearLocalLicense');
+  },
   restartApp: async () => {
     return ipcRenderer.invoke('app:restart');
   },
@@ -96,5 +99,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   scanLanStations: async () => {
     return ipcRenderer.invoke('station:scanLan');
+  },
+  getUpdateStatus: async () => {
+    try {
+      return await ipcRenderer.invoke('update:getStatus');
+    } catch {
+      return {
+        status: 'idle',
+        version: null,
+        percent: 0,
+        transferred: 0,
+        total: 0,
+        error: null,
+        dismissed: false,
+      };
+    }
+  },
+  downloadUpdate: async () => {
+    try {
+      return await ipcRenderer.invoke('update:download');
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error ?? 'Falha ao baixar atualização') };
+    }
+  },
+  installUpdate: async () => {
+    try {
+      return await ipcRenderer.invoke('update:install');
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error ?? 'Falha ao instalar atualização') };
+    }
+  },
+  dismissUpdate: async () => {
+    try {
+      return await ipcRenderer.invoke('update:dismiss');
+    } catch {
+      return { ok: true };
+    }
+  },
+  onUpdateStatus: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('update:status', listener);
+    return () => {
+      ipcRenderer.removeListener('update:status', listener);
+    };
   },
 });

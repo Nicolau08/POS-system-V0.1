@@ -23,7 +23,20 @@ export type PrintJobKey =
   | 'kitchen'
   | 'serviceMessages';
 
-export type PosTheme = 'dark' | 'light';
+export type PosTheme = 'dark' | 'light' | 'violet';
+
+export const POS_THEME_OPTIONS: Array<{ value: PosTheme; label: string }> = [
+  { value: 'violet', label: 'Violeta' },
+  { value: 'dark', label: 'Escuro' },
+  { value: 'light', label: 'Claro' },
+];
+
+export const POS_THEME_PRINCIPAL_KEY = 'pos:theme-principal';
+
+export function parsePosTheme(value: unknown): PosTheme {
+  if (value === 'light' || value === 'dark' || value === 'violet') return value;
+  return 'violet';
+}
 
 export type PrintJobSettings = {
   enabled: boolean;
@@ -97,7 +110,7 @@ export const DEFAULT_PRINT_JOBS: Record<PrintJobKey, PrintJobSettings> = {
 export const DEFAULT_POS_SETTINGS: PosSettings = {
   language: 'pt-MZ',
   currency: 'MT',
-  theme: 'dark',
+  theme: 'violet',
   roundCash: false,
   askTable: false,
   autoPrintReceipt: true,
@@ -155,6 +168,20 @@ export const DEFAULT_POS_SETTINGS: PosSettings = {
   receiptTemplate: '80mm-standard',
 };
 
+function promotePrincipalTheme(settings: PosSettings): PosSettings {
+  if (typeof window === 'undefined') return settings;
+  try {
+    if (localStorage.getItem(POS_THEME_PRINCIPAL_KEY)) return settings;
+    localStorage.setItem(POS_THEME_PRINCIPAL_KEY, 'violet');
+    if (settings.theme === 'violet') return settings;
+    const next = { ...settings, theme: 'violet' as const };
+    localStorage.setItem(POS_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return { ...settings, theme: 'violet' };
+  }
+}
+
 function cloneDefaults(): PosSettings {
   return JSON.parse(JSON.stringify(DEFAULT_POS_SETTINGS)) as PosSettings;
 }
@@ -177,20 +204,20 @@ export function loadPosSettings(): PosSettings {
   if (typeof window === 'undefined') return cloneDefaults();
   try {
     const stored = localStorage.getItem(POS_SETTINGS_STORAGE_KEY);
-    if (!stored) return cloneDefaults();
+    if (!stored) return promotePrincipalTheme(cloneDefaults());
     const parsed = JSON.parse(stored) as Partial<PosSettings> & {
       printJobs?: Partial<Record<PrintJobKey, Partial<PrintJobSettings>>>;
     };
     const merged: PosSettings = {
       ...cloneDefaults(),
       ...parsed,
-      theme: parsed.theme === 'light' ? 'light' : 'dark',
+      theme: parsePosTheme(parsed.theme),
       printJobs: normalizePrintJobs(parsed.printJobs),
     };
     if (parsed.printJobs?.receipt == null && typeof parsed.autoPrintReceipt === 'boolean') {
       merged.printJobs.receipt.enabled = parsed.autoPrintReceipt;
     }
-    return merged;
+    return promotePrincipalTheme(merged);
   } catch {
     return cloneDefaults();
   }
@@ -203,6 +230,11 @@ export function savePosSettings(settings: PosSettings) {
     autoPrintReceipt: Boolean(settings.printJobs?.receipt?.enabled),
   };
   localStorage.setItem(POS_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+  try {
+    localStorage.setItem(POS_THEME_PRINCIPAL_KEY, 'violet');
+  } catch {
+    // ignore
+  }
   window.dispatchEvent(new CustomEvent('pos-settings-changed', { detail: next }));
   void syncReceiptPrinterToServer(next);
 }

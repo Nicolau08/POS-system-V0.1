@@ -51,6 +51,15 @@ declare global {
         error?: string;
         licensePath?: string;
       }>;
+      clearLocalLicense: () => Promise<{
+        success: boolean;
+        error?: string;
+        isActivated?: boolean;
+        machineId?: string;
+        activationCode?: string;
+        reason?: string;
+        licensePath?: string;
+      }>;
       restartApp: () => Promise<{
         success: boolean;
         error?: string;
@@ -161,6 +170,29 @@ declare global {
         }>;
         error?: string;
       }>;
+      getUpdateStatus?: () => Promise<{
+        status?: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
+        version?: string | null;
+        percent?: number;
+        transferred?: number;
+        total?: number;
+        error?: string | null;
+        dismissed?: boolean;
+      }>;
+      downloadUpdate?: () => Promise<{ ok: boolean; error?: string }>;
+      installUpdate?: () => Promise<{ ok: boolean; error?: string }>;
+      dismissUpdate?: () => Promise<{ ok: boolean }>;
+      onUpdateStatus?: (
+        callback: (payload: {
+          status?: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
+          version?: string | null;
+          percent?: number;
+          transferred?: number;
+          total?: number;
+          error?: string | null;
+          dismissed?: boolean;
+        }) => void,
+      ) => () => void;
     };
   }
 }
