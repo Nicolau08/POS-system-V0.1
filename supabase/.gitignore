@@ -1,0 +1,15 @@
+# Supabase
+.branches
+.temp
+
+# Etapa 1D: chave de teste ES256 gerada localmente (npx supabase gen signing-key) —
+# NUNCA comitar. Confinada a este ambiente local/staging, nunca a produção.
+signing_keys.json
+
+# dotenvx
+.env.keys
+.env.local
+.env.*.local
+
+# Chaves de device-auth locais — nunca comitar
+.device_auth_keys/

@@ -44,7 +44,6 @@ data/config.json
 api/tests/
 test-results/
 playwright-report/
-supabase/tests/
 
 # --- Artefactos de debug / teste manual ---
 license-test.json
@@ -89,3 +88,30 @@ apps/android-kds/.capacitor/
 
 # --- CI que depende de tests/ (opcional local) ---
 .github/workflows/smoke.yml
+
+# --- Dados locais / licenças de máquina (nunca versionar) ---
+data/*
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# --- Bases de dados SQLite em qualquer pasta (a app usa SQLCipher; nunca versionar dados) ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# --- Chaves privadas / certificados / keystores ---
+# (chaves PÚBLICAS vivem em código, ex.: lib/licensing/offlineLicensePublicKeys.js)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# --- Supabase local (defesa em profundidade; supabase/.gitignore cobre o mesmo) ---
+supabase/signing_keys.json
+supabase/.device_auth_keys/
+supabase/.temp/
+supabase/.branches/
+supabase/snippets/
