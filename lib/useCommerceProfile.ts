@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   commerceTypeLabel,
   getCommerceFeaturesFromCapabilities,
@@ -8,7 +8,8 @@ import {
   type CommerceFeatures,
   type CommerceType,
 } from '@/lib/commerceProfile';
-import { getPosApiBase, getPosUserAuthHeaders } from '@/lib/apiBase';
+import { getPosApiBase, getPosUserAuthHeaders, getStoredAuthToken } from '@/lib/apiBase';
+import { bindLoaderToAuthEvents, createCommerceProfileLoader } from '@/lib/commerceProfileLoader.js';
 import { getCachedCommerce, setCachedCommerce } from '@/lib/posSessionCache';
 import {
   getVerticalPreset,
@@ -19,6 +20,8 @@ import {
   type VerticalId,
 } from '@/lib/capabilities';
 import { getVerticalUILabels, type VerticalUILabels } from '@/lib/verticalUI';
+
+export type CommerceProfileStatus = 'loading' | 'loaded' | 'error';
 
 export type TenantLicenseInfo = {
   name: string;
@@ -39,7 +42,12 @@ export type CommerceProfileState = {
   labels: VerticalUILabels;
   hasCapability: (id: CapabilityId) => boolean;
   license: TenantLicenseInfo;
+  /** true enquanto ainda não houve nenhum perfil válido nem erro. */
   loading: boolean;
+  /** loading | loaded | error — `error` só sem perfil válido (um erro posterior mantém `loaded`). */
+  status: CommerceProfileStatus;
+  /** Motivo da última falha (http_401, network, …) ou null. */
+  error: string | null;
   refresh: () => Promise<void>;
 };
 
@@ -62,55 +70,76 @@ function normalizeLicenseType(value: unknown): string {
   return raw;
 }
 
+async function requestTenantInfo() {
+  const base = getPosApiBase().replace(/\/$/, '');
+  const res = await fetch(`${base}/tenant/info?_=${Date.now()}`, {
+    cache: 'no-store',
+    headers: { ...getPosUserAuthHeaders() },
+  });
+  const json = await res.json().catch(() => null);
+  return { ok: res.ok, status: res.status, json };
+}
+
+/** Só é chamada com um payload de /tenant/info já validado (resposta ok + sucesso + dados). */
+function profileFromTenantInfo(data: Record<string, unknown>): TenantLicenseInfo {
+  const type = normalizeCommerceType(data.commerce_type);
+  const vertical = normalizeVertical(data.vertical, type);
+  const capabilities = normalizeCapabilities(data.capabilities ?? data.capabilities_json, vertical, type);
+  return {
+    name: String(data.name ?? '').trim() || '—',
+    nuit: String(data.nuit ?? '').trim() || '—',
+    licenseType: normalizeLicenseType(data.license_type),
+    commerceType: type,
+    vertical,
+    capabilities,
+    licenseExpiresAt:
+      data.license_expires_at != null && String(data.license_expires_at).trim()
+        ? String(data.license_expires_at)
+        : null,
+  };
+}
+
 export function useCommerceProfile(): CommerceProfileState {
   const [commerceType, setCommerceType] = useState<CommerceType>(() => getCachedCommerce()?.commerceType ?? 'retalho');
   const [license, setLicense] = useState<TenantLicenseInfo>(
     () => getCachedCommerce()?.license ?? DEFAULT_LICENSE
   );
-  const [loading, setLoading] = useState(() => !getCachedCommerce());
-
-  const refresh = useCallback(async (options?: { silent?: boolean }) => {
-    const silent = Boolean(options?.silent) || Boolean(getCachedCommerce());
-    if (!silent) setLoading(true);
-    try {
-      const base = getPosApiBase().replace(/\/$/, '');
-      const res = await fetch(`${base}/tenant/info?_=${Date.now()}`, {
-        cache: 'no-store',
-        headers: { ...getPosUserAuthHeaders() },
-      });
-      const json = await res.json().catch(() => null);
-      const data = json?.success ? json.data : json;
-      const type = normalizeCommerceType(data?.commerce_type);
-      const vertical = normalizeVertical(data?.vertical, type);
-      const capabilities = normalizeCapabilities(data?.capabilities ?? data?.capabilities_json, vertical, type);
-      const next: TenantLicenseInfo = {
-        name: String(data?.name ?? '').trim() || '—',
-        nuit: String(data?.nuit ?? '').trim() || '—',
-        licenseType: normalizeLicenseType(data?.license_type),
-        commerceType: type,
-        vertical,
-        capabilities,
-        licenseExpiresAt:
-          data?.license_expires_at != null && String(data.license_expires_at).trim()
-            ? String(data.license_expires_at)
-            : null,
-      };
-      setCommerceType(type);
-      setLicense(next);
-      setCachedCommerce({ commerceType: type, license: next });
-    } catch {
-      if (!getCachedCommerce()) {
-        setCommerceType('retalho');
-        setLicense(DEFAULT_LICENSE);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [status, setStatus] = useState<CommerceProfileStatus>(() => (getCachedCommerce() ? 'loaded' : 'loading'));
+  const [error, setError] = useState<string | null>(null);
+  const loaderRef = useRef<ReturnType<typeof createCommerceProfileLoader> | null>(null);
 
   useEffect(() => {
-    void refresh({ silent: Boolean(getCachedCommerce()) });
-  }, [refresh]);
+    // O PosScreen monta antes da sessão: um 401/erro aqui NÃO é um perfil "retalho". O loader só
+    // entrega perfis válidos (e só esses vão ao estado e à cache) e volta a pedir em pos-auth-changed.
+    const loader = createCommerceProfileLoader({
+      fetchTenantInfo: requestTenantInfo,
+      onProfile: (data: Record<string, unknown>) => {
+        const next = profileFromTenantInfo(data);
+        setCommerceType(next.commerceType);
+        setLicense(next);
+        setCachedCommerce({ commerceType: next.commerceType, license: next });
+      },
+      onStatus: (nextStatus: CommerceProfileStatus, reason: string | null) => {
+        setStatus(nextStatus);
+        setError(reason);
+      },
+      hasSession: () => Boolean(getStoredAuthToken()),
+      hasProfile: Boolean(getCachedCommerce()),
+    });
+    loaderRef.current = loader;
+    const unbind = bindLoaderToAuthEvents(loader, window);
+    void loader.refresh({ silent: Boolean(getCachedCommerce()) });
+    return () => {
+      unbind();
+      loader.dispose();
+      if (loaderRef.current === loader) loaderRef.current = null;
+    };
+  }, []);
+
+  // Identidade estável (SettingsModal usa-a como dependência de efeitos).
+  const refresh = useCallback(async () => {
+    await loaderRef.current?.refresh();
+  }, []);
 
   const features = getCommerceFeaturesFromCapabilities(license.capabilities);
   const labels = getVerticalUILabels(license.vertical);
@@ -118,7 +147,6 @@ export function useCommerceProfile(): CommerceProfileState {
     (id: CapabilityId) => capabilityEnabled(license.capabilities, id),
     [license.capabilities],
   );
-  const refreshPublic = useCallback(() => refresh({ silent: false }), [refresh]);
 
   return {
     commerceType,
@@ -129,7 +157,9 @@ export function useCommerceProfile(): CommerceProfileState {
     labels,
     hasCapability,
     license,
-    loading,
-    refresh: refreshPublic,
+    loading: status === 'loading',
+    status,
+    error,
+    refresh,
   };
 }
