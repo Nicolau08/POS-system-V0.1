@@ -56,22 +56,51 @@ export async function closeCashSession(tenantId, sessionId, { closedAt, closedBy
   );
 }
 
+// Pilot Gate POS/Dinheiro — achado do gate: datetime() SQLite trunca para precisão de
+// SEGUNDO, o que podia fazer uma sessão reaberta no mesmo segundo do fecho anterior
+// "herdar" vendas da sessão anterior. strftime('%Y-%m-%d %H:%M:%f', ...) preserva
+// milissegundos (todas as datas aqui já são sempre ISO8601 com milissegundos via
+// new Date().toISOString()) — mesma semântica financeira, só a precisão da fronteira muda.
+const TS = (col) => `strftime('%Y-%m-%d %H:%M:%f', ${col})`;
+
 export function listSessionSales(tenantId, openedAt, closedAt = null) {
   const params = [tenantId, openedAt];
   let endClause = '';
   if (closedAt) {
-    endClause = ' AND datetime(v.data) <= datetime(?)';
+    endClause = ` AND ${TS('v.data')} <= ${TS('?')}`;
     params.push(closedAt);
   }
   return all(
     `SELECT v.id, v.total, v.data, v.doc_type, v.payment_method, v.user_id, v.user_name, v.status
        FROM vendas v
       WHERE v.tenant_id = ?
-        AND datetime(v.data) >= datetime(?)
+        AND ${TS('v.data')} >= ${TS('?')}
         ${endClause}
         AND UPPER(COALESCE(v.doc_type, 'VD')) <> 'FP'
         AND LOWER(COALESCE(v.status, '')) NOT IN ('cancelled', 'canceled', 'void', 'anulado')
-      ORDER BY datetime(v.data) ASC`,
+      ORDER BY ${TS('v.data')} ASC`,
+    params,
+  );
+}
+
+/** Breakdown real por tender das vendas da sessão (Pilot Gate POS/Dinheiro) — mesmos
+ * filtros de listSessionSales (cancelada/FP excluídas), para nunca divergir. */
+export function listSessionSalePayments(tenantId, openedAt, closedAt = null) {
+  const params = [tenantId, openedAt];
+  let endClause = '';
+  if (closedAt) {
+    endClause = ` AND ${TS('v.data')} <= ${TS('?')}`;
+    params.push(closedAt);
+  }
+  return all(
+    `SELECT sp.sale_id, sp.method, sp.amount, sp.tendered_amount
+       FROM sale_payments sp
+       JOIN vendas v ON v.id = sp.sale_id AND v.tenant_id = sp.tenant_id
+      WHERE sp.tenant_id = ?
+        AND ${TS('v.data')} >= ${TS('?')}
+        ${endClause}
+        AND UPPER(COALESCE(v.doc_type, 'VD')) <> 'FP'
+        AND LOWER(COALESCE(v.status, '')) NOT IN ('cancelled', 'canceled', 'void', 'anulado')`,
     params,
   );
 }
@@ -81,7 +110,7 @@ export function listSessionSaleItems(tenantId, openedAt, closedAt = null) {
   const params = [tenantId, openedAt];
   let endClause = '';
   if (closedAt) {
-    endClause = ' AND datetime(COALESCE(v.data, o.created_at, oi.created_at)) <= datetime(?)';
+    endClause = ` AND ${TS('COALESCE(v.data, o.created_at, oi.created_at)')} <= ${TS('?')}`;
     params.push(closedAt);
   }
   return all(
@@ -97,7 +126,7 @@ export function listSessionSaleItems(tenantId, openedAt, closedAt = null) {
         AND v.tenant_id = oi.tenant_id
       WHERE oi.tenant_id = ?
         AND (o.id IS NOT NULL OR v.id IS NOT NULL)
-        AND datetime(COALESCE(v.data, o.created_at, oi.created_at)) >= datetime(?)
+        AND ${TS('COALESCE(v.data, o.created_at, oi.created_at)')} >= ${TS('?')}
         ${endClause}
         AND UPPER(COALESCE(NULLIF(TRIM(v.doc_type), ''), NULLIF(TRIM(o.doc_type), ''), 'VD')) <> 'FP'
         AND (

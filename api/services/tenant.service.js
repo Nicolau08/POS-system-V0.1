@@ -41,13 +41,21 @@ async function resolveLicenseTenantId(actorTenantId) {
     if (fromFile) return fromFile;
   }
 
+  // Uma licença real (license_key != 'AUTO') nunca pode perder para o fallback
+  // 'AUTO'/LOCAL auto-semeado em api/server.js, mesmo que este tenha um
+  // timestamp mais recente (pode acontecer numa corrida de arranque em que o
+  // auto-seed só apanha o tenant por defeito num boot posterior — Pilot Gate,
+  // achado real na VM: license_key='AUTO' venceu por chegar depois com
+  // created_at mais novo que o activated_at da licença real).
   const activeLicense = await getDb(
     `SELECT tenant_id
      FROM licenses
      WHERE active = 1
        AND tenant_id IS NOT NULL
        AND TRIM(tenant_id) != ''
-     ORDER BY datetime(COALESCE(activated_at, created_at, '1970-01-01')) DESC
+     ORDER BY
+       CASE WHEN license_key = 'AUTO' THEN 1 ELSE 0 END ASC,
+       datetime(COALESCE(activated_at, created_at, '1970-01-01')) DESC
      LIMIT 1`,
   );
   if (activeLicense?.tenant_id) return String(activeLicense.tenant_id).trim();

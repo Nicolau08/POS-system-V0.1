@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { installStationSignedFetch } from '@/lib/stationSignedFetch';
 import {
   loadStationClientSettings,
   normalizeStationMode,
@@ -17,6 +18,8 @@ export function StationModeGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const s = loadStationClientSettings();
+    // modo posto (Electron): todos os fetch para o Server passam a ser assinados pelo processo main
+    installStationSignedFetch(); // decide por pedido (modo lido em cada chamada); em modo posto sem IPC falha fechado
     setMode(s.stationMode);
   }, []);
 

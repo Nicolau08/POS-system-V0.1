@@ -1,4 +1,5 @@
 import express from 'express';
+import { requireLoopbackOnly } from '../middlewares/stationAuth.js';
 import { authenticateUser, requireAdmin } from '../middlewares/auth.js';
 import {
   activateSetupLicense,
@@ -16,11 +17,12 @@ import {
 const router = express.Router();
 
 router.post('/auth/login', login);
-router.post('/auth/admin/reset-pin', resetAdminPin);
+// Etapa 1G.3.5: alteram credenciais/licenca do Store Server -> so loopback
+router.post('/auth/admin/reset-pin', requireLoopbackOnly, resetAdminPin);
 router.get('/setup/status', getSetupStatus);
-router.post('/setup/admin-password', configureSetupAdminPassword);
-router.post('/setup/license/activate', activateSetupLicense);
-router.post('/license/renew', renewLicense);
+router.post('/setup/admin-password', requireLoopbackOnly, configureSetupAdminPassword);
+router.post('/setup/license/activate', requireLoopbackOnly, activateSetupLicense);
+router.post('/license/renew', requireLoopbackOnly, renewLicense);
 
 router.get('/users', authenticateUser, requireAdmin, getUsers);
 router.post('/users', authenticateUser, requireAdmin, postUser);

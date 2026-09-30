@@ -15,8 +15,14 @@ import {
 const dbPath = getDatabasePath() || resolveDatabasePathAfterMigration();
 const backupsDir = resolveBackupsDir(dbPath);
 
-const BACKUP_FILE_PATTERN = /^backup-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.db$/;
-const PRE_RESTORE_PATTERN = /^pre-restore-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.db$/;
+// Etapa 1F.6 (item 27) — achado real: createBackup() adiciona um sufixo
+// "-<Date.now()>" quando duas cópias colidem no mesmo minuto (dois backups
+// manuais seguidos, ou um manual logo a seguir ao automático), mas o padrão
+// original não aceitava esse sufixo — o próprio restoreBackup() rejeitava
+// esse ficheiro como "formato inválido", tornando-o irrestaurável pela via
+// normal. Corrigido para aceitar ambas as formas.
+const BACKUP_FILE_PATTERN = /^backup-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}(-\d+)?\.db$/;
+const PRE_RESTORE_PATTERN = /^pre-restore-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}(-\d+)?\.db$/;
 /** Intervalo por defeito: 1h — adequado a POS (perda máxima ~1h se falhar o disco). */
 const DEFAULT_INTERVAL_HOURS = 1;
 /** Retenção: 48 cópias horárias ≈ 2 dias (mais as manuais/pre-restore). */

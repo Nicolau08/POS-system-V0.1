@@ -15,6 +15,7 @@ import {
   insertZReport,
   listCashMovements,
   listSessionSaleItems,
+  listSessionSalePayments,
   listSessionSales,
   listWithdrawals,
   listZReports,
@@ -143,9 +144,32 @@ const LEDGER_LABELS = {
   withdraw: 'Saque',
 };
 
-function buildLedger(sales, withdrawals, movements) {
+function buildLedger(sales, withdrawals, movements, tendersBySale = new Map()) {
   const rows = [];
   for (const sale of sales) {
+    const tenders = tendersBySale.get(String(sale.id));
+    if (tenders && tenders.length > 0) {
+      // Pilot Gate POS/Dinheiro: breakdown real — só a(s) linha(s) de dinheiro entram no
+      // ledger de caixa, cada uma com o valor efectivamente aplicado (nunca o total da
+      // venda inteira quando há tenders não-dinheiro misturados).
+      for (const tender of tenders) {
+        if (!isCashTender(tender.method)) continue;
+        rows.push({
+          id: `sale-${sale.id}-${tender.method}`,
+          source: 'sale',
+          kind: 'sale',
+          amount: round2(tender.amount),
+          direction: 1,
+          label: LEDGER_LABELS.sale,
+          note: sale.doc_type ? String(sale.doc_type).toUpperCase() : null,
+          partyName: null,
+          userName: sale.user_name || null,
+          createdAt: sale.data,
+        });
+      }
+      continue;
+    }
+    // Fallback: venda legacy sem linhas em sale_payments — heurística antiga por string.
     if (!isCashTender(sale.payment_method)) continue;
     rows.push({
       id: `sale-${sale.id}`,
@@ -194,7 +218,7 @@ function buildLedger(sales, withdrawals, movements) {
   return rows;
 }
 
-function buildTotals(sales, withdrawals, { currentUserId = null, movements = [] } = {}) {
+function buildTotals(sales, withdrawals, { currentUserId = null, movements = [], tendersBySale = new Map() } = {}) {
   const byTenderMap = new Map();
   const byUserMap = new Map();
   let salesTotal = 0;
@@ -202,10 +226,7 @@ function buildTotals(sales, withdrawals, { currentUserId = null, movements = [] 
 
   for (const sale of sales) {
     const total = round2(sale.total);
-    salesTotal += total;
-    const label = tenderLabel(sale.payment_method);
-    byTenderMap.set(label, round2((byTenderMap.get(label) || 0) + total));
-    if (isCashTender(sale.payment_method)) cashSalesTotal += total;
+    salesTotal += total; // receita bruta da venda — nunca depende do breakdown por tender
 
     const uid = String(sale.user_id ?? 'unknown');
     const uname = String(sale.user_name || 'Operador');
@@ -213,9 +234,35 @@ function buildTotals(sales, withdrawals, { currentUserId = null, movements = [] 
       byUserMap.set(uid, { userId: uid, userName: uname, byTender: {}, total: 0, cashTotal: 0 });
     }
     const bucket = byUserMap.get(uid);
-    bucket.byTender[label] = round2((bucket.byTender[label] || 0) + total);
     bucket.total = round2(bucket.total + total);
-    if (isCashTender(sale.payment_method)) bucket.cashTotal = round2(bucket.cashTotal + total);
+
+    const tenders = tendersBySale.get(String(sale.id));
+    if (tenders && tenders.length > 0) {
+      // Pilot Gate POS/Dinheiro: breakdown real por tender — cada método soma só o seu
+      // valor aplicado; dinheiro nunca é inflado pela parte paga noutro método.
+      for (const tender of tenders) {
+        const amount = round2(tender.amount);
+        const label = tenderLabel(tender.method);
+        byTenderMap.set(label, round2((byTenderMap.get(label) || 0) + amount));
+        bucket.byTender[label] = round2((bucket.byTender[label] || 0) + amount);
+        if (isCashTender(tender.method)) {
+          cashSalesTotal += amount;
+          bucket.cashTotal = round2(bucket.cashTotal + amount);
+        }
+      }
+      continue;
+    }
+
+    // Fallback: venda legacy sem linhas em sale_payments — heurística antiga por string
+    // (o total inteiro conta para o método reportado; só existe para vendas anteriores a
+    // esta etapa, nunca para vendas novas).
+    const label = tenderLabel(sale.payment_method);
+    byTenderMap.set(label, round2((byTenderMap.get(label) || 0) + total));
+    bucket.byTender[label] = round2((bucket.byTender[label] || 0) + total);
+    if (isCashTender(sale.payment_method)) {
+      cashSalesTotal += total;
+      bucket.cashTotal = round2(bucket.cashTotal + total);
+    }
   }
 
   const withdrawnTotal = round2(
@@ -288,9 +335,18 @@ async function loadSessionSnapshot(tenantId, session, actorUser = null) {
   const sales = await listSessionSales(tenantId, session.opened_at, session.closed_at);
   const withdrawals = await listWithdrawals(session.id);
   const movementRows = await listCashMovements(session.id);
+  const paymentRows = await listSessionSalePayments(tenantId, session.opened_at, session.closed_at);
+  const tendersBySale = new Map();
+  for (const row of paymentRows) {
+    const key = String(row.sale_id);
+    const list = tendersBySale.get(key) || [];
+    list.push({ method: row.method, amount: row.amount, tendered_amount: row.tendered_amount });
+    tendersBySale.set(key, list);
+  }
   const totals = buildTotals(sales, withdrawals, {
     currentUserId: actorUser?.id,
     movements: movementRows,
+    tendersBySale,
   });
   const priorDayPending =
     !session.closed_at &&
@@ -333,7 +389,7 @@ async function loadSessionSnapshot(tenantId, session, actorUser = null) {
       note: w.note,
     })),
     movements: movementRows.map(mapMovement),
-    ledger: buildLedger(sales, withdrawals, movementRows),
+    ledger: buildLedger(sales, withdrawals, movementRows, tendersBySale),
   };
 }
 

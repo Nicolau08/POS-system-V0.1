@@ -1,19 +1,14 @@
 import db from '../database.js';
 import { sendError, sendSuccess } from '../utils/response.js';
-import { bindSerialToMachine } from '../services/licenseSerial.service.js';
 import {
-  acknowledgeLicenseFile,
-  redeemReactivationToken,
   resolveLocalLicenseExpiry,
   readLocalLicenseFile,
   syncLicenseRegistry,
 } from '../services/licenseRegistry.service.js';
 import {
-  lookupSerialStores,
   readFirstRunStatus,
   resetLocalLicenseForReactivation,
-  runInitialSetup,
-  runInitializeFromSerial,
+  installOfflineLicenseState,
 } from '../services/setup.service.js';
 import { configureInitialAdminPassword } from '../services/user.service.js';
 
@@ -29,23 +24,10 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
-function isActivationSecretValid(req) {
-  const expected = normalizeText(process.env.POS_LICENSE_ACTIVATION_SECRET);
-  // Fail-closed: sem secret configurado, bind remoto fica bloqueado.
-  if (!expected) return false;
-  const got = normalizeText(req.headers?.['x-license-activation-secret']);
-  return got === expected;
-}
-
 function isLocalRequest(req) {
   const localhostCandidates = new Set(['127.0.0.1', '::1', 'localhost']);
-  // Não confiar em X-Forwarded-For (salvo TRUST_PROXY=true).
-  const trustProxy = String(process.env.TRUST_PROXY ?? 'false').toLowerCase() === 'true';
-  let candidate = String(req.socket?.remoteAddress ?? '').trim();
-  if (trustProxy) {
-    const forwarded = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim();
-    if (forwarded) candidate = forwarded;
-  }
+  // Etapa 1G.3.5: so o socket decide (nunca X-Forwarded-For, mesmo com TRUST_PROXY).
+  const candidate = String(req.socket?.remoteAddress ?? '').trim();
   if (!candidate) return false;
   if (candidate.startsWith('::ffff:')) {
     return localhostCandidates.has(candidate.replace('::ffff:', ''));
@@ -116,59 +98,33 @@ export async function getSetupStatus(req, res) {
   }
 }
 
-export async function initializeSetup(req, res) {
+/**
+ * Instala localmente um envelope Ed25519 já pedido/verificado pelo Electron
+ * (Etapa 1F.5b) — reverifica aqui de novo (setup.service.js) antes de
+ * persistir qualquer estado. Local-only, mesmo gate que os outros endpoints
+ * de setup.
+ */
+export async function installOfflineLicense(req, res) {
   try {
     if (!isLocalRequest(req)) {
       return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
     }
-
-    const result = await runInitialSetup(req.body ?? {});
-    if (result?.error) {
-      return sendError(res, result.status ?? 400, result.error, 'SETUP_VALIDATION_FAILED');
+    const envelope = req.body?.offline_license;
+    if (!envelope || typeof envelope !== 'object') {
+      return sendError(res, 400, 'offline_license em falta.', 'OFFLINE_LICENSE_MISSING');
     }
-    return sendSuccess(res, result);
-  } catch (error) {
-    return sendError(res, 500, error instanceof Error ? error.message : 'Falha ao inicializar setup.', 'SETUP_INIT_FAILED');
-  }
-}
-
-export async function lookupSerial(req, res) {
-  try {
-    if (!isLocalRequest(req)) {
-      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
-    }
-    const serial = req.body?.serial ?? req.body?.serial_number ?? req.body?.licenseKey;
-    const result = await lookupSerialStores(serial);
+    const machineId = normalizeText(req.body?.machine_id);
+    const result = await installOfflineLicenseState(envelope, { machineId: machineId || undefined });
     if (result?.error) {
-      return sendError(res, result.status ?? 400, result.error, 'SERIAL_LOOKUP_FAILED');
+      return sendError(res, result.status ?? 400, result.error, result.kind || 'OFFLINE_LICENSE_INVALID');
     }
     return sendSuccess(res, result);
   } catch (error) {
     return sendError(
       res,
       500,
-      error instanceof Error ? error.message : 'Falha ao consultar número de série.',
-      'SERIAL_LOOKUP_FAILED',
-    );
-  }
-}
-
-export async function initializeFromSerial(req, res) {
-  try {
-    if (!isLocalRequest(req)) {
-      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
-    }
-    const result = await runInitializeFromSerial(req.body ?? {});
-    if (result?.error) {
-      return sendError(res, result.status ?? 400, result.error, 'SETUP_SERIAL_INIT_FAILED');
-    }
-    return sendSuccess(res, result);
-  } catch (error) {
-    return sendError(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Falha ao instalar a partir do número de série.',
-      'SETUP_SERIAL_INIT_FAILED',
+      error instanceof Error ? error.message : 'Falha ao instalar licença offline.',
+      'OFFLINE_LICENSE_INSTALL_FAILED',
     );
   }
 }
@@ -200,76 +156,6 @@ export async function setAdminPassword(req, res) {
   }
 }
 
-export async function bindSerialLicense(req, res) {
-  try {
-    if (!isActivationSecretValid(req)) {
-      return sendError(res, 401, 'Credencial de ativação inválida.', 'LICENSE_ACTIVATION_UNAUTHORIZED');
-    }
-
-    const serial = req.body?.serial_number ?? req.body?.serial ?? req.body?.licenseKey;
-    const machineId = req.body?.machine_id ?? req.body?.machineId;
-    const result = await bindSerialToMachine(serial, machineId);
-    if (!result.ok) {
-      return sendError(res, result.status ?? 400, result.error, 'LICENSE_BIND_FAILED');
-    }
-
-    const license = await getRow(`SELECT * FROM licenses WHERE id = ? LIMIT 1`, [result.licenseId]);
-    const tenant = await getRow(`SELECT id, name FROM tenants WHERE id = ? LIMIT 1`, [result.tenantId]);
-    const profile = await getRow(`SELECT id, name, nuit FROM tenant_profile WHERE id = ? LIMIT 1`, [result.tenantId]);
-
-    return sendSuccess(res, {
-      license_snapshot: license
-        ? {
-            id: String(license.id),
-            tenant_id: String(license.tenant_id),
-            license_key: license.license_key != null ? String(license.license_key) : null,
-            serial_number: license.serial_number != null ? String(license.serial_number) : null,
-            plan: license.plan != null ? String(license.plan) : null,
-            expires_at: license.expires_at != null ? String(license.expires_at) : null,
-            active: Number(license.active ?? 1),
-            machine_id: license.machine_id != null ? String(license.machine_id) : null,
-            activated_at: license.activated_at != null ? String(license.activated_at) : null,
-          }
-        : null,
-      tenant: tenant ? { id: String(tenant.id), name: String(tenant.name ?? '') } : null,
-      tenant_profile: profile
-        ? {
-            id: String(profile.id),
-            name: profile.name != null ? String(profile.name) : null,
-            nuit: profile.nuit != null ? String(profile.nuit) : null,
-          }
-        : null,
-    });
-  } catch (error) {
-    return sendError(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Falha ao vincular número de série.',
-      'LICENSE_BIND_FAILED'
-    );
-  }
-}
-
-export async function ackLicenseFile(req, res) {
-  try {
-    if (!isLocalRequest(req)) {
-      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
-    }
-    const result = await acknowledgeLicenseFile();
-    if (result?.error) {
-      return sendError(res, result.status ?? 400, result.error, 'LICENSE_ACK_FAILED');
-    }
-    return sendSuccess(res, result);
-  } catch (error) {
-    return sendError(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Falha ao confirmar licença local.',
-      'LICENSE_ACK_FAILED',
-    );
-  }
-}
-
 export async function syncLicenseRegistryHandler(req, res) {
   try {
     if (!isLocalRequest(req)) {
@@ -283,27 +169,6 @@ export async function syncLicenseRegistryHandler(req, res) {
       500,
       error instanceof Error ? error.message : 'Falha ao sincronizar licença.',
       'LICENSE_SYNC_FAILED',
-    );
-  }
-}
-
-export async function reactivateLicenseToken(req, res) {
-  try {
-    if (!isLocalRequest(req)) {
-      return sendError(res, 403, 'Operação permitida apenas localmente.', 'LOCAL_ONLY_OPERATION');
-    }
-    const token = req.body?.token ?? req.body?.licenseKey;
-    const result = await redeemReactivationToken(token);
-    if (result?.error) {
-      return sendError(res, result.status ?? 400, result.error, 'LICENSE_REACTIVATE_FAILED');
-    }
-    return sendSuccess(res, result);
-  } catch (error) {
-    return sendError(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Falha na reativação da licença.',
-      'LICENSE_REACTIVATE_FAILED',
     );
   }
 }

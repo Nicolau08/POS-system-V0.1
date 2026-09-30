@@ -167,7 +167,11 @@ export async function createKitchenTickets(payload = {}, actorUser = null) {
         : tableKey;
   const source = String(payload.source ?? actorUser?.station_role ?? 'pos_desktop').trim() || 'pos_desktop';
   const stationCode =
-    String(payload.stationCode ?? payload.station_code ?? actorUser?.station_code ?? '').trim() ||
+    String(
+      actorUser?.station_id
+        ? actorUser.station_code ?? '' // Station autenticada: nunca o corpo
+        : payload.stationCode ?? payload.station_code ?? actorUser?.station_code ?? ''
+    ).trim() ||
     null;
   const saleOrderId =
     payload.saleOrderId != null

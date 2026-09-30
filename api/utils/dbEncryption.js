@@ -10,6 +10,18 @@ const require = createRequire(import.meta.url);
 
 export const ENCRYPTION_MARKER_FILE = '.database-encryption.json';
 
+/**
+ * Etapa 1F.6.1 (item 3) — marcador estável e greppable, nunca traduzido, que
+ * identifica especificamente "BD existente não pôde ser aberta/validada"
+ * (ficheiro corrompido OU chave SQLCipher errada — do exterior, sem a chave
+ * correcta, são indistinguíveis por desenho do próprio SQLCipher). Permite a
+ * api/database.js sair de forma CONTROLADA (nunca uma excepção não apanhada
+ * com stack trace cru) e ao electron/main.js mostrar uma mensagem específica
+ * ao operador em vez do erro genérico de "falha ao iniciar". NUNCA dispara
+ * apagar/renomear/substituir a BD nem iniciar um onboarding novo — só sinaliza.
+ */
+export const DATABASE_CORRUPTED_MARKER = 'DATABASE_CORRUPTED';
+
 const HEX_KEY_RE = /^[0-9a-fA-F]{64}$/;
 
 export function getDbEncryptionKey() {
@@ -220,12 +232,30 @@ export async function openSqliteDatabase(databasePath) {
   if (!key) {
     const sqlite3Import = require('sqlite3');
     const sqlite3 = sqlite3Import.verbose();
+    const fileExistedBefore = fs.existsSync(resolved);
     const db = new sqlite3.Database(resolved);
     db.configure('busyTimeout', 15000);
     try {
       db.run('PRAGMA busy_timeout = 15000');
     } catch {
       // ignore
+    }
+    // Etapa 1F.6.1 (item 3/25): sqlite3.Database() é preguiçoso — não valida o
+    // ficheiro até à primeira query real. Sem este preflight, um ficheiro
+    // corrompido só falhava muito mais tarde, a meio do bootstrap do schema
+    // (db.serialize() em database.js), como uma excepção não apanhada com
+    // stack trace cru. Só corre a validação se o ficheiro JÁ existia — uma
+    // instalação nova legítima cria um ficheiro vazio válido (count=0), o que
+    // não deve ser tratado como corrupção.
+    if (fileExistedBefore) {
+      try {
+        await getAsync(db, 'SELECT count(*) AS c FROM sqlite_master');
+      } catch (err) {
+        await closeAsync(db).catch(() => {});
+        throw new Error(
+          `${DATABASE_CORRUPTED_MARKER}: Falha ao abrir a base de dados existente (ficheiro corrompido): ${err.message}`,
+        );
+      }
     }
     return { db, encrypted: false, path: resolved };
   }
@@ -248,7 +278,7 @@ export async function openSqliteDatabase(databasePath) {
   } catch (err) {
     await closeAsync(db).catch(() => {});
     throw new Error(
-      `Falha ao abrir BD encriptada (chave incorrecta ou ficheiro corrompido): ${err.message}`,
+      `${DATABASE_CORRUPTED_MARKER}: Falha ao abrir BD encriptada (chave incorrecta ou ficheiro corrompido): ${err.message}`,
     );
   }
 

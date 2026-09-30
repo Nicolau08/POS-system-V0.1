@@ -134,7 +134,7 @@ function parseIsoTimestampStrict(value) {
   return parsed.toISOString();
 }
 
-export async function authenticateLogin({ userId, enteredPin }) {
+export async function authenticateLogin({ userId, enteredPin, stationId = null }) {
   const lock = readLoginLock(userId);
   if (lock?.lockedUntil && Date.now() < lock.lockedUntil) {
     const retryAfterSeconds = Math.max(1, Math.ceil((lock.lockedUntil - Date.now()) / 1000));
@@ -231,7 +231,8 @@ export async function authenticateLogin({ userId, enteredPin }) {
   let token = null;
   try {
     const { issueBearerTokenForUserId } = await import('../middlewares/auth.js');
-    token = issueBearerTokenForUserId(authenticatedUser.id);
+    // login feito a partir de uma Station autenticada: a sessao fica vinculada a esse station_id
+    token = issueBearerTokenForUserId(authenticatedUser.id, { stationId });
   } catch {
     token = null;
   }

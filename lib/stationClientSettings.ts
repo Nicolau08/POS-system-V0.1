@@ -64,7 +64,9 @@ export function normalizeServerApiBaseUrl(value: unknown): string {
   let raw = String(value ?? '').trim();
   if (!raw) return '';
   raw = raw.replace(/\/+$/, '');
-  if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
+  // Etapa 1G.3.6: o servidor e sempre HTTPS (certificado fixado); um IP sem esquema passa a https://. Um http:// escrito a mao
+  // mantem-se para ficar visivel e ser recusado (falha fechada) pelo cliente da Station.
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
   try {
     const u = new URL(raw);
     const port = u.port || '3731';

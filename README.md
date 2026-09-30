@@ -22,7 +22,7 @@ Pequenas e médias lojas precisam de um POS **fiável offline**, fácil de insta
 |--------------------|------------------------|
 | Internet instável no balcão | API e base **SQLite locais** por instalação |
 | Instalação complexa | Um instalador Windows (`POSly Setup 1.0.0.exe`) |
-| Controlo de quem usa o software | Licença por **máquina** (voucher ou assinatura HMAC) |
+| Controlo de quem usa o software | Licença por **máquina** (token de activação → Device Auth → licença offline Ed25519) |
 | Operação do dia-a-dia | Caixa + **gestão** (stock, utilizadores, relatórios, backups) |
 
 ---
@@ -34,7 +34,7 @@ Pequenas e médias lojas precisam de um POS **fiável offline**, fácil de insta
 - **Resiliência** — backups locais da base de dados (pasta `backups\`, retenção configurável)
 - **Licenciamento** — activação por código (voucher), consola web, renovação e runbooks de suporte
 
-Dados por loja/PC em `%APPDATA%\POSly\` (`license.json`, `data\database.db`, `backups\`, chave SQLCipher em `db-encryption.key` via Windows DPAPI).
+Dados por loja/PC em `%APPDATA%\POSly\` (`offline-license.json` — envelope Ed25519, `data\database.db`, `backups\`, chave SQLCipher em `db-encryption.key` via Windows DPAPI).
 
 Na app Electron a BD é **encriptada com SQLCipher**; a chave fica na máquina (Electron `safeStorage`) e **não é pedida ao operador**. Noutro PC o ficheiro sozinho não abre. **BitLocker** continua recomendado no disco do PC.
 
@@ -139,23 +139,22 @@ Scripts úteis: `npm run dev:tenant:default`, `npm run dev:console`, `npm run bu
 npm run electron-dist
 ```
 
-Gera **apenas o desktop POSly** (modo caixa; sem consola de licenças no bundle) em `dist-electron/`. O build exclui `app/license-admin` e `app/api/license-issuer` — a consola vive em `license-console/` (Vercel). Antes do build, configure `POS_LICENSE_HMAC_SECRET` e `POS_LICENSE_ISSUER_BASE_URL` (URL do deploy da consola).
+Gera **apenas o desktop POSly** (modo caixa; sem consola de licenças no bundle) em `dist-electron/`. O build exclui `app/license-admin` e `app/api/license-issuer` — a consola vive em `license-console/` (Vercel). Antes do build, configure `POS_LICENSE_ISSUER_BASE_URL` (URL do deploy da consola) e a public key Ed25519 embarcada (`lib/licensing/offlineLicensePublicKeys.js`).
 
 ### Licenciamento (técnico)
 
 A consola é um **projecto Next.js separado** em `license-console/`:
 
-- UI: `/license-admin`
-- API: `/api/license-issuer/*` (admin protegida por `LICENSE_ISSUER_ADMIN_TOKEN`; endpoints de activação são públicos com HMAC)
+- UI: `/license-admin` (tenants → lojas → licenças → owner → activation token)
+- API: `/api/license-issuer/*` (admin protegida por `LICENSE_ISSUER_ADMIN_TOKEN`; `/device/bootstrap` e `/device/offline-license` são o caminho comercial do POS, autenticados por activation token de uso único e Device JWT, nunca HMAC)
 - Deploy Vercel: Root Directory = `license-console` (12 funções — cabe no plano Hobby)
 
-Fluxo: registar tenant na consola → gerar serial → cliente activa no desktop → `license.json` + registo em Supabase. O POS chama `POS_LICENSE_ISSUER_BASE_URL` (ex.: `https://licencas.seudominio.com`). Migrações: `license-console/supabase/migrations/` (ou `supabase/migrations/` na raiz).
+Fluxo do POS: admin cria activation token na consola → cliente introduz o token no desktop → bootstrap Device Auth → licença offline Ed25519 emitida e verificada localmente → `offline-license.json` + registo local em SQLite. O POS chama `POS_LICENSE_ISSUER_BASE_URL` (ex.: `https://licencas.seudominio.com`) apenas durante a activação — nunca no arranque local depois de activado. Migrações: `supabase/migrations/` (raiz; `npx supabase db reset` em local).
 
 ### Variáveis de ambiente (resumo)
 
 | Variável | Descrição |
 |----------|-----------|
-| `POS_LICENSE_HMAC_SECRET` | Segredo HMAC (POSly + consola) |
 | `POS_LICENSE_ISSUER_BASE_URL` | URL base da consola (ex.: `https://licencas.seudominio.com`) |
 | `NEXT_PUBLIC_LICENSE_CONSOLE_URL` | Link para abrir a consola no browser (dev: `http://localhost:3002`) |
 | `LICENSE_ISSUER_ADMIN_TOKEN` | Token da consola `/license-admin` |

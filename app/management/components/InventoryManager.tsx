@@ -34,6 +34,8 @@ interface Product {
   price: number;
   cost?: number;
   tax?: number;
+  tax_rate_percent?: number;
+  tax_rate_is_fixed?: boolean;
   final_price?: number;
   unit?: string;
   stock_quantity: number;
@@ -46,6 +48,13 @@ interface Product {
     name: string;
   };
 }
+
+/** Custo + imposto sobre o custo (taxa percentual ou valor fixo do imposto associado ao produto). */
+const costWithTax = (p: Pick<Product, 'cost' | 'tax_rate_percent' | 'tax_rate_is_fixed'>) => {
+  const cost = p.cost || 0;
+  const rate = Number(p.tax_rate_percent || 0);
+  return p.tax_rate_is_fixed ? cost + rate : cost * (1 + rate / 100);
+};
 
 interface Category {
   id: string;
@@ -319,8 +328,9 @@ export default function InventoryManager() {
     const positive = stockProducts.filter((p) => p.stock_quantity > 0).length;
 
     const totalCost = filteredProducts.reduce((acc, p) => acc + ((p.cost || 0) * Math.abs(p.stock_quantity)), 0);
-    const totalCostWithTax = filteredProducts.reduce((acc, p) => acc + (((p.cost || 0) + (p.tax || 0)) * Math.abs(p.stock_quantity)), 0);
-    const totalSales = filteredProducts.reduce((acc, p) => acc + (p.price * Math.abs(p.stock_quantity)), 0);
+    const totalCostWithTax = filteredProducts.reduce((acc, p) => acc + (costWithTax(p) * Math.abs(p.stock_quantity)), 0);
+    // Valor sem imposto = preco final - imposto por unidade (o preco do produto pode ja incluir o imposto).
+    const totalSales = filteredProducts.reduce((acc, p) => acc + (((p.final_price || p.price) - (p.tax || 0)) * Math.abs(p.stock_quantity)), 0);
     const totalSalesWithTax = filteredProducts.reduce((acc, p) => acc + ((p.final_price || p.price) * Math.abs(p.stock_quantity)), 0);
 
     return { negative, zero, positive, totalCost, totalCostWithTax, totalSales, totalSalesWithTax };
@@ -880,7 +890,7 @@ export default function InventoryManager() {
                           >
                             {calcMargin(p.final_price || p.price, p.cost || 0).percent.toFixed(1)}%
                           </td>
-                          <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice((p.cost || 0) + (p.tax || 0))}</td>
+                          <td className="px-3 py-2 text-xs text-zinc-400 text-right whitespace-nowrap">{formatPrice(costWithTax(p))}</td>
                         </>
                       ) : null}
                       <td className="px-3 py-2 text-xs text-zinc-200 text-right whitespace-nowrap">{formatPrice(p.price * Math.abs(p.stock_quantity))}</td>

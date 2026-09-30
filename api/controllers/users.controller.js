@@ -43,7 +43,7 @@ export async function login(req, res) {
       return res.status(400).json({ error: 'userId e pin sao obrigatorios' });
     }
 
-    const result = await authenticateLogin({ userId, enteredPin });
+    const result = await authenticateLogin({ userId, enteredPin, stationId: req.station?.id ?? null });
     if (!result?.ok) {
       await logAudit('USER_LOGIN_FAILED', { id: userId }, {
         entity: 'auth',

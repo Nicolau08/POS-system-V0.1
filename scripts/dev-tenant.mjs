@@ -136,12 +136,40 @@ if (tenant) {
   env.POS_USER_DATA_PATH = root;
   env.POS_MACHINE_ID = machineId;
   env.POS_ALLOW_MACHINE_ID_OVERRIDE = '1';
-  env.DEFAULT_TENANT_ID = tenant.tenantId;
-  env.DEFAULT_TENANT_NAME = tenant.tenantName;
-  env.POS_DEV_TENANT = tenant.tenantId;
+
+  // Por omissão, o tenant vem do slug (ex: qa01 → tenant-qa-01). Mas se este
+  // tenant JÁ passou pelo assistente de configuração (config.json existente),
+  // o tenant real pode ser outro — ex: activaste com um serial real (loja-teste)
+  // em vez do trial local. Nesse caso o tenant real, escrito pelo próprio setup,
+  // é a fonte da verdade (o Electron de produção faz o mesmo: lê sempre do
+  // ficheiro em vez de adivinhar) — sem isto, o ecrã de login filtra pelo slug
+  // errado e mostra "sem utilizadores".
+  let tenantId = tenant.tenantId;
+  let tenantName = tenant.tenantName;
+  try {
+    if (fs.existsSync(env.POS_CONFIG_PATH)) {
+      const savedConfig = JSON.parse(fs.readFileSync(env.POS_CONFIG_PATH, 'utf8'));
+      const savedTenantId = String(savedConfig?.tenantId || '').trim();
+      if (savedConfig?.setupCompleted && savedTenantId) {
+        if (savedTenantId !== tenantId) {
+          console.log(
+            `[dev-tenant] Tenant real (config.json) é "${savedTenantId}", diferente do slug "${tenantId}" — a usar o real.`,
+          );
+        }
+        tenantId = savedTenantId;
+        tenantName = String(savedConfig?.storeName || '').trim() || tenantName;
+      }
+    }
+  } catch (err) {
+    console.log(`[dev-tenant] Aviso: não consegui ler config.json existente (${err.message}) — a usar tenant do slug.`);
+  }
+
+  env.DEFAULT_TENANT_ID = tenantId;
+  env.DEFAULT_TENANT_NAME = tenantName;
+  env.POS_DEV_TENANT = tenantId;
 
   const dbExists = fs.existsSync(env.POS_DB_PATH);
-  console.log(`[dev-tenant] Tenant: ${tenant.tenantId} (${tenant.tenantName})`);
+  console.log(`[dev-tenant] Tenant: ${tenantId} (${tenantName})`);
   console.log(`[dev-tenant] Pasta isolada: ${root}`);
   console.log(`[dev-tenant] Machine ID de teste: ${machineId}`);
   console.log(`[dev-tenant] SQLite: ${env.POS_DB_PATH}${dbExists ? ' (existente)' : ' (nova)'}`);

@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import express from 'express';
@@ -7,13 +8,18 @@ import saasRoutes from './routes/saas.routes.js';
 import setupRoutes from './routes/setup.routes.js';
 
 import db, { runPermissionRulesSeedIfEmpty } from './database.js';
-import { startSyncService } from './syncService.js';
+import { startSyncService, isCloudSyncConfigured } from './syncService.js';
 import stockController from './stockController.js';
 import usersRoutes from './routes/users.routes.js';
 import tenantRoutes from './routes/tenant.routes.js';
 import productsRoutes from './routes/products.routes.js';
 import salesRoutes from './routes/sales.routes.js';
 import syncRoutes from './routes/sync.routes.js';
+import transfersRoutes from './routes/transfers.routes.js';
+import { consumePairing } from './services/stationPairing.service.js';
+import { authenticateStation, getSocketIp, isLoopbackSocket, requireLoopbackOnly } from './middlewares/stationAuth.js';
+import { loadServerTlsIdentity } from './utils/serverTls.js';
+import { createLanTlsServers } from './utils/dualProtocolServer.js';
 import maintenanceRoutes from './routes/maintenance.routes.js';
 import categoriasRoutes from './routes/categorias.routes.js';
 import clientesRoutes from './routes/clientes.routes.js';
@@ -38,6 +44,7 @@ import { globalErrorHandler, notFoundHandler } from './middlewares/error.middlew
 import { sendError, sendSuccess } from './utils/response.js';
 import {
   buildDiscoverPayload,
+  ensureStationTables,
   isRemoteAuthAllowed,
 } from './services/station.service.js';
 import {
@@ -59,13 +66,32 @@ import { getLoginUsers, login } from './controllers/users.controller.js';
 import { resolveAuthHmacSecret, getClientIp, isLoopbackIp } from './utils/authSecret.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({
-  path: path.resolve(__dirname, '../.env'),
-});
-dotenv.config({
-  path: path.resolve(__dirname, '../.env.local'),
-  override: true,
-});
+
+/**
+ * Pilot Gate Instalação/Recovery — achado do gate anterior: dotenv.config({override:true})
+ * apagava ENV explicitamente injectada por quem arrancou este processo (spawn(env), shell
+ * export, Electron, etc.) sempre que .env.local definisse a MESMA chave — mesmo com um
+ * valor "legítimo" nesse ficheiro (ex.: uma chave de dev fixa), isso não pode vencer um
+ * valor passado explicitamente ao arrancar ESTE processo (ex.: os testes Station injectam
+ * uma chave FRESCA por cenário via spawn(env) — a fixa do .env.local nunca pode substituir
+ * uma injectada de propósito pelo chamador). .env continua só a preencher lacunas (como já
+ * era); .env.local continua a ganhar a .env, mas NUNCA a algo já em process.env ANTES deste
+ * ficheiro sequer correr — só isso muda.
+ */
+const externallyProvidedEnvKeys = new Set(Object.keys(process.env));
+
+function loadEnvFile(filePath, { override = false } = {}) {
+  if (!fs.existsSync(filePath)) return;
+  const parsed = dotenv.parse(fs.readFileSync(filePath));
+  for (const [key, value] of Object.entries(parsed)) {
+    if (externallyProvidedEnvKeys.has(key)) continue;
+    if (override || process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+loadEnvFile(path.resolve(__dirname, '../.env'));
+loadEnvFile(path.resolve(__dirname, '../.env.local'), { override: true });
 
 // Segredo Bearer por instalação (env → ficheiro junto à BD → gerar). Sem fallback fixo.
 resolveAuthHmacSecret();
@@ -94,15 +120,25 @@ app.use(
   }),
 );
 /** Logos em base64 no PUT /company-profile excedem o default (~100kb). */
-app.use(express.json({ limit: process.env.API_JSON_BODY_LIMIT || '6mb' }));
+// `verify` guarda os BYTES exactos do corpo (req.rawBody): a assinatura da Station cobre o corpo transmitido, nunca JSON reserializado.
+app.use(
+  express.json({
+    limit: process.env.API_JSON_BODY_LIMIT || '6mb',
+    verify: (req, _res, buf) => {
+      req.rawBody = Buffer.from(buf);
+    },
+  }),
+);
 app.use(attachRequestContext);
 app.use(createRateLimiter());
 app.use(sanitizeInputMiddleware);
+// Etapa 1G.3.3: pedidos NAO-loopback (so o socket conta) exigem Station assinada; excepcoes: descoberta, pairing, health.
+app.use(authenticateStation);
 app.use('/setup', setupRoutes);
 
 async function rejectNonLocalAuthRoute(req, res, next) {
-  const candidate = getClientIp(req);
-  if (isLoopbackIp(candidate)) return next();
+  // so o socket decide (X-Forwarded-For/TRUST_PROXY nunca tornam um pedido remoto "local")
+  if (isLoopbackSocket(req)) return next();
   try {
     if (await isRemoteAuthAllowed()) return next();
   } catch {
@@ -126,6 +162,24 @@ app.get('/station/discover', async (_req, res) => {
     return sendSuccess(res, payload);
   } catch (err) {
     return sendError(res, 500, err?.message || 'Erro na descoberta');
+  }
+});
+
+/**
+ * Emparelhamento de Station (Etapa 1G.3.2): UNICO endpoint publico de postos alem da descoberta. Sem sessão de operador;
+ * protegido por código de uso único + rate limit por IP + limite de licença. Só fora do loopback se a LAN estiver activa.
+ */
+app.post('/station/pair', rejectNonLocalAuthRoute, async (req, res) => {
+  try {
+    const result = await consumePairing({
+      code: req.body?.code,
+      publicKey: req.body?.public_key,
+      machineId: req.body?.machine_id,
+      ip: getSocketIp(req),
+    });
+    return sendSuccess(res, result, 201);
+  } catch (err) {
+    return sendError(res, err?.status || 500, err?.status ? err.message : 'Erro no emparelhamento', err?.code);
   }
 });
 
@@ -205,7 +259,7 @@ app.use((req, res, next) => {
   res.on('error', release);
   return next();
 });
-app.use('/saas', saasRoutes);
+app.use('/saas', requireLoopbackOnly, saasRoutes); // 1G.3.5: ferramentas de tenant/licenca do proprio Server
 app.use('/', usersRoutes);
 app.use(tenantRoutes);
 console.log('[SERVER] SaaS routes registered');
@@ -229,12 +283,16 @@ app.use('/', printCentersRoutes);
 app.use('/', stationsRoutes);
 app.use('/', kitchenRoutes);
 app.use('/sync', syncRoutes);
+app.use('/transfers', transfersRoutes);
 app.use('/stock', stockController);
 app.use('/', maintenanceRoutes);
 console.log('[SERVER] Tenant routes registered');
 
+// Etapa 1F.3: sync usa Device JWT + anon key desde 1F.2 — nunca
+// SUPABASE_SERVICE_ROLE_KEY. isCloudSyncConfigured() reflecte exactamente o
+// que getSupabase() (syncService.js) usa, evitando um log enganador aqui.
 logInfo('env_check', {
-  supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+  supabase_configured: isCloudSyncConfigured(),
 });
 
 app.use(notFoundHandler);
@@ -294,6 +352,12 @@ function startAutoBackupScheduler() {
 
 function startApiServer() {
   void (async () => {
+    // Tabelas de Stations existem desde o arranque: o login consulta `stations` e, sem isto, falha em instalacoes novas.
+    try {
+      await ensureStationTables();
+    } catch (err) {
+      logWarn('stations_bootstrap_failed', { module: 'server', error: err });
+    }
     let bindHost = String(process.env.POS_API_BIND || '127.0.0.1').trim() || '127.0.0.1';
     try {
       if (!process.env.POS_API_BIND) {
@@ -308,8 +372,22 @@ function startApiServer() {
       // keep default bind
     }
 
-    const server = app.listen(PORT, bindHost, () => {
-      logEvent('info', 'api.started', `API POSly a escutar em http://${bindHost}:${PORT}`, {
+    // Etapa 1G.3.6: LAN activa => HTTPS obrigatorio para ligacoes remotas (loopback continua a aceitar HTTP para o POS do Server).
+    // Sem identidade TLS protegida a LAN NAO arranca (falha fechada): fica so em loopback.
+    let tls = null;
+    if (!['127.0.0.1', '::1', 'localhost'].includes(bindHost)) {
+      tls = await loadServerTlsIdentity().catch(() => null);
+      if (!tls) {
+        logError('lan_tls_unavailable', {
+          module: 'server',
+          reason: 'LAN activa mas sem identidade TLS protegida (POS_TLS_CERT_PEM/POS_TLS_KEY_PEM): a API fica apenas em loopback',
+        });
+        bindHost = '127.0.0.1';
+        process.env.POS_LAN_ACCESS = '0';
+      }
+    }
+    const server = (tls ? createLanTlsServers(app, { cert: tls.certPem, key: tls.keyPem }) : app).listen(PORT, bindHost, () => {
+      logEvent('info', 'api.started', `API POSly a escutar em ${tls ? 'https(LAN)+http(loopback)' : 'http'}://${bindHost}:${PORT}`, {
         source: 'api',
         module: 'server',
         action: 'listen',
@@ -318,7 +396,7 @@ function startApiServer() {
         bind: bindHost,
         lan_access: String(process.env.POS_LAN_ACCESS ?? ''),
         node_env: process.env.NODE_ENV ?? 'development',
-        tenant: process.env.POS_DEV_TENANT ?? process.env.DEFAULT_TENANT_ID ?? null,
+        tenant: process.env.DEFAULT_TENANT_ID ?? process.env.POS_DEV_TENANT ?? null,
         db_path: process.env.POS_DB_PATH ?? null,
       });
 
@@ -333,13 +411,20 @@ function startApiServer() {
         full_reset_enabled: fullResetEnabled,
       });
 
-      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      // Etapa 1F.3 — CORREÇÃO CRÍTICA: esta gate ainda exigia
+      // SUPABASE_SERVICE_ROLE_KEY, apesar de syncService.js já usar Device
+      // JWT + anon key desde 1F.2. Resultado real antes desta correção: com
+      // SUPABASE_SERVICE_ROLE_KEY ausente (exactamente o cenário que esta
+      // etapa quer provar que funciona), startSyncService() NUNCA era
+      // chamada — o sync automático simplesmente não arrancava, apesar do
+      // Device JWT estar perfeitamente configurado e funcional.
+      if (!isCloudSyncConfigured()) {
         logWarn('sync_offline_only', {
           event: 'sync.offline_only',
           message: 'Credenciais Supabase em falta — modo apenas offline',
           module: 'sync',
           action: 'boot',
-          reason: 'SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configurados',
+          reason: 'SUPABASE_URL ou SUPABASE_ANON_KEY não configurados',
         });
       } else {
         logInfo('sync_supabase_ready', {

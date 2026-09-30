@@ -175,7 +175,6 @@ if (consoleLines.length > 0) {
 if (!supabaseUrl || !supabaseKey) {
   console.log('');
   console.log('[licensing] Sem Supabase a consola não regista clientes/vouchers.');
-  console.log('  Edite .env.local com as chaves do projecto Supabase e aplique a migração:');
-  console.log('  supabase/migrations/20260521_posly_license_issuer.sql');
+  console.log('  Edite .env.local com as chaves do projecto Supabase e aplique as migrations em supabase/migrations/ (local: npx supabase db reset).');
   process.exitCode = 0;
 }

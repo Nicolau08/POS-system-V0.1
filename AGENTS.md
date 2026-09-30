@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## What this is
 
@@ -63,7 +63,3 @@ Wraps the Next.js server + API as a desktop app. Packaged builds bind the ports 
 ### Testing
 
 `tests/unit/*.test.mjs` are plain Node `--test` files (no framework), several of which boot the real schema against a temp SQLite file via `POS_DB_PATH` env override — this is the closest thing to an integration test for `database.js`/`schema/*`. `tests/*.spec.ts` are Playwright smokes that expect `dev:full` already running.
-
-## Supabase local (`supabase/`)
-
-Single operational Supabase tree (project_id `posly`, ports 54321–54329). `npx.cmd supabase start` then `npx.cmd supabase db reset` rebuilds the whole cloud schema from `supabase/migrations/` alone (35 migrations, 14-digit timestamps — the CLI ignores/collides on anything else, and applies every `<version>_*.sql`, so never put `*_rollback.sql` there). Never `db push` or `migration repair` against production from here. The pre-consolidation legacy history is archived in `backups/legacy-supabase-20260930/` (not operational). `tenant_profile` is a local SQLite table only — it does not exist in the cloud schema by design. Live integration tests: `license-console` → `npm run test:integration` (needs `SUPABASE_INTEGRATION_*` + `POS_DEVICE_JWT_TEST_JWK` from `supabase/signing_keys.json`); root `tests/integration/*-live` need the license-console (`:3002`) and, for `backoffice-*`, the backoffice app (`:3003`) running.

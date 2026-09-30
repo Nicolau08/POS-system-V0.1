@@ -18,20 +18,52 @@ function formatSyncDate(value: string | null) {
   });
 }
 
+const TYPE_LABELS: Record<string, string> = {
+  sale: 'Vendas',
+  product: 'Produtos',
+  category: 'Categorias',
+  customer: 'Clientes',
+};
+
+function formatByTypeLine(counts: Record<string, number>): string | null {
+  const entries = Object.entries(counts).filter(([, count]) => count > 0);
+  if (entries.length === 0) return null;
+  return entries.map(([type, count]) => `${TYPE_LABELS[type] ?? type} ${count}`).join(' · ');
+}
+
 function reasonHint(reason: string | null, cloudConfigured: boolean) {
   if (!cloudConfigured || reason === 'supabase_not_configured') {
     return 'Cloud não configurada neste PC — reinstale com build que inclui Supabase.';
   }
-  if (reason === 'no_internet') return 'Sem ligação à internet / Supabase.';
+  if (reason === 'no_internet') return 'Sem ligação à internet.';
   if (reason === 'sync_service_inactive') return 'Serviço de sync inactivo.';
   return null;
 }
 
+function formatAttemptWindow(first: string | null, last: string | null): string | null {
+  if (!first && !last) return null;
+  if (first === last || !last) return formatSyncDate(first);
+  return `${formatSyncDate(first)} → ${formatSyncDate(last)}`;
+}
+
 export default function SyncStatusPanel() {
-  const { online, pending, failed, lastSync, cloudConfigured, syncActive, reason, refresh } =
+  const { online, pending, failed, lastSync, cloudConfigured, syncActive, reason, byType, tenantDiagnostic, rlsDiagnostic, refresh } =
     useSyncStatus();
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+
+  const pendingByTypeLine = useMemo(() => formatByTypeLine(byType.pending), [byType.pending]);
+  const failedByTypeLine = useMemo(() => formatByTypeLine(byType.failed), [byType.failed]);
+  const deadByTypeLine = useMemo(() => formatByTypeLine(byType.dead), [byType.dead]);
+  const hasByTypeDetail = Boolean(pendingByTypeLine || failedByTypeLine || deadByTypeLine);
+
+  const hasTenantMismatch =
+    tenantDiagnostic.categories.other > 0 ||
+    tenantDiagnostic.products.other > 0 ||
+    tenantDiagnostic.queueDead.category.other > 0 ||
+    tenantDiagnostic.queueDead.product.other > 0;
+
+  const hasRlsDiagnostic = rlsDiagnostic.category.items > 0 || rlsDiagnostic.product.items > 0;
 
   const state = useMemo(() => {
     if (!cloudConfigured) return { label: 'Só local', dot: 'bg-zinc-500' };
@@ -93,6 +125,52 @@ export default function SyncStatusPanel() {
           <span className="text-zinc-500">Falhas</span>
           <span className="text-zinc-200 font-bold">{failed}</span>
         </div>
+        {hasByTypeDetail ? (
+          <div className="space-y-1 text-[10px] text-zinc-500 leading-snug">
+            {pendingByTypeLine ? <p>Pendentes: {pendingByTypeLine}</p> : null}
+            {failedByTypeLine ? <p>Falhas: {failedByTypeLine}</p> : null}
+            {deadByTypeLine ? <p>Permanentes: {deadByTypeLine}</p> : null}
+          </div>
+        ) : null}
+        {hasTenantMismatch ? (
+          <div className="space-y-1 text-[10px] text-amber-500/90 leading-snug border-t border-pos-border pt-2">
+            <p className="font-bold uppercase tracking-wide">Tenant desalinhado</p>
+            {tenantDiagnostic.categories.other > 0 ? (
+              <p>Categorias: {tenantDiagnostic.categories.current} actuais · {tenantDiagnostic.categories.other} de outro tenant</p>
+            ) : null}
+            {tenantDiagnostic.products.other > 0 ? (
+              <p>Produtos: {tenantDiagnostic.products.current} actuais · {tenantDiagnostic.products.other} de outro tenant</p>
+            ) : null}
+            {tenantDiagnostic.queueDead.category.other > 0 ? (
+              <p>Fila (categoria, permanente): {tenantDiagnostic.queueDead.category.other} de outro tenant</p>
+            ) : null}
+            {tenantDiagnostic.queueDead.product.other > 0 ? (
+              <p>Fila (produto, permanente): {tenantDiagnostic.queueDead.product.other} de outro tenant</p>
+            ) : null}
+          </div>
+        ) : null}
+        {hasRlsDiagnostic ? (
+          <div className="space-y-1 text-[10px] text-amber-500/90 leading-snug border-t border-pos-border pt-2">
+            <p className="font-bold uppercase tracking-wide">Diagnóstico RLS</p>
+            {rlsDiagnostic.category.items > 0 ? (
+              <p>
+                Categorias: {rlsDiagnostic.category.items} permanentes · {rlsDiagnostic.category.totalAttempts} tentativas
+                {rlsDiagnostic.category.sameRlsErrorAttempts > 0 ? ` (${rlsDiagnostic.category.sameRlsErrorAttempts} com o mesmo erro RLS)` : ''}
+                {formatAttemptWindow(rlsDiagnostic.category.firstAttempt, rlsDiagnostic.category.lastAttempt)
+                  ? ` · ${formatAttemptWindow(rlsDiagnostic.category.firstAttempt, rlsDiagnostic.category.lastAttempt)}`
+                  : ''}
+              </p>
+            ) : null}
+            {rlsDiagnostic.product.items > 0 ? (
+              <p>
+                Produtos: {rlsDiagnostic.product.items} permanentes · {rlsDiagnostic.product.totalAttempts} tentativas
+                {formatAttemptWindow(rlsDiagnostic.product.firstAttempt, rlsDiagnostic.product.lastAttempt)
+                  ? ` · ${formatAttemptWindow(rlsDiagnostic.product.firstAttempt, rlsDiagnostic.product.lastAttempt)}`
+                  : ''}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <div className="pt-2 border-t border-pos-border">
           <div className="flex items-center justify-between text-xs">
             <span className="text-zinc-500">Último sync</span>

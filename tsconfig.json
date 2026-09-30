@@ -43,6 +43,7 @@
     "dist-electron",
     ".build-skip",
     "license-console",
+    "backoffice",
     "apps"
   ]
 }

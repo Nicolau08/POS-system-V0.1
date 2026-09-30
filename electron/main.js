@@ -1,4 +1,7 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, safeStorage } from 'electron';
+import { registerStationIpc } from './station/registerStationIpc.js';
+import { getOrCreateServerTlsIdentity } from './serverTlsIdentity.js';
+import { probeUnpinned } from './station/pinnedHttps.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -8,27 +11,47 @@ import crypto from 'crypto';
 import os from 'os';
 import dotenv from 'dotenv';
 import electronUpdaterModule from 'electron-updater';
-import {
-  isReactivationTokenInput,
-  normalizeReactivationTokenInput,
-} from '../lib/licensing/reactivationToken.js';
-import { LICENSE_IN_USE_MESSAGE } from '../lib/licensing/licenseConflict.js';
-import {
-  resignMachineLicensePayload,
-  verifyOfflineReactivationToken,
-} from '../lib/licensing/offlineReactivationToken.js';
 import { getLocalMachineId as resolveSharedLocalMachineId } from '../lib/licensing/localMachineId.js';
-import {
-  readLicenseFileSealed,
-  writeSealedLicenseFile,
-} from '../lib/licensing/sealedLocalLicense.js';
+import { isDeviceActivationTokenInput } from '../lib/licensing/deviceActivationToken.js';
+import { resolveOfflineLicensePublicKeyPem } from '../lib/licensing/offlineLicensePublicKeys.js';
 import { electronLogError, electronLogInfo, electronLogWarn } from './logger.js';
 import { getOrCreateDbEncryptionKey } from './dbEncryptionKey.js';
+import {
+  bootstrapDevice as bootstrapDeviceAuth,
+  getDeviceIdentity as getDeviceAuthIdentity,
+  clearDeviceCredentials as clearDeviceAuthCredentials,
+  getValidAccessToken as getValidDeviceAccessToken,
+  initDeviceAuthNonBlocking,
+} from './deviceAuth/deviceAuthClient.js';
+import { startDeviceAuthBridge, stopDeviceAuthBridge } from './deviceAuth/deviceAuthBridge.js';
+import {
+  requestOfflineLicense,
+  installOfflineLicense as installOfflineLicenseLocal,
+  getOfflineLicenseState as getOfflineLicenseStateLocal,
+} from './deviceAuth/offlineLicenseClient.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
-dotenv.config({ path: path.join(projectRoot, '.env') });
-dotenv.config({ path: path.join(projectRoot, '.env.local'), override: true });
+
+// Pilot Gate Instalação/Recovery — mesmo achado/correcção de api/server.js:
+// dotenv.config({override:true}) apagava ENV explicitamente injectada por quem arrancou
+// ESTE processo (ex.: o instalador/electron-builder, ou um teste), sempre que .env.local
+// definisse a MESMA chave — mesmo com um valor "legítimo" nesse ficheiro. .env continua só
+// a preencher lacunas; .env.local continua a ganhar a .env, mas nunca a algo já em
+// process.env ANTES deste ficheiro sequer correr.
+const externallyProvidedEnvKeys = new Set(Object.keys(process.env));
+function loadEnvFile(filePath, { override = false } = {}) {
+  if (!fsSync.existsSync(filePath)) return;
+  const parsed = dotenv.parse(fsSync.readFileSync(filePath));
+  for (const [key, value] of Object.entries(parsed)) {
+    if (externallyProvidedEnvKeys.has(key)) continue;
+    if (override || process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+loadEnvFile(path.join(projectRoot, '.env'));
+loadEnvFile(path.join(projectRoot, '.env.local'), { override: true });
 
 /** Segredos gerados em build (scripts/inject-pos-build-secrets.mjs) para o instalador. */
 const loadPackagedBuildSecrets = () => {
@@ -37,9 +60,9 @@ const loadPackagedBuildSecrets = () => {
     path.join(process.resourcesPath || '', 'app.asar', 'electron', '.build-secrets.json'),
     path.join(process.resourcesPath || '', 'electron', '.build-secrets.json'),
   ];
-  // Em instalado, o ficheiro do build é a fonte de verdade. Variáveis de utilizador
-  // no Windows (ex.: POS_LICENSE_HMAC_SECRET antigo/curto) não podem ganhar —
-  // isso marcava licenças válidas como "tampering".
+  // Em instalado, o ficheiro do build é a fonte de verdade — variáveis de
+  // utilizador no Windows não podem ganhar. (Etapa 1F.5c: o injector nunca
+  // mais escreve POS_LICENSE_HMAC_SECRET aqui — ver scripts/inject-pos-build-secrets.mjs.)
   let preferPackagedSecrets = false;
   try {
     preferPackagedSecrets = Boolean(app?.isPackaged);
@@ -122,6 +145,7 @@ const resolveLocalMachineId = () => resolveSharedLocalMachineId();
 
 let backendProcess = null;
 let webProcess = null;
+let deviceAuthBridgeInfo = null;
 let mainWindow = null;
 let splashWindow = null;
 let backendStartupLogs = '';
@@ -294,7 +318,8 @@ const readStationRuntimeConfig = async () => {
     return {
       mode: String(parsed.mode ?? 'server').toLowerCase() === 'client' ? 'client' : 'server',
       serverApiBaseUrl: String(parsed.serverApiBaseUrl ?? '').trim(),
-      stationCode: String(parsed.stationCode ?? 'caixa-1').trim(),
+      stationCode: String(parsed.stationCode ?? 'caixa-1').trim(), // so etiqueta; NUNCA identidade
+      stationId: String(parsed.stationId ?? '').trim() || null, // nao secreto; a identidade real e station-identity.json + chave em safeStorage
       lanAccessEnabled: Boolean(parsed.lanAccessEnabled),
       discoveryEnabled: parsed.discoveryEnabled !== false,
     };
@@ -346,236 +371,14 @@ const waitForHttp = async (url, timeoutMs = 45000) => {
   throw new Error(`Timeout aguardando ${probeUrl}`);
 };
 
-const resolveLicenseHmacSecret = () =>
-  String(process.env.POS_LICENSE_HMAC_SECRET || process.env.LICENSE_HMAC_SECRET || '').trim();
-
-const allowUnsignedLicenseFallback = () => {
-  // Empacotado / produção: nunca aceitar licença sem assinatura HMAC.
-  if (isPackagedBuild() || String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
-    return false;
-  }
-  const raw = String(process.env.POS_LICENSE_ALLOW_UNSIGNED || '').trim().toLowerCase();
-  return ['1', 'true', 'yes', 'y'].includes(raw);
-};
-
-/** Lê license.json (selado ou legado) e migra one-shot para selado quando possível. */
-const readLocalLicensePayload = async (licensePath) => {
-  const secret = resolveLicenseHmacSecret();
-  const machineId = resolveLocalMachineId();
-  return readLicenseFileSealed(licensePath, {
-    secret,
-    machineId,
-    migrate: Boolean(secret),
-  });
-};
-
-/** Grava licença como envelope selado (após validação da consola / resign offline). */
-const writeLocalLicensePayload = async (licensePath, payload) => {
-  const secret = resolveLicenseHmacSecret();
-  const machineId =
-    String(payload?.machine_id ?? '').trim() || resolveLocalMachineId();
-  if (secret) {
-    await writeSealedLicenseFile(licensePath, payload, { secret, machineId });
-    return;
-  }
-  if (isPackagedBuild() || String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
-    throw new Error('POS_LICENSE_HMAC_SECRET obrigatório para gravar licença local.');
-  }
-  await ensureDir(path.dirname(licensePath));
-  await fs.writeFile(licensePath, JSON.stringify(payload, null, 2), 'utf8');
-};
-
-const buildCanonicalLicensePayload = (payload) => ({
-  tenant_id: String(payload?.tenant_id ?? '').trim(),
-  machine_id: String(payload?.machine_id ?? '').trim(),
-  expiration: String(payload?.expiration ?? payload?.expires_at ?? '').trim(),
-});
-
-const signCanonicalLicensePayload = (canonicalPayload, secret) =>
-  crypto
-    .createHmac('sha256', secret)
-    .update(JSON.stringify(canonicalPayload))
-    .digest('hex');
-
-const timingSafeEqualHex = (a, b) => {
-  const left = Buffer.from(String(a ?? ''), 'utf8');
-  const right = Buffer.from(String(b ?? ''), 'utf8');
-  if (left.length !== right.length) return false;
-  return crypto.timingSafeEqual(left, right);
-};
-
-const verifyLicenseSignature = (payload) => {
-  const signature = String(payload?.signature ?? '').trim();
-  const secret = resolveLicenseHmacSecret();
-  const allowUnsigned = allowUnsignedLicenseFallback();
-
-  if (!signature) {
-    if (allowUnsigned) return { ok: true, mode: 'unsigned-fallback' };
-    return { ok: false, reason: 'Licença sem assinatura (signature).' };
-  }
-  if (!secret) {
-    return { ok: false, reason: 'POS_LICENSE_HMAC_SECRET não configurado para validar assinatura.' };
-  }
-
-  const canonicalPayload = buildCanonicalLicensePayload(payload);
-  const expectedSignature = signCanonicalLicensePayload(canonicalPayload, secret);
-  if (!timingSafeEqualHex(signature, expectedSignature)) {
-    return { ok: false, reason: 'Assinatura da licença inválida (tampering detectado).' };
-  }
-
-  return { ok: true, mode: 'signed' };
-};
-
-const ACTIVATION_VOUCHER_KIND = 'pos_activation_v1';
-
-const buildCanonicalVoucherPayload = (payload) => ({
-  kind: ACTIVATION_VOUCHER_KIND,
-  tenant_id: String(payload?.tenant_id ?? '').trim(),
-  expiration: String(payload?.expiration ?? payload?.expires_at ?? '').trim(),
-  nonce: String(payload?.nonce ?? '').trim(),
-});
-
-const signCanonicalVoucherPayload = (canonicalPayload, secret) =>
-  crypto
-    .createHmac('sha256', secret)
-    .update(JSON.stringify(canonicalPayload))
-    .digest('hex');
-
-const verifyVoucherPayload = (payload) => {
-  const secret = resolveLicenseHmacSecret();
-  if (!secret) {
-    return { ok: false, reason: 'POS_LICENSE_HMAC_SECRET não configurado para validar o código.' };
-  }
-  if (String(payload?.kind ?? '').trim() !== ACTIVATION_VOUCHER_KIND) {
-    return { ok: false, reason: 'Código de ativação inválido.' };
-  }
-  const signature = String(payload?.signature ?? '').trim();
-  if (!signature) {
-    return { ok: false, reason: 'Código de ativação sem assinatura.' };
-  }
-  const canonical = buildCanonicalVoucherPayload(payload);
-  if (!canonical.tenant_id || !canonical.expiration || !canonical.nonce) {
-    return { ok: false, reason: 'Código de ativação incompleto.' };
-  }
-  const expectedSignature = signCanonicalVoucherPayload(canonical, secret);
-  if (!timingSafeEqualHex(signature, expectedSignature)) {
-    return { ok: false, reason: 'Assinatura do código de ativação inválida.' };
-  }
-  const expiresAt = new Date(canonical.expiration);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return { ok: false, reason: 'Data de expiração do código inválida.' };
-  }
-  if (Date.now() > expiresAt.getTime()) {
-    return { ok: false, reason: 'Este código de ativação já expirou.' };
-  }
-  return {
-    ok: true,
-    tenantId: canonical.tenant_id,
-    expirationIso: expiresAt.toISOString(),
-    nonce: canonical.nonce,
-  };
-};
-
-const materializeLicenseFromVerifiedVoucher = (payload, localMachineId, expirationIso) => {
-  const secret = resolveLicenseHmacSecret();
-  if (!secret) {
-    throw new Error('missing_license_secret');
-  }
-  const tenantId = String(payload?.tenant_id ?? '').trim();
-  const canonicalPayload = buildCanonicalLicensePayload({
-    tenant_id: tenantId,
-    machine_id: localMachineId,
-    expiration: expirationIso,
-  });
-  const signature = signCanonicalLicensePayload(canonicalPayload, secret);
-  return {
-    tenant_id: canonicalPayload.tenant_id,
-    machine_id: canonicalPayload.machine_id,
-    expiration: canonicalPayload.expiration,
-    signature,
-  };
-};
-
-const redeemReactivationTokenFromIssuer = async (rawInput, machineId) => {
-  const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
-  if (!issuerBaseUrl) {
-    return {
-      ok: false,
-      error:
-        'POS_LICENSE_ISSUER_BASE_URL não definido — não é possível validar o token de reativação.',
-    };
-  }
-  const url = `${issuerBaseUrl.replace(/\/$/, '')}/api/license-issuer/reactivate`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        token: normalizeReactivationTokenInput(rawInput) ?? String(rawInput ?? '').trim(),
-        machine_id: machineId,
-      }),
-      signal: ctrl.signal,
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || !body?.success) {
-      return { ok: false, error: body?.error || `${res.status} ${res.statusText}` };
-    }
-    const licenseKey = String(body.license_key ?? '').trim();
-    if (!licenseKey) {
-      return { ok: false, error: 'Resposta da consola sem license_key.' };
-    }
-    return { ok: true, licenseKey, license: body.license ?? null };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: msg };
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const parseLicenseInput = (rawInput) => {
-  const raw = String(rawInput ?? '').trim();
-  if (!raw) return { payload: null, error: 'Chave de licença vazia.' };
-
-  const normalizedInput = raw.startsWith('LICENSE_KEY=')
-    ? raw.slice('LICENSE_KEY='.length).trim()
-    : raw;
-
-  try {
-    const parsed = JSON.parse(normalizedInput);
-    if (parsed && typeof parsed === 'object') {
-      return { payload: parsed, error: null };
-    }
-  } catch {
-    // try base64(JSON)
-  }
-
-  try {
-    const base64Normalized = normalizedInput.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = base64Normalized.padEnd(Math.ceil(base64Normalized.length / 4) * 4, '=');
-    const decoded = Buffer.from(padded, 'base64').toString('utf8');
-    const parsed = JSON.parse(decoded);
-    if (parsed && typeof parsed === 'object') {
-      return { payload: parsed, error: null };
-    }
-  } catch {
-    // ignore and fallback error
-  }
-
-  if (isReactivationTokenInput(rawInput)) {
-    return {
-      payload: null,
-      error: 'Token errado.',
-    };
-  }
-
-  return {
-    payload: null,
-    error: 'Token errado.',
-  };
-};
+// Etapa 1F.5c (itens 5-10): toda a implementação HMAC de licença local
+// (assinatura/verificação de licença assinada, vouchers, canonicalização,
+// leitura/escrita selada baseada em segredo partilhado) foi removida do POS.
+// O único mecanismo comercial é Activation Token → Device Auth →
+// Offline License Ed25519 (activateViaDeviceActivationToken, abaixo, e
+// electron/deviceAuth/offlineLicenseClient.js). Nenhuma função de
+// sign/verify baseada em segredo partilhado permanece no runtime
+// distribuível — ver relatório da etapa para o inventário completo.
 
 const buildActivationCode = (machineId) => {
   const payload = {
@@ -584,80 +387,10 @@ const buildActivationCode = (machineId) => {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
 };
 
-const validateLicensePayload = ({ payload, expectedTenantId = null }) => {
-  if (!payload || typeof payload !== 'object') {
-    return { ok: false, reason: 'Licença inválida ou corrompida.' };
-  }
-
-  const signatureCheck = verifyLicenseSignature(payload);
-  if (!signatureCheck.ok) {
-    return { ok: false, reason: signatureCheck.reason || 'Assinatura inválida.' };
-  }
-
-  const canonicalPayload = buildCanonicalLicensePayload(payload);
-  const tenantId = canonicalPayload.tenant_id;
-  const machineId = canonicalPayload.machine_id;
-  const expiration = canonicalPayload.expiration;
-
-  if (!tenantId) return { ok: false, reason: 'Licença sem tenant_id.' };
-  if (!machineId) return { ok: false, reason: 'Licença sem machine_id.' };
-  if (!expiration) return { ok: false, reason: 'Licença sem data de expiração.' };
-
-  if (expectedTenantId && tenantId !== String(expectedTenantId).trim()) {
-    return {
-      ok: false,
-      reason: LICENSE_IN_USE_MESSAGE,
-    };
-  }
-
-  const localMachineId = resolveLocalMachineId();
-  if (machineId !== localMachineId) {
-    return {
-      ok: false,
-      reason: LICENSE_IN_USE_MESSAGE,
-    };
-  }
-
-  const expiresAt = new Date(expiration);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return { ok: false, reason: 'Data de expiração inválida na licença.' };
-  }
-  if (Date.now() > expiresAt.getTime()) {
-    return {
-      ok: false,
-      reason: `Licença expirada em ${expiresAt.toLocaleString()}.`,
-    };
-  }
-
-  return {
-    ok: true,
-    tenantId,
-    machineId,
-    expiration: expiresAt.toISOString(),
-  };
-};
-
-const resolveExpectedTenantId = async () => {
-  const status = await fetchSetupStatusReliable();
-  if (!status || typeof status !== 'object') return null;
-  // Antes da licença estar registada na BD, não comparar com o tenant seed (ex.: tenant-1):
-  // o tenant correcto vem da licença / voucher de ativação.
-  const licenseActivated = Boolean(
-    status.licenseActivated ?? status.license_activated
-  );
-  if (!licenseActivated) return null;
-  const id = status.tenantId ?? status.tenant_id;
-  const tenantId = id ? String(id).trim() : '';
-  // Seed legado nunca deve bloquear licença real (loja-teste, etc.).
-  if (!tenantId || tenantId.toLowerCase() === 'tenant-1') return null;
-  return tenantId;
-};
-
 const getActivationStateInternal = async () => {
   const machineId = resolveLocalMachineId();
   const activationCode = buildActivationCode(machineId);
   const { licensePath } = getRuntimePaths();
-  const expectedTenantId = await resolveExpectedTenantId();
 
   // Electron + npm run dev:tenant (API externa): confiar na licença da BD do tenant.
   if (shouldSkipLocalLicenseGate()) {
@@ -685,6 +418,35 @@ const getActivationStateInternal = async () => {
     };
   }
 
+  // Novo caminho Ed25519 (Etapa 1F.5b, item 20; corrigido em 1F.5c item 0) —
+  // verificado de novo AGORA, nunca a partir de cache (item 10). "Confirmação
+  // da BD" aqui significa EXCLUSIVAMENTE app_setup_state no SQLite local, via
+  // /setup/status da API local (127.0.0.1) — NUNCA Supabase/license-console.
+  // skipRegistrySync=1 é obrigatório neste ponto: sem ele, /setup/status
+  // tentaria syncLicenseRegistry() (chamada de rede real ao license-console)
+  // como efeito secundário antes de responder — exactamente a dependência
+  // cloud-no-startup-local que esta etapa proíbe. Licença Ed25519 válida +
+  // machine binding + não expirada + confirmação SQLite local é suficiente;
+  // nenhuma chamada de rede é feita nem esperada para autorizar o arranque.
+  const offlineLicenseState = getOfflineLicenseStateLocal({
+    userDataPath: app.getPath('userData'),
+    resolvePublicKeyPem: resolveOfflineLicensePublicKeyPem,
+    machineId,
+  });
+  if (offlineLicenseState.ok) {
+    const setupForOffline = await fetchSetupStatusReliable(6, 250, { skipRegistrySync: true });
+    if (setupForOffline?.licenseActivated) {
+      return {
+        success: true,
+        isActivated: true,
+        machineId,
+        activationCode,
+        licensePath,
+        reason: 'offline-ed25519',
+      };
+    }
+  }
+
   if (!(await fileExists(licensePath))) {
     return {
       success: true,
@@ -692,352 +454,152 @@ const getActivationStateInternal = async () => {
       machineId,
       activationCode,
       licensePath,
-      reason: 'Licença não encontrada nesta instalação.',
+      reason: 'Licença não encontrada nesta instalação. Introduza o token de activação.',
     };
   }
 
-  try {
-    const file = await readLocalLicensePayload(licensePath);
-    if (!file.ok) {
-      return {
-        success: true,
-        isActivated: false,
-        machineId,
-        activationCode,
-        licensePath,
-        reason: file.error || 'Licença inválida.',
-      };
-    }
-    const validation = validateLicensePayload({
-      payload: file.payload,
-      expectedTenantId,
+  // Etapa 1F.5c (item 7): qualquer license.json encontrado a partir daqui é
+  // SEMPRE legado (HMAC) — desde esta etapa o POS nunca mais escreve neste
+  // ficheiro (usa offline-license.json, Ed25519, verificado acima). Nunca
+  // validar/decifrar/converter uma licença legado localmente: sem fallback,
+  // sem migração automática — exige novo onboarding legítimo via backend.
+  return {
+    success: true,
+    isActivated: false,
+    machineId,
+    activationCode,
+    licensePath,
+    reason: 'LEGACY_LICENSE_UNSUPPORTED',
+  };
+};
+
+/**
+ * Novo onboarding Ed25519 (Etapa 1F.5b): Activation Token → Device Auth
+ * bootstrap → Device JWT → /device/offline-license → verificação local →
+ * armazenamento → persistência de estado local via API.
+ *
+ * Retry-safe após bootstrap (item 17/18): se já existe uma identidade Device
+ * Auth local (de uma tentativa anterior que falhou DEPOIS do bootstrap —
+ * ex.: emissão da licença ou escrita local falhou), reutiliza-a em vez de
+ * tentar bootstrap de novo com um token de activação já consumido (single-use).
+ * Nunca cria um device novo só porque um passo posterior falhou.
+ */
+const activateViaDeviceActivationToken = async (rawToken) => {
+  const userDataPath = app.getPath('userData');
+  const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
+  const machineId = resolveLocalMachineId();
+
+  const existingIdentity = getDeviceAuthIdentity({ userDataPath });
+  if (!existingIdentity?.hasCredentials) {
+    const bootstrap = await bootstrapDeviceAuth({
+      activationToken: rawToken,
+      machineId,
+      userDataPath,
+      issuerBaseUrl,
     });
-    if (!validation.ok) {
+    if (!bootstrap.ok) {
       return {
-        success: true,
-        isActivated: false,
-        machineId,
-        activationCode,
-        licensePath,
-        reason: validation.reason || 'Licença inválida.',
+        success: false,
+        error: bootstrap.error || 'Falha ao activar dispositivo.',
+        kind: bootstrap.kind,
       };
     }
-
-    const setup = await fetchSetupStatusReliable();
-    // Só considerar activado quando a API confirma license_activated. Nunca assumir "ok" em dev
-    // quando setup é null — isso saltava o ecrã de ativação e deixava o assistente com licença pendente.
-    const licenseAckedInDb = Boolean(setup?.licenseActivated);
-    if (!licenseAckedInDb) {
-      const reason = setup
-        ? 'Introduza de novo o código ou a chave de licença para registar nesta base de dados (instalação nova ou base reposta).'
-        : 'API local indisponível. Aguarde uns segundos ou reinicie a aplicação; depois introduza o código de ativação se for pedido.';
-      return {
-        success: true,
-        isActivated: false,
-        machineId,
-        activationCode,
-        licensePath,
-        reason,
-      };
-    }
-
-    return {
-      success: true,
-      isActivated: true,
-      machineId,
-      activationCode,
-      licensePath,
-    };
-  } catch {
-    return {
-      success: true,
-      isActivated: false,
-      machineId,
-      activationCode,
-      licensePath,
-      reason: 'Falha ao ler licença local.',
-    };
-  }
-};
-
-const tryOfflineReactivationInElectron = async (
-  rawLicenseKey,
-  machineId,
-  licensePath,
-  expectedTenantId,
-) => {
-  const tokenDigits = normalizeReactivationTokenInput(rawLicenseKey);
-  if (!tokenDigits) return { ok: false, skipped: true };
-
-  const secret = resolveLicenseHmacSecret();
-  if (!secret) {
-    return { ok: false, error: 'POS_LICENSE_HMAC_SECRET não configurado para validação offline.' };
   }
 
-  let localPayload;
+  // getValidAccessToken devolve o access token (string) ou null — nao um objecto { ok }.
+  const deviceAccessToken = await getValidDeviceAccessToken({ userDataPath, issuerBaseUrl });
+  if (!deviceAccessToken) {
+    // item 18: bootstrap já aconteceu — nunca pedir novo token de activação por isto.
+    return {
+      success: false,
+      error: 'Falha ao obter token de dispositivo (tente novamente).',
+      retryable: true,
+    };
+  }
+
+  const issuance = await requestOfflineLicense({
+    accessToken: deviceAccessToken,
+    issuerBaseUrl,
+  });
+  if (!issuance.ok) {
+    return { success: false, error: issuance.error, kind: issuance.kind, retryable: true };
+  }
+
+  // Verificação local ANTES de qualquer persistência (item 3) — nunca
+  // aceita/instala um envelope que não verifique.
+  const installLocal = installOfflineLicenseLocal({
+    envelope: issuance.envelope,
+    userDataPath,
+    resolvePublicKeyPem: resolveOfflineLicensePublicKeyPem,
+    machineId,
+  });
+  if (!installLocal.ok) {
+    return { success: false, error: installLocal.error, kind: installLocal.kind };
+  }
+
+  // Persistência de estado local (tenant/licença/admin) via API local — a API
+  // revalida a assinatura de novo (defesa em profundidade, nunca confia no
+  // chamador IPC). Se isto falhar, a licença já verificada continua em disco
+  // (item 18) — um novo pedido reutiliza o Device Auth existente e tenta
+  // instalar de novo, sem pedir novo activation token nem criar novo device.
   try {
-    const file = await readLocalLicensePayload(licensePath);
-    if (!file.ok || !file.payload) {
+    const apiPort = resolveAppApiPort();
+    const response = await fetch(`http://127.0.0.1:${apiPort}/setup/license/install-offline-license`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offline_license: issuance.envelope, machine_id: machineId }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
       return {
-        ok: false,
-        offlineInvalid: true,
-        error: file.error || 'Licença local não encontrada.',
+        success: false,
+        error: data?.error || data?.data?.error || 'Falha ao gravar estado local da licença.',
+        retryable: true,
       };
     }
-    localPayload = file.payload;
-  } catch {
-    return { ok: false, offlineInvalid: true, error: 'Licença local não encontrada.' };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'API local indisponível — tente novamente.',
+      retryable: true,
+    };
   }
 
-  const verified = verifyOfflineReactivationToken(tokenDigits, {
-    secret,
-    tenantId: localPayload.tenant_id,
-    expectedMachineId: machineId,
-    licenseMachineId: localPayload.machine_id,
-    voucherNonce: localPayload.voucher_nonce,
-    currentExpirationIso: localPayload.expiration || localPayload.expires_at,
-  });
-  if (!verified.ok) {
-    return { ok: false, offlineInvalid: true, error: verified.error || 'Token offline inválido.' };
-  }
-
-  const licenseToWrite = resignMachineLicensePayload(localPayload, verified.expirationIso, secret);
-  const validation = validateLicensePayload({
-    payload: licenseToWrite,
-    expectedTenantId,
-  });
-  if (!validation.ok) {
-    return { ok: false, error: validation.reason || 'Licença inválida após reativação offline.' };
-  }
-
-  await writeLocalLicensePayload(licensePath, licenseToWrite);
-  return { ok: true, offline: true };
+  return { success: true, machineId, offlineLicense: true };
 };
 
+// Etapa 1F.5c (itens 5-6): único mecanismo comercial do POS — Activation
+// Token → Device Auth → Offline License Ed25519. Nunca reconhece
+// série/voucher/licença assinada HMAC/reactivation token simétrico — sem
+// fallback automático, sem "hidden compatibility".
 const activateLicenseInternal = async (rawLicenseKey) => {
   const machineId = resolveLocalMachineId();
   const activationCode = buildActivationCode(machineId);
   const { licensePath } = getRuntimePaths();
-  const expectedTenantId = await resolveExpectedTenantId();
 
-  if (isReactivationTokenInput(rawLicenseKey)) {
-    // Preferir consola (marca used_at); offline só se rede/issuer indisponível.
-    const redeem = await redeemReactivationTokenFromIssuer(rawLicenseKey, machineId);
-    if (redeem.ok) {
-      const parsedInput = parseLicenseInput(redeem.licenseKey);
-      if (!parsedInput.payload) {
-        return {
-          success: false,
-          machineId,
-          activationCode,
-          licensePath,
-          error: parsedInput.error || 'Licença devolvida pela consola inválida.',
-        };
-      }
-      const validation = validateLicensePayload({
-        payload: parsedInput.payload,
-        expectedTenantId,
-      });
-      if (!validation.ok) {
-        return {
-          success: false,
-          machineId,
-          activationCode,
-          licensePath,
-          error: validation.reason || 'Licença inválida.',
-        };
-      }
-      const licenseToWrite =
-        redeem.license && typeof redeem.license === 'object'
-          ? redeem.license
-          : { ...parsedInput.payload, activated_at: new Date().toISOString() };
-      await writeLocalLicensePayload(licensePath, licenseToWrite);
-      return {
-        success: true,
-        machineId,
-        activationCode,
-        licensePath,
-      };
-    }
-
-    const issuerMsg = String(redeem.error ?? '');
-    const isTokenLifecycleError =
-      /já foi utilizado|Token expirado|não encontrado|não corresponde|não autorizada|Token inválido|Token errado/i.test(
-        issuerMsg,
-      );
-    const issuerUnavailable =
-      !issuerMsg ||
-      /POS_LICENSE_ISSUER_BASE_URL|fetch failed|Failed to fetch|ECONN|ENOTFOUND|ETIMEDOUT|aborted|network|timeout|503|502/i.test(
-        issuerMsg,
-      );
-
-    if (!isTokenLifecycleError && issuerUnavailable) {
-      const offline = await tryOfflineReactivationInElectron(
-        rawLicenseKey,
-        machineId,
-        licensePath,
-        expectedTenantId,
-      );
-      if (offline.ok) {
-        // Melhor esforço: consumir na consola quando voltar a rede.
-        void redeemReactivationTokenFromIssuer(rawLicenseKey, machineId).catch(() => null);
-        return {
-          success: true,
-          machineId,
-          activationCode,
-          licensePath,
-          offline: true,
-        };
-      }
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: offline.error || issuerMsg || 'Token de reativação inválido.',
-      };
-    }
-
-    return {
-      success: false,
-      machineId,
-      activationCode,
-      licensePath,
-      error: issuerMsg || 'Token de reativação inválido.',
-    };
+  if (isDeviceActivationTokenInput(rawLicenseKey)) {
+    const result = await activateViaDeviceActivationToken(rawLicenseKey);
+    return { ...result, machineId, activationCode, licensePath };
   }
-
-  const parsedInput = parseLicenseInput(rawLicenseKey);
-  if (!parsedInput.payload) {
-    return {
-      success: false,
-      machineId,
-      activationCode,
-      licensePath,
-      error: parsedInput.error || 'Chave de licença inválida.',
-    };
-  }
-
-  const rawPayload = parsedInput.payload;
-  const isActivationVoucher =
-    rawPayload &&
-    typeof rawPayload === 'object' &&
-    String(rawPayload.kind ?? '').trim() === ACTIVATION_VOUCHER_KIND;
-
-  if (isActivationVoucher) {
-    const voucherCheck = verifyVoucherPayload(rawPayload);
-    if (!voucherCheck.ok) {
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: voucherCheck.reason || 'Código de ativação inválido.',
-      };
-    }
-    if (expectedTenantId && voucherCheck.tenantId !== String(expectedTenantId).trim()) {
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: LICENSE_IN_USE_MESSAGE,
-      };
-    }
-    let finalLicense;
-    try {
-      finalLicense = materializeLicenseFromVerifiedVoucher(
-        rawPayload,
-        machineId,
-        voucherCheck.expirationIso
-      );
-    } catch {
-      return {
-        success: false,
-        machineId,
-        activationCode,
-        licensePath,
-        error: 'Falha ao gerar licença para esta máquina.',
-      };
-    }
-    await writeLocalLicensePayload(licensePath, {
-      ...finalLicense,
-      activated_at: new Date().toISOString(),
-      voucher_nonce: voucherCheck.nonce,
-    });
-    return {
-      success: true,
-      machineId,
-      activationCode,
-      licensePath,
-    };
-  }
-
-  const validation = validateLicensePayload({
-    payload: parsedInput.payload,
-    expectedTenantId,
-  });
-  if (!validation.ok) {
-    return {
-      success: false,
-      machineId,
-      activationCode,
-      licensePath,
-      error: validation.reason || 'Licença inválida.',
-    };
-  }
-
-  await writeLocalLicensePayload(licensePath, {
-    ...parsedInput.payload,
-    activated_at: new Date().toISOString(),
-  });
 
   return {
-    success: true,
+    success: false,
     machineId,
     activationCode,
     licensePath,
+    error: 'Token de activação inválido. Peça um novo token ao seu fornecedor.',
   };
 };
 
-const readAndValidateLicenseFromFile = async (expectedTenantId) => {
-  const { licensePath } = getRuntimePaths();
-  if (!(await fileExists(licensePath))) {
-    return { ok: false, reason: 'Ficheiro local de licença não encontrado.' };
-  }
-
-  try {
-    const file = await readLocalLicensePayload(licensePath);
-    if (!file.ok) {
-      return { ok: false, reason: file.error || 'Ficheiro local de licença está inválido.' };
-    }
-    return validateLicensePayload({ payload: file.payload, expectedTenantId });
-  } catch {
-    return { ok: false, reason: 'Ficheiro local de licença está inválido.' };
-  }
-};
-
-/** Alinha o processo Node da API com o tenant da licença (ficheiro escrito pelo Electron). */
-const licenseEnvForBackend = async () => {
-  if (!isPackagedBuild()) return {};
-  const { licensePath } = getRuntimePaths();
-  if (!(await fileExists(licensePath))) return {};
-  try {
-    const file = await readLocalLicensePayload(licensePath);
-    if (!file.ok || !file.payload) return {};
-    const v = validateLicensePayload({ payload: file.payload, expectedTenantId: null });
-    if (!v.ok || !v.tenantId) return {};
-    const storeName = String(
-      file.payload?.store_name ?? file.payload?.tenant_name ?? file.payload?.storeName ?? '',
-    ).trim();
-    return {
-      DEFAULT_TENANT_ID: String(v.tenantId).trim(),
-      DEFAULT_TENANT_NAME: storeName || 'Loja',
-    };
-  } catch {
-    return {};
-  }
-};
+/**
+ * Etapa 1F.5c: deixou de derivar DEFAULT_TENANT_ID do legacy license.json
+ * (nunca mais escrito). O tenant da instalação Ed25519 já fica persistido em
+ * `licenses`/`tenants` pela própria API (installOfflineLicenseState) — a API
+ * resolve o tenant a partir da BD, nunca precisando deste env var para o
+ * caminho novo. Mantido como stub (nunca lança, nunca bloqueia arranque) só
+ * para não obrigar a tocar em todos os chamadores de spawnNodeService.
+ */
+const licenseEnvForBackend = async () => ({});
 
 /** Raiz lógica do app (app.asar) — resolução de `node_modules` no pacote. */
 const resolvePackagedAppRoot = () => app.getAppPath();
@@ -1228,16 +790,27 @@ const startBackend = async () => {
   const backendEntry = await resolveBackendEntry();
   const licenseEnv = await licenseEnvForBackend();
   const issuerBaseUrl = String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim();
-  const licenseHmacSecret = String(
-    process.env.POS_LICENSE_HMAC_SECRET ?? process.env.LICENSE_HMAC_SECRET ?? '',
-  ).trim();
+  // Etapa 1F.5c: POS_LICENSE_HMAC_SECRET deixou de ser lida/encaminhada aqui —
+  // o POS runtime não depende dela (licença offline Ed25519 + Device Auth).
+  // Nunca reintroduzir esta variável no env do processo API filho.
   const supabaseUrl = String(
     process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
   ).trim();
-  const supabaseServiceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+  // Etapa 1F.4: SUPABASE_SERVICE_ROLE_KEY deixou de ser lida/encaminhada aqui de
+  // propósito — o POS runtime não depende dela desde a Etapa 1F.3 (Device JWT).
+  // Nunca reintroduzir esta variável no env do processo API filho.
   const supabaseAnonKey = String(
     process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
   ).trim();
+  // Etapa 1G.4 (Fase 1 do Backoffice): o processo API precisa de saber a SUA PRÓPRIA
+  // identidade de Device para o pull de stock_movements distinguir "movimento que eu
+  // próprio enviei" (nunca reaplicar) de "movimento de outro Device/Backoffice" (aplicar
+  // uma vez). Reutiliza a identidade Device Auth já existente e protegida por safeStorage
+  // (electron/deviceAuth) — nunca um armazenamento paralelo. device_id não é segredo (já
+  // viaja em claro dentro do JWT que o próprio processo API envia à cloud); só o refresh
+  // token é que nunca sai daqui.
+  const deviceIdentity = getDeviceAuthIdentity({ userDataPath: paths.userDataPath });
+  const deviceId = deviceIdentity?.deviceId ? String(deviceIdentity.deviceId).trim() : '';
 
   const lanAccess = Boolean(stationRuntime.lanAccessEnabled);
   const bindHost = lanAccess ? '0.0.0.0' : '127.0.0.1';
@@ -1275,6 +848,17 @@ const startBackend = async () => {
     throw err;
   }
 
+  // Etapa 1G.3.6: identidade TLS do Server (chave so cifrada com safeStorage). Sem ela a API nao abre a LAN.
+  let serverTls = null;
+  if (lanAccess) {
+    try {
+      serverTls = await getOrCreateServerTlsIdentity({ userDataPath: paths.userDataPath, safeStorage });
+      if (!serverTls) electronLogError('[electron] LAN activa mas safeStorage indisponivel: sem identidade TLS, a LAN fica desligada.');
+    } catch (err) {
+      electronLogError('[electron] Falha ao preparar a identidade TLS do Server:', err);
+    }
+  }
+
   setSplashStatus('A iniciar base de dados…');
   backendStartupLogs = '';
   backendProcess = spawnNodeService({
@@ -1294,11 +878,21 @@ const startBackend = async () => {
       POS_DB_EXISTED_BEFORE_BOOT: dbExistedBeforeBoot ? 'true' : 'false',
       POS_DB_ENCRYPTION_KEY: dbEncryptionKeyHex,
       POS_DB_ENCRYPTION: '1',
+      ...(serverTls ? { POS_TLS_CERT_PEM: serverTls.certPem, POS_TLS_KEY_PEM: serverTls.keyPem } : {}),
       ...(issuerBaseUrl ? { POS_LICENSE_ISSUER_BASE_URL: issuerBaseUrl } : {}),
-      ...(licenseHmacSecret ? { POS_LICENSE_HMAC_SECRET: licenseHmacSecret } : {}),
       ...(supabaseUrl ? { SUPABASE_URL: supabaseUrl } : {}),
-      ...(supabaseServiceRoleKey ? { SUPABASE_SERVICE_ROLE_KEY: supabaseServiceRoleKey } : {}),
+      // Etapa 1F.4: nunca encaminhar SUPABASE_SERVICE_ROLE_KEY para api/server.js —
+      // ver comentário acima. O processo API nunca recebe esta variável.
       ...(supabaseAnonKey ? { SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
+      ...(deviceId ? { POS_DEVICE_ID: deviceId } : {}),
+      // Ponte Device Auth (Etapa 1F.2): só URL+segredo efémero da ponte local —
+      // NUNCA o refresh token. A API pede um access token actual por pedido.
+      ...(deviceAuthBridgeInfo?.url
+        ? {
+            POS_DEVICE_AUTH_BRIDGE_URL: deviceAuthBridgeInfo.url,
+            POS_DEVICE_AUTH_BRIDGE_SECRET: deviceAuthBridgeInfo.secret,
+          }
+        : {}),
       ...licenseEnv,
       // Nunca activar AUTH_ALLOW_LEGACY_LOCAL em builds empacotados: o proxy
       // Next (/pos-backend → 127.0.0.1) faria a API tratar pedidos LAN como
@@ -1316,6 +910,19 @@ const startBackend = async () => {
     setSplashStatus('Base de dados pronta');
   } catch (error) {
     const details = backendStartupLogs.trim();
+    // Etapa 1F.6.1 (item 3): reutiliza o MESMO mecanismo de erro fatal de
+    // arranque (dialog.showErrorBox mais abaixo) mas com uma mensagem
+    // específica quando a causa é a BD existente não poder ser aberta/
+    // validada — nunca apaga/renomeia/substitui nada, só informa que os
+    // dados precisam de recuperação/restauro técnico.
+    if (details.includes('DATABASE_CORRUPTED')) {
+      throw new Error(
+        'A base de dados existente não pôde ser aberta ou validada (ficheiro corrompido ou chave de encriptação incorrecta).\n\n' +
+          'Os seus dados NÃO foram apagados nem substituídos — a aplicação recusou-se a continuar para os proteger.\n\n' +
+          'Contacte o suporte técnico para recuperação/restauro (ex.: a partir de uma cópia de segurança em Definições → Cópias de segurança).\n\n' +
+          `Detalhe técnico:\n${details}`,
+      );
+    }
     const suffix = details ? `\n\n${details}` : '';
     throw new Error(`Falha ao iniciar backend.${suffix || ` ${String(error?.message ?? error)}`}`);
   }
@@ -1361,11 +968,13 @@ const stopServices = () => {
   if (backendProcess && !backendProcess.killed) backendProcess.kill();
   webProcess = null;
   backendProcess = null;
+  stopDeviceAuthBridge();
 };
 
-const fetchSetupStatus = async () => {
+const fetchSetupStatus = async ({ skipRegistrySync = false } = {}) => {
   try {
-    const response = await fetch(`http://127.0.0.1:${resolveAppApiPort()}/setup/status`);
+    const query = skipRegistrySync ? '?skipRegistrySync=1' : '';
+    const response = await fetch(`http://127.0.0.1:${resolveAppApiPort()}/setup/status${query}`);
     if (!response.ok) return null;
     const payload = await response.json().catch(() => null);
     if (payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object') {
@@ -1378,9 +987,9 @@ const fetchSetupStatus = async () => {
 };
 
 /** Evita falso "licença não ack" / "precisa reintroduzir" quando a API ainda não respondeu ao primeiro fetch. */
-const fetchSetupStatusReliable = async (attempts = 6, delayMs = 250) => {
+const fetchSetupStatusReliable = async (attempts = 6, delayMs = 250, opts = {}) => {
   for (let i = 0; i < attempts; i += 1) {
-    const row = await fetchSetupStatus();
+    const row = await fetchSetupStatus(opts);
     if (row && typeof row === 'object') return row;
     if (i < attempts - 1) {
       await new Promise((r) => setTimeout(r, delayMs));
@@ -1658,6 +1267,29 @@ const createWindow = async (opts = {}) => {
   }
   mainWindow = win;
 
+  // Etapa 1F.6 (item 42): hardening pequeno e seguro — a app nunca precisa
+  // de abrir popups nem navegar para fora da própria origem local
+  // (127.0.0.1:porta ou data: do ecrã de licença bloqueada). Sem isto, uma
+  // navegação de topo (ex.: via XSS injectado, link malicioso) levaria o
+  // preload.js/contextBridge (window.electronAPI, com acesso a impressão,
+  // licenciamento, Device Auth) para dentro de uma página externa arbitrária.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event, targetUrl) => {
+    try {
+      const target = new URL(targetUrl);
+      const isLoopbackHttp =
+        (target.protocol === 'http:' || target.protocol === 'https:') &&
+        (target.hostname === '127.0.0.1' || target.hostname === 'localhost');
+      const isDataUrl = target.protocol === 'data:';
+      if (!isLoopbackHttp && !isDataUrl) {
+        event.preventDefault();
+        electronLogWarn('[electron] Navegação bloqueada (fora da origem local):', targetUrl);
+      }
+    } catch {
+      event.preventDefault();
+    }
+  });
+
   if (blockedReason) {
     setSplashStatus('Licença inválida');
     await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildLicenseBlockedHtml(blockedReason))}`);
@@ -1735,11 +1367,21 @@ ipcMain.handle('station:getRuntimeConfig', async () => {
 
 ipcMain.handle('station:saveRuntimeConfig', async (_event, patch) => {
   try {
-    const cfg = await writeStationRuntimeConfig(patch ?? {});
+    // o renderer nunca escolhe o stationId (so o pairing o define)
+    const { stationId: _ignored, ...safePatch } = patch ?? {};
+    const cfg = await writeStationRuntimeConfig(safePatch);
     return { success: true, ...cfg };
   } catch (error) {
     return { success: false, error: String(error?.message ?? error) };
   }
+});
+
+registerStationIpc({
+  ipcMain,
+  safeStorage,
+  getUserDataPath: () => getRuntimePaths().userDataPath,
+  readRuntimeConfig: readStationRuntimeConfig,
+  writeRuntimeConfig: writeStationRuntimeConfig,
 });
 
 ipcMain.handle('station:scanLan', async () => {
@@ -1768,26 +1410,21 @@ ipcMain.handle('station:scanLan', async () => {
     const servers = [];
     const seen = new Set();
     const probe = async (host, port) => {
-      const url = `http://${host}:${port}`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 350);
+      // 1G.3.6: descoberta por HTTPS, SEM confianca (so localiza; nao envia credenciais nem estabelece identidade)
+      const url = `https://${host}:${port}`;
       try {
-        const res = await fetch(`${url}/station/discover`, { signal: controller.signal });
-        clearTimeout(timer);
-        if (!res.ok) return;
-        const json = await res.json().catch(() => null);
+        const probe = await probeUnpinned(`${url}/station/discover`, { timeoutMs: 700 });
+        if (probe.status !== 200) return;
+        const json = probe.json;
         const data = json?.success ? json.data : json;
         if (data?.app !== 'posly') return;
         if (seen.has(url)) return;
         seen.add(url);
-        servers.push({
-          url,
-          store_name: data.store_name,
-          tenant_id: data.tenant_id,
-          port: data.port || port,
-        });
+        // discovery minimo (1G.3.5): so URL/porta; nenhuma identidade da loja e exposta
+        // fingerprint OBSERVADA (nao confiavel): so para o admin comparar com a que o Server mostra
+        servers.push({ url, port: data.port || port, observedFingerprint: probe.fingerprint });
       } catch {
-        clearTimeout(timer);
+        // sem resposta TLS/HTTP neste host
       }
     };
     const tasks = [];
@@ -1846,6 +1483,53 @@ ipcMain.handle('activation:activate', async (_event, payload) => {
       success: false,
       error: String(error?.message ?? error ?? 'Falha ao ativar licença.'),
     };
+  }
+});
+
+// Device-auth cloud (Etapa 1F.1) — canais explícitos, nunca genéricos.
+// Nenhum destes devolve o refresh token à renderer; só metadados e o
+// resultado success/error do bootstrap (nem esse devolve o refresh token —
+// só device_id + expiração do access token, para a UI confirmar sucesso).
+ipcMain.handle('device-auth:bootstrap', async (_event, payload) => {
+  try {
+    const activationToken = String(payload?.activationToken ?? '').trim();
+    if (!activationToken) {
+      return { ok: false, error: 'Token de activação é obrigatório.' };
+    }
+    const result = await bootstrapDeviceAuth({
+      activationToken,
+      machineId: resolveLocalMachineId(),
+      stationCode: payload?.stationCode ?? null,
+      userDataPath: app.getPath('userData'),
+      issuerBaseUrl: String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim(),
+    });
+    if (!result.ok) {
+      return { ok: false, kind: result.kind, error: result.error };
+    }
+    return {
+      ok: true,
+      deviceId: result.deviceId,
+      accessTokenExpiresAt: result.accessTokenExpiresAt,
+    };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error ?? 'Falha ao activar dispositivo.') };
+  }
+});
+
+ipcMain.handle('device-auth:getStatus', async () => {
+  try {
+    return { ok: true, ...getDeviceAuthIdentity({ userDataPath: app.getPath('userData') }) };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('device-auth:clearCredentials', async () => {
+  try {
+    clearDeviceAuthCredentials({ userDataPath: app.getPath('userData') });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
   }
 });
 
@@ -2738,6 +2422,34 @@ app.whenReady().then(async () => {
         reason: migration?.reason ?? 'ok',
       });
     }
+    // Ponte Device Auth (Etapa 1F.2, itens 26-31): servidor loopback local,
+    // sem custo de rede real (bind local), por isso pode ser aguardado aqui
+    // sem violar "nunca bloquear o arranque" — é só preparação local, não uma
+    // chamada à cloud. O processo da API (syncService.js) recebe a URL+segredo
+    // via env do spawn (startBackend), nunca o refresh token.
+    try {
+      deviceAuthBridgeInfo = await startDeviceAuthBridge({
+        userDataPath: app.getPath('userData'),
+        issuerBaseUrl: String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim(),
+      });
+    } catch (bridgeError) {
+      electronLogWarn('electron.device_auth_bridge_failed', 'Falha a iniciar a ponte de device auth — sync cloud ficará indisponível', {
+        module: 'main',
+        reason: String(bridgeError?.message ?? bridgeError),
+      });
+      deviceAuthBridgeInfo = null;
+    }
+
+    // Device-auth cloud (Etapa 1F.1): nunca aguardado, nunca pode atrasar nem
+    // falhar o arranque — só actualiza o access token em memória se conseguir.
+    // Falha/ausência de rede aqui nunca bloqueia login local, venda, pagamento,
+    // impressão, stock local ou a fila de sync (essa continua OFFLINE_ONLY/
+    // WAITING_FOR_AUTH até haver um access token válido).
+    void initDeviceAuthNonBlocking({
+      userDataPath: app.getPath('userData'),
+      issuerBaseUrl: String(process.env.POS_LICENSE_ISSUER_BASE_URL ?? '').trim(),
+    }).catch(() => {});
+
     // API + frontend standalone em paralelo (antes era sequencial e somava os tempos).
     setSplashStatus('A iniciar serviços…');
     await Promise.all([startBackend(), startStandaloneWeb()]);
@@ -2754,7 +2466,11 @@ app.whenReady().then(async () => {
       error: String(error?.message ?? error),
     });
     closeSplashWindow();
-    dialog.showErrorBox('Falha ao iniciar', String(error?.message ?? error ?? 'Erro desconhecido'));
+    const errorMessage = String(error?.message ?? error ?? 'Erro desconhecido');
+    const dialogTitle = errorMessage.includes('base de dados existente não pôde ser aberta')
+      ? 'Base de dados corrompida'
+      : 'Falha ao iniciar';
+    dialog.showErrorBox(dialogTitle, errorMessage);
     stopServices();
     app.quit();
     return;

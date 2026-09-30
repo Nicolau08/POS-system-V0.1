@@ -71,6 +71,13 @@ function shouldSkipPath(relPosix) {
   if (lower.endsWith('.map') || lower.endsWith('.ts') || lower.endsWith('.tsx')) return true;
   if (lower.endsWith('.d.ts')) return true;
   if (lower.includes('.env')) return true;
+  // Etapa 1F.4 (item 9): ferramentas CLI de dev sob api/scripts/ (ex.:
+  // stock-flow-audit.mjs, que ainda lê SUPABASE_SERVICE_ROLE_KEY manualmente)
+  // nunca são chamadas pelo runtime empacotado — não têm lugar no instalador.
+  if (lower === 'scripts' || lower.startsWith('scripts/')) return true;
+  // Etapa 1G.3-FINAL: dados de runtime e segredos de desenvolvimento NUNCA vao no instalador (achado real: api/database.db e
+  // api/auth-hmac.secret, ficheiros gitignored do ambiente de dev, estavam a ser copiados para o pack).
+  if (/\.(db|db-wal|db-shm|db-journal|sqlite|sqlite3|secret|pem|key|crt|enc|pfx|p12)$/.test(lower)) return true;
   return false;
 }
 
@@ -179,6 +186,7 @@ function writeBuilderConfig(build) {
       '!**/.env',
       '!**/.env.*',
       '!**/license-console/**',
+      '!**/backoffice/**',
       '!**/.dev-tenants/**',
       '!**/__tests__/**',
       '!**/*.test.js',

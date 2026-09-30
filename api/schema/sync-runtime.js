@@ -35,6 +35,61 @@ export function defineSyncRuntimeSchema(db, { safeRun }) {
     }
   });
 
+  // Etapa 1G.2B.4: espelho local de store_products (so a Store deste Device) + marca de catalogo por Store activo.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS store_products (
+      tenant_id TEXT NOT NULL,
+      product_cloud_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'discontinued')),
+      price_override REAL,
+      min_stock REAL,
+      cloud_updated_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, product_cloud_id)
+    )
+  `);
+  // Etapa 1G.2B.5: transferencias Store -> Store (documento local; direction 'out' = origem, 'in' = destino).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS stock_transfers (
+      id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('out', 'in')),
+      tenant_id TEXT NOT NULL,
+      to_store_id TEXT NOT NULL,
+      from_warehouse_id TEXT NOT NULL,
+      to_warehouse_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('draft', 'dispatched', 'received', 'cancelled')),
+      note TEXT,
+      push_state TEXT NOT NULL DEFAULT 'local' CHECK (push_state IN ('local', 'pending', 'synced', 'rejected')),
+      divergence INTEGER NOT NULL DEFAULT 0,
+      cancel_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      dispatched_at TEXT,
+      received_at TEXT,
+      cancelled_at TEXT,
+      PRIMARY KEY (id, direction)
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS stock_transfer_items (
+      transfer_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_cloud_id TEXT NOT NULL,
+      qty_requested REAL NOT NULL,
+      qty_sent REAL,
+      qty_received REAL,
+      cost_layers TEXT,
+      PRIMARY KEY (transfer_id, direction, product_id)
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS store_catalog_state (
+      tenant_id TEXT PRIMARY KEY,
+      initialized_at TEXT NOT NULL
+    )
+  `);
+
   db.run(`
     CREATE TABLE IF NOT EXISTS checkout_idempotency (
       tenant_id TEXT NOT NULL,

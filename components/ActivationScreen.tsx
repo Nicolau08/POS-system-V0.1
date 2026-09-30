@@ -70,10 +70,11 @@ export default function ActivationScreen({
       <section className="w-full max-w-xl rounded border border-pos-border bg-pos-surface p-6 shadow-xl">
         <h1 className="text-xl font-semibold text-pos-fg">Renovação / reativação da licença</h1>
         <p className="mt-2 text-sm text-pos-muted">
-          A <strong className="text-pos-fg">primeira instalação</strong> usa o número de série. Neste ecrã pode{' '}
-          <strong className="text-pos-fg">renovar ou reativar</strong>: cole o <strong className="text-pos-fg">número de série</strong>, o{' '}
-          <strong className="text-pos-fg">token de 12 dígitos</strong> da consola, ou o código Base64/JSON legado. Depois de
-          ativar, reinicie se for pedido.
+          A <strong className="text-pos-fg">primeira instalação</strong> usa o número de série ou o{' '}
+          <strong className="text-pos-fg">token de activação de dispositivo</strong> (dado pelo seu fornecedor). Neste
+          ecrã pode também <strong className="text-pos-fg">renovar ou reativar</strong>: cole o{' '}
+          <strong className="text-pos-fg">token de 12 dígitos</strong> da consola, ou o código Base64/JSON legado.
+          Depois de ativar, reinicie se for pedido.
         </p>
         <p className="mt-2 text-sm text-pos-muted">
           Desvincular na consola não apaga a licença neste PC. Use <strong className="text-pos-fg">Limpar licença local</strong>{' '}

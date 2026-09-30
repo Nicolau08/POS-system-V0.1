@@ -586,3 +586,63 @@ export async function transferWarehouseStock({
     consumptions: outResult.consumptions,
   };
 }
+
+/**
+ * Etapa 1G.2B.5 - credita um armazém a partir de camadas de custo conhecidas (recepção de transferência Store→Store,
+ * ou devolução compensatória ao cancelar). O custo FIFO enviado viaja: uma camada por camada de origem
+ * (repartindo `qty` pela ordem; o excedente fica ao último custo). Nunca toca noutro armazém.
+ */
+export async function creditWarehouseFromLayers({
+  tenantId,
+  warehouseId,
+  productId,
+  qty,
+  layers = [],
+  movementType = 'transfer_in',
+  referenceId,
+  fromWarehouseId = null,
+  toWarehouseId = null,
+} = {}) {
+  const q = Number(qty);
+  const pid = Number(productId);
+  if (!tenantId || !warehouseId) throw new HttpError(400, 'tenant/armazém obrigatório');
+  if (!Number.isFinite(q) || q <= QTY_EPS) throw new HttpError(400, 'Quantidade inválida');
+  const wh = await getWarehouseById(String(warehouseId), tenantId);
+  if (!wh) throw new HttpError(400, 'Armazém inválido');
+  const now = new Date().toISOString();
+
+  await insertStockMovementWithWarehouse([
+    crypto.randomUUID(),
+    tenantId,
+    pid,
+    movementType,
+    q,
+    String(referenceId),
+    String(warehouseId),
+    fromWarehouseId ? String(fromWarehouseId) : null,
+    toWarehouseId ? String(toWarehouseId) : null,
+    now,
+    now,
+  ]);
+
+  const productRow = await getProductStockMeta(pid, tenantId);
+  if (shouldTrackStockLayers(productRow)) {
+    let remaining = q;
+    const usable = (Array.isArray(layers) ? layers : []).filter((l) => l && Number(l.qty) > QTY_EPS);
+    let lastCost = Number(productRow?.cost ?? 0) || 0;
+    for (const l of usable) {
+      if (remaining <= QTY_EPS) break;
+      const take = Math.min(Number(l.qty), remaining);
+      lastCost = Number(l.unit_cost) || 0;
+      await addLayer({ tenantId, warehouseId, productId: pid, qty: take, unitCost: lastCost, lotCode: l.lot_code ?? null, sourceRef: String(referenceId), receivedAt: now, now });
+      remaining -= take;
+    }
+    if (remaining > QTY_EPS) {
+      await addLayer({ tenantId, warehouseId, productId: pid, qty: remaining, unitCost: lastCost, sourceRef: String(referenceId), receivedAt: now, now });
+    }
+  }
+  await upsertWarehouseStockDelta(String(warehouseId), pid, tenantId, q, now);
+  await refreshProductStockCache(pid, tenantId, now);
+  if (shouldTrackStockLayers(productRow)) await recalcProductCostCache(pid, tenantId, now);
+  return { warehouseId: String(warehouseId), qty: q };
+}

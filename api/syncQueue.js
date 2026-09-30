@@ -1,23 +1,10 @@
 import { get, run } from './dbUtils.js';
+import { buildDedupeKey, buildSyncRef } from './syncQueueKeys.js';
 
 function resolveTenantIdFromPayload(payload) {
   const tenantId = String(payload?.tenant_id ?? payload?.tenantId ?? '').trim();
   if (!tenantId) throw new Error('enqueueSync requires payload.tenant_id');
   return tenantId;
-}
-
-function buildDedupeKey(type, payload, tenantId) {
-  if (type === 'product' && payload?.id) return `${tenantId}:product:${Number(payload.id)}`;
-  if (type === 'customer' && payload?.id) return `${tenantId}:customer:${Number(payload.id)}`;
-  if (type === 'category' && payload?.id) return `${tenantId}:category:${Number(payload.id)}`;
-  return null;
-}
-
-function buildSyncRef(type, payload, tenantId) {
-  if (payload?.syncRef) return `${tenantId}:${String(payload.syncRef)}`;
-  if (type === 'sale' && payload?.local_sale_id) return `${tenantId}:sale:${payload.local_sale_id}`;
-  if (payload?.id != null) return `${tenantId}:${type}:${payload.id}`;
-  return null;
 }
 
 async function enqueueSync(type, payload, options = {}) {

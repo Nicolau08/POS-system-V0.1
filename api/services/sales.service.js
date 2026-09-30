@@ -11,6 +11,7 @@ import {
   withPaginationPayload,
 } from './queryOptions.service.js';
 import { buildStockAdjustmentsFromCart } from './product.service.js';
+import { findUnsellableCartItems } from './storeCatalog.service.js';
 import {
   applyWarehouseDelta,
   getWarehouseQuantity,
@@ -45,6 +46,70 @@ function resolveStoredPaymentMethod(rawMethod) {
   if (normalized === 'cash' || normalized === 'dinheiro') return 'Dinheiro';
   if (isAccountReceivablePaymentMethod(raw)) return 'conta corrente';
   return raw;
+}
+
+function round2Money(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/** Mesma heurística de cash-session.service.js::isCashTender — duplicada de propósito
+ * (módulos independentes), nunca a autoridade final: quando sale_payments existe para a
+ * venda, cash-session usa SEMPRE o `method` aqui gravado, nunca volta a inferir por
+ * substring. Isto só decide QUAL tender absorve o troco no momento da venda. */
+function isCashMethodLabel(method) {
+  const raw = String(method ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+  if (!raw) return false;
+  return raw === 'cash' || raw.includes('cash') || raw.includes('dinheiro') || raw.includes('numerario') || raw.includes('especie');
+}
+
+/**
+ * Pilot Gate POS/Dinheiro — breakdown real por tender, nunca inferido depois de
+ * payment_method. amount = valor que conta para a venda (SUM(amount) === totalNumber,
+ * sempre, por construção); tendered_amount só gravado quando difere de amount (ex.:
+ * dinheiro recebido acima do total). Troco presume-se SEMPRE devolvido em dinheiro
+ * (único caso realista numa loja física) — nunca infla o dinheiro líquido esperado no
+ * caixa, mesmo em pagamento misto.
+ */
+function buildTenderRows({ isProforma, isMultiplePayment, payments, paymentMethod, receivedAmount, totalNumber }) {
+  if (isProforma) return [];
+
+  if (isMultiplePayment) {
+    const raw = Array.isArray(payments)
+      ? payments
+          .map((p) => ({ method: resolveStoredPaymentMethod(p?.method) || String(p?.method ?? '').trim(), amount: round2Money(p?.amount) }))
+          .filter((p) => p.method && p.amount > 0)
+      : [];
+    if (raw.length === 0) return [];
+
+    const tenderedSum = round2Money(raw.reduce((acc, p) => acc + p.amount, 0));
+    let change = round2Money(Math.max(0, tenderedSum - totalNumber));
+
+    const rows = raw.map((p) => ({ method: p.method, amount: p.amount, tendered_amount: null }));
+    // Absorve o troco pelas linhas em dinheiro primeiro (de trás para a frente), depois
+    // por qualquer outra linha se sobrar (anomalia de digitação — nunca deve acontecer
+    // numa venda real, mas a invariante SUM(amount)=total nunca pode falhar por causa disso).
+    for (let pass = 0; pass < 2 && change > 0.001; pass += 1) {
+      for (let i = rows.length - 1; i >= 0 && change > 0.001; i -= 1) {
+        if (pass === 0 && !isCashMethodLabel(rows[i].method)) continue;
+        const take = Math.min(rows[i].amount, change);
+        if (take <= 0) continue;
+        rows[i].tendered_amount = rows[i].amount;
+        rows[i].amount = round2Money(rows[i].amount - take);
+        change = round2Money(change - take);
+      }
+    }
+    return rows.filter((r) => r.amount > 0 || r.tendered_amount != null);
+  }
+
+  const method = resolveStoredPaymentMethod(paymentMethod) || String(paymentMethod ?? '').trim();
+  if (!method) return [];
+  const receivedRaw = receivedAmount === '' || receivedAmount == null ? null : Number(receivedAmount);
+  const tendered = isCashMethodLabel(method) && Number.isFinite(receivedRaw) && receivedRaw > totalNumber ? round2Money(receivedRaw) : null;
+  return [{ method, amount: round2Money(totalNumber), tendered_amount: tendered }];
 }
 
 const runDb = (sql, params = []) =>
@@ -330,7 +395,18 @@ export async function updateSalePaymentStatus(saleIdRaw, paidRaw, actorUser = nu
   };
 }
 
-export async function createSale(payload = {}, actorUser = null, options = {}) {
+// 1G.3-FINAL: a API tem UMA ligacao SQLite partilhada e o checkout usa BEGIN IMMEDIATE/COMMIT atravessando awaits; dois
+// checkouts em simultaneo (2 Stations) intercalavam-se ("cannot start a transaction within a transaction", UNIQUE em
+// stock_movements). Os checkouts passam a correr um de cada vez (fila em memoria, processo unico). Nota: outras escritas de
+// outros pedidos podem ainda intercalar-se dentro da janela da transaccao (limite conhecido da ligacao unica).
+let checkoutQueue = Promise.resolve();
+export function createSale(payload = {}, actorUser = null, options = {}) {
+  const run = checkoutQueue.then(() => createSaleUnserialized(payload, actorUser, options));
+  checkoutQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function createSaleUnserialized(payload = {}, actorUser = null, options = {}) {
   const tenantId = await resolveTenantId(actorUser?.tenant_id);
   assertTenantWrite(tenantId, payload?.tenant_id ?? payload?.tenantId);
 
@@ -510,6 +586,24 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
     };
   }
 
+  // Etapa 1G.2B.4: produto fora da Store / descontinuado nao pode ter NOVA venda (estado local = ultimo sincronizado).
+  const unsellable = await findUnsellableCartItems(payload.cart, tenantId);
+  if (unsellable.length > 0) {
+    if (idempotencyKey) {
+      await runDb(
+        `UPDATE checkout_idempotency SET status = 'failed', error_message = ?, updated_at = ? WHERE tenant_id = ? AND idempotency_key = ?`,
+        ['product_not_sellable_in_store', new Date().toISOString(), tenantId, idempotencyKey]
+      ).catch(() => {});
+    }
+    const names = unsellable.map((u) => u.name).join(', ');
+    return {
+      error: `Produto indisponível nesta loja: ${names}`,
+      status: 409,
+      code: unsellable.some((u) => u.reason === 'discontinued') ? 'PRODUCT_DISCONTINUED_IN_STORE' : 'PRODUCT_NOT_IN_STORE',
+      products: unsellable,
+    };
+  }
+
   const stockAdjustments = shouldDecreaseStock
     ? await buildStockAdjustmentsFromCart(payload.cart, tenantId)
     : [];
@@ -566,6 +660,7 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
   let usedSaleId;
   let usedSequence;
   let checkoutResponse = null;
+  let tenderRows = [];
 
   try {
     await runDb('BEGIN IMMEDIATE TRANSACTION');
@@ -599,8 +694,8 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
 
     const insertResult = await runDb(
       `INSERT INTO vendas (
-        total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method, user_id, user_name, approved_document_type, approved_document_number, tenant_id, register_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        total, data, doc_type, doc_sequence, status, customer_id, customer_name, payment_method, user_id, user_name, approved_document_type, approved_document_number, tenant_id, register_code, station_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         totalNumber,
         storedDate,
@@ -617,6 +712,7 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
         tenantId,
         String(actorUser?.station_code ?? payload.register_code ?? payload.registerCode ?? 'caixa-1').trim() ||
           'caixa-1',
+        actorUser?.station_id ? String(actorUser.station_id) : null,
       ]
     );
 
@@ -652,6 +748,23 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
           ]
         );
       }
+    }
+
+    tenderRows = buildTenderRows({
+      isProforma,
+      isMultiplePayment: Boolean(payload.isMultiplePayment),
+      payments: payload.payments,
+      paymentMethod: rawPaymentMethod,
+      receivedAmount: payload.receivedAmount,
+      totalNumber,
+    });
+    const tendersCreatedAt = new Date().toISOString();
+    for (const tender of tenderRows) {
+      await runDb(
+        `INSERT INTO sale_payments (id, sale_id, tenant_id, method, amount, tendered_amount, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [crypto.randomUUID(), String(usedSaleId), tenantId, tender.method, tender.amount, tender.tendered_amount, tendersCreatedAt]
+      );
     }
 
     const cogsByProduct = new Map();
@@ -757,7 +870,15 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
     tax: effectiveTax,
     saleTimestamp: storedDate,
     tenant_id: tenantId,
+    // Rótulo informativo do posto (header X-Station-Code); NUNCA identidade nem
+    // store_id — a Store é sempre derivada no servidor cloud (device JWT).
+    station_code: String(actorUser?.station_code ?? '').trim() || null,
+    // Armazém realmente usado na venda local (Location→Warehouse ou default); a cloud valida-o contra a Store do device.
+    warehouse_id: saleWarehouseId,
     stockAdjustments,
+    // Breakdown real por tender (Pilot Gate POS/Dinheiro) — nunca reconstruído a partir de
+    // payment_method na cloud; viaja tal como foi persistido localmente em sale_payments.
+    paymentTenders: tenderRows,
   };
 
   const auditUser =
@@ -776,6 +897,7 @@ export async function createSale(payload = {}, actorUser = null, options = {}) {
     total: totalNumber,
     document_number: usedDocumentNumber,
     document_type: normalizedDocType,
+    station_id: actorUser?.station_id ?? null,
   });
 
   logEvent('info', 'sale.created', `Venda ${usedDocumentNumber || usedSaleId} concluída com sucesso`, {

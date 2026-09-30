@@ -1,28 +1,21 @@
 import express from 'express';
 import {
-  ackLicenseFile,
-  bindSerialLicense,
   getSetupStatus,
-  initializeFromSerial,
-  initializeSetup,
-  lookupSerial,
-  reactivateLicenseToken,
+  installOfflineLicense,
   resetLocalLicense,
   setAdminPassword,
   syncLicenseRegistryHandler,
 } from '../controllers/setup.controller.js';
 
+import { requireLoopbackOnly } from '../middlewares/stationAuth.js';
+
 const router = express.Router();
 
 router.get('/status', getSetupStatus);
-router.post('/initialize', initializeSetup);
-router.post('/serial/lookup', lookupSerial);
-router.post('/initialize-from-serial', initializeFromSerial);
-router.post('/admin-password', setAdminPassword);
-router.post('/license/bind-serial', bindSerialLicense);
-router.post('/license/ack-file', ackLicenseFile);
-router.post('/license/sync-registry', syncLicenseRegistryHandler);
-router.post('/license/reactivate-token', reactivateLicenseToken);
-router.post('/license/reset-local', resetLocalLicense);
+// Etapa 1G.3.4: estas operacoes alteram/apagam estado do Store Server -> so loopback (uma Station emparelhada nao as faz)
+router.post('/admin-password', requireLoopbackOnly, setAdminPassword);
+router.post('/license/sync-registry', requireLoopbackOnly, syncLicenseRegistryHandler);
+router.post('/license/reset-local', requireLoopbackOnly, resetLocalLicense);
+router.post('/license/install-offline-license', requireLoopbackOnly, installOfflineLicense);
 
 export default router;

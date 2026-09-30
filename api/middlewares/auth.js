@@ -22,6 +22,26 @@ function parseAuthorizationHeader(req) {
  * Token: userId.exp.signature  (HMAC de `${userId}.${exp}`)
  * Tokens antigos userId.signature sem exp são rejeitados (força re-login).
  */
+const STATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** @returns {{ userId: string, stationId: string | null }} */
+function resolveBearer(tokenRaw) {
+  const token = String(tokenRaw ?? '').trim();
+  if (!token) return { userId: '', stationId: null };
+  const parts4 = token.split('.');
+  if (parts4.length === 4) {
+    // Etapa 1G.3.4: sessao de operador vinculada a Station
+    const [uid, expPart, sid, sig] = parts4;
+    const exp = Number(expPart);
+    if (!uid || !STATION_ID_RE.test(sid) || !sig || !Number.isFinite(exp) || Math.floor(Date.now() / 1000) > exp) return { userId: '', stationId: null };
+    const expected = crypto.createHmac('sha256', resolveAuthHmacSecret()).update(`${uid}.${exp}.st:${sid.toLowerCase()}`).digest('hex');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b) ? { userId: uid, stationId: sid.toLowerCase() } : { userId: '', stationId: null };
+  }
+  return { userId: resolveBearerUserId(token), stationId: null };
+}
+
 function resolveBearerUserId(tokenRaw) {
   const token = String(tokenRaw ?? '').trim();
   if (!token) return '';
@@ -58,11 +78,17 @@ function resolveBearerUserId(tokenRaw) {
 }
 
 /** Emite token HMAC userId.exp.signature com TTL. */
-export function issueBearerTokenForUserId(userId) {
+export function issueBearerTokenForUserId(userId, { stationId = null } = {}) {
   const id = String(userId ?? '').trim();
   if (!id) return null;
   const secret = resolveAuthHmacSecret();
   const exp = Math.floor(Date.now() / 1000) + resolveBearerTtlSeconds();
+  const sid = String(stationId ?? '').trim().toLowerCase();
+  if (sid) {
+    if (!STATION_ID_RE.test(sid)) return null;
+    const sigBound = crypto.createHmac('sha256', secret).update(`${id}.${exp}.st:${sid}`).digest('hex');
+    return `${id}.${exp}.${sid}.${sigBound}`;
+  }
   const signature = crypto.createHmac('sha256', secret).update(`${id}.${exp}`).digest('hex');
   return `${id}.${exp}.${signature}`;
 }
@@ -94,7 +120,8 @@ function parseMockHeader(req) {
 }
 
 export function isLocalRequest(req) {
-  return isLoopbackIp(getClientIp(req));
+  // so o socket (X-Forwarded-For / TRUST_PROXY nunca tornam um pedido remoto "local")
+  return isLoopbackIp(String(req.socket?.remoteAddress ?? '').trim().replace(/^::ffff:/i, ''));
 }
 
 async function getFallbackLegacyUser(req) {
@@ -139,7 +166,7 @@ async function resolveStationRoleFromDb(tenantId, stationCode) {
   try {
     const row = await new Promise((resolve, reject) => {
       db.get(
-        `SELECT role FROM stations WHERE tenant_id = ? AND code = ? AND active = 1 LIMIT 1`,
+        `SELECT role FROM stations WHERE tenant_id = ? AND code = ? AND active = 1 AND public_key IS NULL LIMIT 1`,
         [tid, code],
         (err, result) => (err ? reject(err) : resolve(result ?? null)),
       );
@@ -162,12 +189,22 @@ async function resolveStationRoleFromDb(tenantId, stationCode) {
 }
 
 export async function resolveUserFromRequest(req) {
-  const mockHeaderUser = parseMockHeader(req);
+  // Pedido de uma Station autenticada (assinatura): so vale um Bearer HMAC VINCULADO a essa Station. Mock header, x-user-id,
+  // Bearer simples e Bearer nao vinculado (emitido no loopback) nunca autenticam operador a partir de uma Station.
+  const fromStation = Boolean(req.station?.id);
+  const mockHeaderUser = fromStation ? null : parseMockHeader(req);
   const allowHeaderUserId =
     String(process.env.AUTH_ALLOW_HEADER_USER_ID ?? (isProduction ? 'false' : 'true')).toLowerCase() ===
     'true';
-  const headerUserId = allowHeaderUserId ? String(req.headers?.['x-user-id'] ?? '').trim() : '';
-  const bearerUserId = resolveBearerUserId(parseAuthorizationHeader(req));
+  const headerUserId = allowHeaderUserId && !fromStation ? String(req.headers?.['x-user-id'] ?? '').trim() : '';
+  const bearer = resolveBearer(parseAuthorizationHeader(req));
+  let bearerUserId = bearer.userId;
+  if (bearer.stationId) {
+    // token vinculado: so com a assinatura DESSA Station (nunca no loopback nem noutra Station)
+    if (!fromStation || req.station.id !== bearer.stationId) bearerUserId = '';
+  } else if (fromStation) {
+    bearerUserId = '';
+  }
   const resolvedUserId = mockHeaderUser?.id || headerUserId || bearerUserId || '';
 
   if (!resolvedUserId) return getFallbackLegacyUser(req);
@@ -251,7 +288,13 @@ export async function authenticateUser(req, res, next) {
       return sendError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
     }
     user.tenant_id = tenantId;
-    const stationCode = String(req.headers?.['x-station-code'] ?? '').trim();
+    if (req.station?.id) {
+      // Station autenticada por assinatura (1G.3.3): identidade, codigo e papel vem da BD; X-Station-* de etiqueta ignorados.
+      user.station_id = req.station.id;
+      user.station_code = req.station.code;
+      user.station_role = req.station.role;
+    }
+    const stationCode = req.station?.id ? '' : String(req.headers?.['x-station-code'] ?? '').trim();
     if (stationCode) {
       user.station_code = stationCode;
       // Papel do posto vem sempre da BD — nunca do header do cliente.

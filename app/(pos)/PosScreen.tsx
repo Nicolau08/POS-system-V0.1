@@ -104,11 +104,7 @@ import {
   fetchSetupStatus as posFetchSetupStatus,
   fetchLoginUsers as posFetchUsers,
   fetchPaymentMethods as posFetchPaymentMethods,
-  acknowledgeLicenseFileOnServer,
-  redeemReactivationTokenOnServer,
   resetLocalLicenseOnServer,
-  initializeFromSerial,
-  lookupSerialStores,
   fetchCompanyProfile,
   PosApiError,
   saveCustomer,
@@ -140,8 +136,6 @@ import {
 } from '@/lib/posSessionCache';
 import LicenseExpiredScreen from '@/components/LicenseExpiredScreen';
 import { useLicenseGuard } from '@/components/LicenseGuardProvider';
-import { isReactivationTokenInput } from '@/lib/licensing/reactivationToken.js';
-import { tryParseSerialFormat } from '@/lib/licensing/serialNumber.js';
 import { TableFloorPanel } from '@/app/pos/components/TableFloorPanel';
 import { PosStatusFooter } from '@/app/pos/components/PosStatusFooter';
 import { useCommerceProfile } from '@/lib/useCommerceProfile';
@@ -756,67 +750,21 @@ export default function POSPage({ params, searchParams }: RouteProps) {
     }
   }, []);
 
+  // Etapa 1F.5c (itens 5-6): único caminho comercial do POS é Activation
+  // Token → Device Auth → Offline License Ed25519, inteiramente tratado por
+  // activateLicenseInternal (electron/main.js) — nunca reconhecido aqui no
+  // frontend. Sem fallback automático para série/voucher/HMAC: esses formatos
+  // já não são reconhecidos por nenhum lado do POS.
   const handleElectronLicenseActivate = useCallback(
     async (licenseKey: string) => {
       setIsActivatingLicense(true);
       try {
-        const serial = tryParseSerialFormat(licenseKey);
-        if (serial) {
-          // Não bloquear por lookup.redeemed: após desvincular na consola o activate
-          // é a fonte de verdade. O flag redeemed gerava falso "Licença em uso".
-          const lookup = await lookupSerialStores(serial);
-          const stores = Array.isArray(lookup?.stores) ? lookup.stores : [];
-          const tenantId = String(stores[0]?.tenant_id ?? '').trim();
-          if (!tenantId) {
-            throw new Error(
-              lookup?.redeemed
-                ? 'Esta licença parece ligada noutro sítio. Confirme o desvínculo na consola e tente de novo.'
-                : 'Nenhuma loja encontrada para este número de série.',
-            );
-          }
-          await initializeFromSerial({ serial, tenantId });
-          try {
-            await acknowledgeLicenseFileOnServer();
-          } catch {
-            // A escrita do ficheiro já activa a BD; ack é melhor esforço.
-          }
-        } else if (isReactivationTokenInput(licenseKey)) {
-          const redeemData = await redeemReactivationTokenOnServer(licenseKey);
-          const notify = redeemData?.ack?.issuerNotify;
-          if (notify && notify.skipped === false && notify.ok === false && notify.error) {
-            showToast(
-              `Licença reativada; consola/Supabase: ${notify.error}`,
-              'info',
-            );
-          }
-        } else {
-          if (!window.electronAPI?.activateLicense) {
-            throw new Error('Ativação disponível apenas na app Electron.');
-          }
-          const result = await window.electronAPI.activateLicense(licenseKey);
-          if (!result?.success) {
-            throw new Error(result?.error || 'Falha ao ativar licença.');
-          }
-          try {
-            const ackData = await acknowledgeLicenseFileOnServer();
-            const notify = ackData?.issuerNotify;
-            if (notify && notify.skipped === false && notify.ok === false && notify.error) {
-              showToast(
-                `Licença registada localmente; consola/Supabase: ${notify.error}`,
-                'info',
-              );
-            }
-          } catch (ackErr) {
-            const msg =
-              ackErr instanceof PosApiError
-                ? ackErr.message
-                : ackErr instanceof Error
-                  ? ackErr.message
-                  : 'Falha ao registar licença na API local.';
-            throw new Error(
-              `${msg} Se a API ainda estava a iniciar, aguarde uns segundos e use «Revalidar».`,
-            );
-          }
+        if (!window.electronAPI?.activateLicense) {
+          throw new Error('Ativação disponível apenas na app Electron.');
+        }
+        const result = await window.electronAPI.activateLicense(licenseKey);
+        if (!result?.success) {
+          throw new Error(result?.error || 'Falha ao ativar licença.');
         }
         await refreshActivationState();
         await refreshSetupStatus();
@@ -1906,7 +1854,6 @@ export default function POSPage({ params, searchParams }: RouteProps) {
           status={setupStatus}
           onCompleted={async () => {
             logout();
-            await acknowledgeLicenseFileOnServer();
             await handleRevalidateSetup();
             await refreshSetupStatus();
             await refreshActivationState();

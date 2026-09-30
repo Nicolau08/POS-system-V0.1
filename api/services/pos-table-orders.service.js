@@ -100,7 +100,9 @@ export async function saveSharedTableOrder(tableKeyRaw, body = {}, actorUser = n
   const payload = toOrderPayload(body);
   const now = new Date().toISOString();
   const stationCode =
-    String(body?.stationCode ?? body?.station_code ?? actorUser?.station_code ?? '').trim() || null;
+    (actorUser?.station_id
+      ? String(actorUser.station_code ?? '').trim()
+      : String(body?.stationCode ?? body?.station_code ?? actorUser?.station_code ?? '').trim()) || null;
   const expectedUpdatedAt =
     body?.expectedUpdatedAt != null
       ? String(body.expectedUpdatedAt)

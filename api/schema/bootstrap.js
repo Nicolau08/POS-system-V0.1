@@ -172,6 +172,39 @@ export function runBootstrap(db, { ensureSyncQueueIndexes, getOrCreateDefaultTen
     }
   );
 
+  // Pilot Gate offline (achado real): antes desta correcao, um produto criado
+  // localmente so ficava vendavel nesta Store depois de sincronizar (nunca
+  // acontece offline). Backfill idempotente para instalacoes ja existentes:
+  // so activa produtos com prova de origem LOCAL (uma entrada em sync_queue
+  // criada por enqueueSync ao criar o produto, dedupe_key = tenant:product:id)
+  // - nunca um produto so puxado da cloud (mestre partilhado do tenant, pode
+  // pertencer a outra Store) e que ainda nao tem store_products aqui.
+  db.run(
+    `INSERT OR IGNORE INTO store_products (tenant_id, product_cloud_id, status, updated_at)
+     SELECT p.tenant_id, p.cloud_id, 'active', ?
+     FROM products p
+     WHERE p.cloud_id IS NOT NULL
+       AND TRIM(p.cloud_id) != ''
+       AND NOT EXISTS (
+         SELECT 1 FROM store_products sp
+         WHERE sp.tenant_id = p.tenant_id AND sp.product_cloud_id = p.cloud_id
+       )
+       AND EXISTS (
+         SELECT 1 FROM sync_queue sq
+         WHERE sq.tenant_id = p.tenant_id AND sq.type = 'product' AND sq.dedupe_key = p.tenant_id || ':product:' || p.id
+       )`,
+    [new Date().toISOString()],
+    function onBackfill(backfillErr) {
+      if (backfillErr) {
+        console.error('Erro no backfill de store_products para produtos locais orfaos:', backfillErr.message);
+        return;
+      }
+      if (this?.changes > 0) {
+        console.log(`[migrate] store_products activado para ${this.changes} produto(s) local(is) orfao(s).`);
+      }
+    }
+  );
+
   getOrCreateDefaultTenantId()
     .then((defaultTenantId) => {
       db.run(
@@ -319,7 +352,12 @@ export function runBootstrap(db, { ensureSyncQueueIndexes, getOrCreateDefaultTen
             const seededPin = await ensureHashedPin('1234');
             db.run(
               `INSERT INTO users (id, name, surname, email, role, pin, access_level, active, is_system, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              ['admin-local', 'Administrador', null, null, 'admin', seededPin, 9, 1, 1, defaultTenantId]
+              ['admin-local', 'Administrador', null, null, 'admin', seededPin, 9, 1, 1, defaultTenantId],
+              (insertErr) => {
+                if (insertErr) {
+                  console.error('Erro ao inserir utilizador admin inicial:', insertErr.message);
+                }
+              }
             );
           } catch (hashErr) {
             console.error('Erro ao criar PIN inicial do administrador:', hashErr?.message ?? hashErr);

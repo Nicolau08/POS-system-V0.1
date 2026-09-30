@@ -1,7 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { resolveDatabasePathAfterMigration } from './utils/dbPaths.js';
-import { openSqliteDatabase } from './utils/dbEncryption.js';
+import { openSqliteDatabase, DATABASE_CORRUPTED_MARKER } from './utils/dbEncryption.js';
 
 import { defineSalesCoreSchema } from './schema/sales-core.js';
 import { defineTenantsSchema } from './schema/tenants.js';
@@ -22,7 +22,26 @@ if (process.env.POS_DEV_TENANT || process.env.POS_DB_PATH) {
   console.log(`[database] SQLite: ${dbPath}`);
 }
 
-const { db } = await openSqliteDatabase(dbPath);
+// Etapa 1F.6.1 (item 3/25): antes, se a BD existente não pudesse ser aberta/
+// validada (ficheiro corrompido ou chave errada), este top-level await
+// rejeitava e o processo saía com uma excepção não apanhada e stack trace
+// cru (uma péssima experiência para o operador, embora o comportamento de
+// segurança em si — nunca criar uma BD vazia por cima — já estivesse
+// correcto). Agora sai de forma CONTROLADA: regista o marcador estável
+// DATABASE_CORRUPTED_MARKER (greppable pelo electron/main.js a partir dos
+// logs de arranque capturados) e termina com exit code 1, sem tentar
+// apagar/renomear/substituir nada nem iniciar um onboarding novo.
+let db;
+try {
+  ({ db } = await openSqliteDatabase(dbPath));
+} catch (err) {
+  const message = String(err?.message ?? err);
+  console.error(message);
+  if (!message.includes(DATABASE_CORRUPTED_MARKER)) {
+    console.error(`${DATABASE_CORRUPTED_MARKER}: erro inesperado ao abrir a base de dados.`);
+  }
+  process.exit(1);
+}
 const DEFAULT_TENANT_ID = String(
   process.env.DEFAULT_TENANT_ID || process.env.POS_DEV_TENANT || 'tenant-1'
 ).trim() || 'tenant-1';

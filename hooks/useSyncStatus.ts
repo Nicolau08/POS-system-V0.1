@@ -9,6 +9,14 @@ import {
 } from '@/lib/apiBase';
 import { unwrapApiSuccessPayload } from '@/lib/apiResponse';
 
+// Diagnóstico seguro (Pilot Gate offline): só type -> count por status, nunca
+// payload/negócio (ver api/controllers/sync.controller.js#getSyncStatus).
+export type SyncQueueByType = {
+  pending: Record<string, number>;
+  failed: Record<string, number>;
+  dead: Record<string, number>;
+};
+
 type SyncStatusApiResponse = {
   online?: boolean;
   pending?: number;
@@ -21,7 +29,52 @@ type SyncStatusApiResponse = {
   sync_active?: boolean;
   mode?: string | null;
   reason?: string | null;
+  byType?: Partial<SyncQueueByType>;
+  tenantDiagnostic?: Partial<TenantDiagnostic>;
+  rlsDiagnostic?: Partial<RlsDiagnostic>;
   pull_sync_state?: Array<{ id?: string; last_sync_at?: string | null }>;
+};
+
+const EMPTY_BY_TYPE: SyncQueueByType = { pending: {}, failed: {}, dead: {} };
+
+// Diagnóstico de mismatch de tenant (Pilot Gate — RLS em categories): contagens
+// puras current/other, nunca o tenant_id em si nem qualquer payload/negócio.
+export type CurrentOtherCount = { current: number; other: number };
+export type TenantDiagnostic = {
+  categories: CurrentOtherCount;
+  products: CurrentOtherCount;
+  queueDead: { category: CurrentOtherCount; product: CurrentOtherCount };
+};
+
+const EMPTY_TENANT_DIAGNOSTIC: TenantDiagnostic = {
+  categories: { current: 0, other: 0 },
+  products: { current: 0, other: 0 },
+  queueDead: { category: { current: 0, other: 0 }, product: { current: 0, other: 0 } },
+};
+
+// Diagnóstico de evidência RLS (Pilot Gate): correlação sync_logs <-> itens
+// `dead`, só contagens/timestamps — nunca queue_id/tenant_id/payload/mensagem.
+export type RlsCategoryDiagnostic = {
+  items: number;
+  totalAttempts: number;
+  firstAttempt: string | null;
+  lastAttempt: string | null;
+  sameRlsErrorAttempts: number;
+};
+export type RlsProductDiagnostic = {
+  items: number;
+  totalAttempts: number;
+  firstAttempt: string | null;
+  lastAttempt: string | null;
+};
+export type RlsDiagnostic = {
+  category: RlsCategoryDiagnostic;
+  product: RlsProductDiagnostic;
+};
+
+const EMPTY_RLS_DIAGNOSTIC: RlsDiagnostic = {
+  category: { items: 0, totalAttempts: 0, firstAttempt: null, lastAttempt: null, sameRlsErrorAttempts: 0 },
+  product: { items: 0, totalAttempts: 0, firstAttempt: null, lastAttempt: null },
 };
 
 export type SyncStatusState = {
@@ -34,6 +87,9 @@ export type SyncStatusState = {
   syncActive: boolean;
   mode: string | null;
   reason: string | null;
+  byType: SyncQueueByType;
+  tenantDiagnostic: TenantDiagnostic;
+  rlsDiagnostic: RlsDiagnostic;
 };
 
 function resolveLastSync(data: SyncStatusApiResponse): string | null {
@@ -83,21 +139,19 @@ export function useSyncStatus() {
     syncActive: false,
     mode: null,
     reason: null,
+    byType: EMPTY_BY_TYPE,
+    tenantDiagnostic: EMPTY_TENANT_DIAGNOSTIC,
+    rlsDiagnostic: EMPTY_RLS_DIAGNOSTIC,
   });
   const authBlockedRef = useRef(false);
 
   const fetchStatus = useCallback(async () => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      setStatus((prev) => ({
-        ...prev,
-        online: false,
-        mode: prev.cloudConfigured ? 'offline' : 'offline_only',
-        reason: prev.cloudConfigured ? 'no_internet' : 'supabase_not_configured',
-        isLoading: false,
-      }));
-      return;
-    }
-
+    // Pilot Gate offline (achado real): GET /sync/status é sempre local
+    // (loopback, autenticado) — nunca depende de Internet, só de a API estar
+    // a correr. navigator.onLine=false nunca deve saltar esta leitura, senão
+    // "pending" fica congelado no valor inicial (0) enquanto a loja estiver
+    // offline, escondendo vendas/produtos realmente pendentes de sincronizar.
+    // Offline impede SYNC com a cloud, nunca a LEITURA local do estado.
     if (!canPollSyncStatus()) {
       setStatus((prev) => ({ ...prev, isLoading: false }));
       return;
@@ -140,6 +194,20 @@ export function useSyncStatus() {
       const online = typeof data.online === 'boolean' ? data.online : cloudConfigured;
       const mode = data.mode != null ? String(data.mode) : null;
       const reason = data.reason != null ? String(data.reason) : null;
+      const byType: SyncQueueByType = {
+        pending: data.byType?.pending ?? {},
+        failed: data.byType?.failed ?? {},
+        dead: data.byType?.dead ?? {},
+      };
+      const tenantDiagnostic: TenantDiagnostic = {
+        categories: data.tenantDiagnostic?.categories ?? EMPTY_TENANT_DIAGNOSTIC.categories,
+        products: data.tenantDiagnostic?.products ?? EMPTY_TENANT_DIAGNOSTIC.products,
+        queueDead: data.tenantDiagnostic?.queueDead ?? EMPTY_TENANT_DIAGNOSTIC.queueDead,
+      };
+      const rlsDiagnostic: RlsDiagnostic = {
+        category: data.rlsDiagnostic?.category ?? EMPTY_RLS_DIAGNOSTIC.category,
+        product: data.rlsDiagnostic?.product ?? EMPTY_RLS_DIAGNOSTIC.product,
+      };
 
       setStatus({
         online,
@@ -149,6 +217,9 @@ export function useSyncStatus() {
         isLoading: false,
         cloudConfigured,
         syncActive,
+        byType,
+        tenantDiagnostic,
+        rlsDiagnostic,
         mode,
         reason,
       });
@@ -181,7 +252,10 @@ export function useSyncStatus() {
       void fetchStatus();
     };
     const handleOffline = () => {
-      setStatus((prev) => ({ ...prev, online: false }));
+      // Nunca adivinhar "pending" aqui — o próprio /sync/status local (não
+      // depende de Internet) é quem decide online/pending; só refrescamos
+      // mais cedo do que o polling de 3s para a UI reagir logo ao evento.
+      void fetchStatus();
     };
 
     window.addEventListener('online', handleOnline);

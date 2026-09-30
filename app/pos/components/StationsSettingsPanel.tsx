@@ -105,6 +105,28 @@ export function StationsSettingsPanel() {
     );
   };
 
+  // Etapa 1G.3.4: emparelhamento minimo (codigo de 8 digitos gerado pelo admin no servidor)
+  const [pairCode, setPairCode] = useState('');
+  const [pairFingerprint, setPairFingerprint] = useState('');
+  const [pairStatus, setPairStatus] = useState('');
+  const pairStation = async () => {
+    const url = normalizeServerApiBaseUrl(client.serverApiBaseUrl);
+    const code = pairCode.trim();
+    const isToken = code.startsWith('POSLY-PAIR-1.');
+    if (!url || !(isToken || /^\d{8}$/.test(code)) || (!isToken && !pairFingerprint.trim())) {
+      setPairStatus('Indique o IP do servidor e o token de emparelhamento (ou código + fingerprint do certificado).');
+      return;
+    }
+    setPairStatus('A emparelhar…');
+    const r = await window.electronAPI?.stationPair?.(url, code, pairFingerprint.trim());
+    if (r?.success) {
+      setPairCode('');
+      setPairStatus('Posto emparelhado. Os pedidos ao servidor passam a ser assinados.');
+    } else {
+      setPairStatus(r?.error ?? 'Emparelhamento indisponível fora do Electron.');
+    }
+  };
+
   const testConnection = async () => {
     const url = normalizeServerApiBaseUrl(client.serverApiBaseUrl);
     if (!url) {
@@ -395,6 +417,28 @@ export function StationsSettingsPanel() {
               Esquecer ligação
             </button>
           </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={pairCode}
+              onChange={(e) => setPairCode(e.target.value.trim())}
+              placeholder="Token (POSLY-PAIR-1.…) ou código"
+              className="h-9 w-72 rounded border border-zinc-600 bg-pos-bg px-3 font-mono text-sm text-white"
+            />
+            <input
+              value={pairFingerprint}
+              onChange={(e) => setPairFingerprint(e.target.value)}
+              placeholder="Fingerprint do certificado (se só código)"
+              className="h-9 w-72 rounded border border-zinc-600 bg-pos-bg px-3 font-mono text-xs text-white"
+            />
+            <button
+              type="button"
+              onClick={() => void pairStation()}
+              className="rounded bg-[#0001fb] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1a1bff]"
+            >
+              Emparelhar
+            </button>
+          </div>
+          {pairStatus ? <p className="text-xs text-zinc-400">{pairStatus}</p> : null}
           {testStatus ? <p className="text-xs text-zinc-400">{testStatus}</p> : null}
           {discovered.length > 0 ? (
             <ul className="space-y-1">

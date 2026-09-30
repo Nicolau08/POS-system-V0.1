@@ -22,6 +22,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearLocalLicense: async () => {
     return ipcRenderer.invoke('activation:clearLocalLicense');
   },
+  bootstrapDeviceAuth: async (activationToken, stationCode) => {
+    return ipcRenderer.invoke('device-auth:bootstrap', { activationToken, stationCode });
+  },
+  getDeviceAuthStatus: async () => {
+    return ipcRenderer.invoke('device-auth:getStatus');
+  },
+  clearDeviceAuthCredentials: async () => {
+    return ipcRenderer.invoke('device-auth:clearCredentials');
+  },
   restartApp: async () => {
     return ipcRenderer.invoke('app:restart');
   },
@@ -100,6 +109,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanLanStations: async () => {
     return ipcRenderer.invoke('station:scanLan');
   },
+  // Etapa 1G.3.4: identidade da Station. Nenhuma destas devolve a chave privada (fica no processo main).
+  stationPair: async (serverUrl, code, fingerprint) => ipcRenderer.invoke('station:pair', { serverUrl, code, fingerprint }),
+  getStationIdentity: async () => ipcRenderer.invoke('station:getIdentity'),
+  clearStationIdentity: async () => ipcRenderer.invoke('station:clearIdentity'),
+  stationFetch: async (request) => ipcRenderer.invoke('station:fetch', request),
   getUpdateStatus: async () => {
     try {
       return await ipcRenderer.invoke('update:getStatus');

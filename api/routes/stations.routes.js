@@ -12,12 +12,15 @@ import {
   upsertStation,
 } from '../services/station.service.js';
 import { sendError, sendSuccess } from '../utils/response.js';
+import { createPairing, setStationStatus } from '../services/stationPairing.service.js';
+import { requireLoopbackOnly } from '../middlewares/stationAuth.js';
 
 const router = express.Router();
 
 function handle(res, err) {
   const status = err?.status || err?.statusCode || 500;
-  return sendError(res, status, err?.message || 'Erro interno');
+  // propaga o codigo de erro do servico (ex.: STATION_LIMIT_REACHED, PUBLIC_KEY_RETIRED) para o cliente
+  return sendError(res, status, err?.message || 'Erro interno', err?.code);
 }
 
 router.get('/stations/server-settings', async (_req, res) => {
@@ -34,7 +37,8 @@ router.get('/stations/server-settings', async (_req, res) => {
   }
 });
 
-router.patch('/stations/server-settings', requireAdmin, async (req, res) => {
+// Etapa 1G.3.5: ligar/desligar LAN e impressora do Server -> so loopback (uma Station nao pode desligar a LAN que usa)
+router.patch('/stations/server-settings', requireLoopbackOnly, requireAdmin, async (req, res) => {
   try {
     const settings = await updateServerStationSettings({
       lanAccessEnabled: req.body?.lanAccessEnabled,
@@ -62,7 +66,25 @@ router.get('/stations', async (req, res) => {
   }
 });
 
-router.post('/stations', async (req, res) => {
+// Etapa 1G.3.2: criar/apagar/alterar postos exige admin; Station com identidade so nasce por pairing.
+router.post('/stations/pairings', requireAdmin, async (req, res) => {
+  try {
+    const row = await createPairing({ name: req.body?.name, role: req.body?.role, actorUser: req.user });
+    return sendSuccess(res, row, 201);
+  } catch (err) {
+    return handle(res, err);
+  }
+});
+
+router.post('/stations/:id/status', requireAdmin, async (req, res) => {
+  try {
+    return sendSuccess(res, await setStationStatus(req.params.id, req.body?.status, { actorUser: req.user }));
+  } catch (err) {
+    return handle(res, err);
+  }
+});
+
+router.post('/stations', requireAdmin, async (req, res) => {
   try {
     const row = await upsertStation(req.body ?? {}, req.user);
     return sendSuccess(res, row);
@@ -71,7 +93,7 @@ router.post('/stations', async (req, res) => {
   }
 });
 
-router.delete('/stations/:code', async (req, res) => {
+router.delete('/stations/:code', requireAdmin, async (req, res) => {
   try {
     await removeStation(req.params.code, req.user);
     return sendSuccess(res, { ok: true });

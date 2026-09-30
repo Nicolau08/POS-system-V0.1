@@ -137,7 +137,7 @@ async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 5, delayMs
 import { normalizeCatalogProduct } from '@/lib/catalogLocalSync';
 
 export const fetchProducts = async () => {
-  const rows = await fetchJSON('/produtos');
+  const rows = await fetchJSON('/produtos?store_available=1');
   return (Array.isArray(rows) ? rows : []).map((row: any) => normalizeCatalogProduct(row));
 };
 
@@ -283,76 +283,6 @@ export async function requestFullResetFromCloud(): Promise<Record<string, unknow
   });
 }
 
-export const initializeSetupWizard = async (payload: {
-  storeName: string;
-  nuit: string;
-  adminName: string;
-  adminPin: string;
-  printerType: string;
-  licenseKey: string;
-}) => {
-  return fetchJSON('/setup/initialize', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-};
-
-export type SerialStoreOption = {
-  tenant_id: string;
-  name: string;
-  nuit: string | null;
-  plan: string;
-  expires_at: string;
-  serial: string;
-};
-
-export const lookupSerialStores = async (serial: string): Promise<{
-  serial: string;
-  redeemed?: boolean;
-  stores: SerialStoreOption[];
-}> => {
-  const data = await fetchJSON('/setup/serial/lookup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ serial: String(serial ?? '').trim() }),
-  });
-  return {
-    serial: data?.serial != null ? String(data.serial) : String(serial ?? '').trim(),
-    redeemed: Boolean(data?.redeemed),
-    stores: Array.isArray(data?.stores)
-      ? data.stores.map((s: Record<string, unknown>) => ({
-          tenant_id: String(s.tenant_id ?? ''),
-          name: String(s.name ?? ''),
-          nuit: s.nuit != null && String(s.nuit).trim() ? String(s.nuit).trim() : null,
-          plan: String(s.plan ?? 'LITE'),
-          expires_at: String(s.expires_at ?? ''),
-          serial: String(s.serial ?? serial ?? ''),
-        }))
-      : [],
-  };
-};
-
-export const initializeFromSerial = async (payload: {
-  serial: string;
-  tenantId: string;
-  adminName?: string;
-  adminPin?: string;
-  printerType?: string;
-}) => {
-  return fetchJSON('/setup/initialize-from-serial', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      serial: String(payload.serial ?? '').trim(),
-      tenantId: String(payload.tenantId ?? '').trim(),
-      adminName: payload.adminName ? String(payload.adminName).trim() : undefined,
-      adminPin: payload.adminPin ? String(payload.adminPin).trim() : undefined,
-      printerType: payload.printerType ? String(payload.printerType).trim() : undefined,
-    }),
-  });
-};
-
 export const setupAdminPassword = async (pin: string) => {
   return fetchJSON('/setup/admin-password', {
     method: 'POST',
@@ -361,38 +291,12 @@ export const setupAdminPassword = async (pin: string) => {
   });
 };
 
-export const activateLicenseToken = async (token: string) => {
-  return fetchJSON('/setup/license/activate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: String(token ?? '').trim() }),
-  });
-};
-
-/** Token de 12 dígitos gerado na consola após prolongar a licença. */
-export const redeemReactivationTokenOnServer = async (token: string) => {
-  return fetchJSON('/setup/license/reactivate-token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: String(token ?? '').trim() }),
-  });
-};
-
-/** Apaga license.json e reabre o wizard de série (após desvincular na consola). */
+/** Apaga license.json/offline-license.json e reabre o assistente de activação. */
 export const resetLocalLicenseOnServer = async () => {
   return fetchJSON('/setup/license/reset-local', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
-  });
-};
-
-/** Após o Electron gravar license.json: marca licença como activa na BD local (127.0.0.1). */
-export const acknowledgeLicenseFileOnServer = async () => {
-  return fetchJSON('/setup/license/ack-file', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
   });
 };
 

@@ -160,6 +160,10 @@ declare global {
         discoveryEnabled?: boolean;
         error?: string;
       }>;
+      stationPair?: (serverUrl: string, code: string, fingerprint?: string) => Promise<{ success: boolean; stationId?: string; serverUrl?: string; error?: string; code?: string | null; status?: number | null; serverCode?: string | null }>;
+      getStationIdentity?: () => Promise<{ success: boolean; secureStorage?: boolean; paired?: boolean; stationId?: string | null; serverUrl?: string | null; stationCode?: string | null; name?: string | null; role?: string | null; error?: string }>;
+      clearStationIdentity?: () => Promise<{ success: boolean; error?: string }>;
+      stationFetch?: (request: { url: string; method: string; headers: Record<string, string>; bodyBase64: string | null }) => Promise<{ success: boolean; status?: number; headers?: [string, string][]; bodyBase64?: string; error?: string; code?: string | null }>;
       scanLanStations: () => Promise<{
         success: boolean;
         servers?: Array<{

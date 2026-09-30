@@ -13,6 +13,7 @@ import { normalizeHex, pickCategoryColor } from '../utils/categoryColors.js';
 import { ensureCategoriesColorColumn } from '../repositories/categorias.repository.js';
 import { ensureDefaultTaxRates, resolveProductTaxRate } from './tax-rates.service.js';
 import { computeTaxFromBasePrice } from '../utils/taxMath.js';
+import { STORE_AVAILABLE_SQL } from './storeCatalog.service.js';
 import {
   applyWarehouseDelta,
   getWarehouseQuantity,
@@ -101,6 +102,33 @@ function resolveProductPrice(payload = {}, productKind) {
   return Math.max(0, price);
 }
 
+/**
+ * Custo de produtos compostos = soma(quantidade da ficha tecnica x custo do ingrediente).
+ * Calculado na leitura (nao gravado em products.cost) para acompanhar sempre o custo actual dos ingredientes.
+ * A quantidade esta na unidade do ingrediente, tal como o seu custo.
+ */
+async function applyComposedCosts(mappedRows) {
+  const composed = mappedRows.filter((r) => r.product_kind === 'composed');
+  if (composed.length === 0) return mappedRows;
+  const ids = composed.map((r) => Number(r.id)).filter(Number.isFinite);
+  if (ids.length === 0) return mappedRows;
+  const bomRows = await allDb(
+    `SELECT b.parent_product_id AS parent_id, b.tenant_id AS tenant_id,
+            SUM(b.quantity * COALESCE(c.cost, 0)) AS bom_cost
+     FROM product_bom_lines b
+     JOIN products c ON c.id = b.component_product_id AND c.tenant_id = b.tenant_id
+     WHERE b.parent_product_id IN (${ids.map(() => '?').join(',')})
+     GROUP BY b.tenant_id, b.parent_product_id`,
+    ids
+  );
+  const costByKey = new Map(bomRows.map((r) => [`${r.tenant_id}:${r.parent_id}`, Number(r.bom_cost ?? 0)]));
+  return mappedRows.map((r) => {
+    if (r.product_kind !== 'composed') return r;
+    const key = `${r.tenant_id}:${r.id}`;
+    return costByKey.has(key) ? { ...r, cost: Math.round(costByKey.get(key) * 100) / 100 } : r;
+  });
+}
+
 const mapProductRow = (row) => {
   const categoryColor = row.category_color != null ? String(row.category_color) : null;
   const productColor = row.color != null && String(row.color).trim() ? String(row.color).trim() : null;
@@ -135,6 +163,10 @@ const mapProductRow = (row) => {
     color: productColor || categoryColor || null,
     category_color: categoryColor,
     categories: row.category ? { name: row.category } : undefined,
+    store_status: row.store_status ?? null,
+    store_price_override: row.store_price_override != null ? Number(row.store_price_override) : null,
+    store_min_stock: row.store_min_stock != null ? Number(row.store_min_stock) : null,
+    store_available: row.store_available == null ? true : Boolean(row.store_available),
     warehouse_quantity:
       row.warehouse_quantity != null && Number.isFinite(Number(row.warehouse_quantity))
         ? Number(row.warehouse_quantity)
@@ -170,6 +202,10 @@ export async function listProducts(filters = {}, actorUser = null) {
     params.push(active ? 1 : 0);
   }
 
+  if (parseBooleanFilter(filters.store_available) === true) {
+    where.push(`${STORE_AVAILABLE_SQL} = 1`);
+  }
+
   if (deleted != null) {
     where.push(`COALESCE(p.deleted, 0) = ?`);
     params.push(deleted ? 1 : 0);
@@ -185,6 +221,10 @@ export async function listProducts(filters = {}, actorUser = null) {
       p.active, p.unit, p.description, p.age_restriction, p.is_service, p.product_kind, p.default_quantity,
       p.track_lot, p.stock_quantity, p.min_stock, p.color, p.image, p.deleted, p.tenant_id, p.created_at, p.updated_at,
       ${warehouseIdFilter ? 'COALESCE(ws.quantity, 0) AS warehouse_quantity,' : 'NULL AS warehouse_quantity,'}
+      sp.status AS store_status,
+      sp.price_override AS store_price_override,
+      sp.min_stock AS store_min_stock,
+      ${STORE_AVAILABLE_SQL} AS store_available,
       c.name AS category,
       c.color AS category_color,
       tr.name AS tax_rate_name,
@@ -200,6 +240,7 @@ export async function listProducts(filters = {}, actorUser = null) {
         : ''
     }
     LEFT JOIN categories c ON c.id = p.category_id
+    LEFT JOIN store_products sp ON sp.tenant_id = p.tenant_id AND sp.product_cloud_id = p.cloud_id
     LEFT JOIN tax_rates tr ON tr.id = p.tax_rate_id AND tr.tenant_id = p.tenant_id
     ${whereSql}
     ORDER BY p.name ASC`;
@@ -208,7 +249,7 @@ export async function listProducts(filters = {}, actorUser = null) {
 
   if (!pagination.hasPagination) {
     const rows = await allDb(baseSelect, selectParams);
-    return rows.map(mapProductRow);
+    return applyComposedCosts(rows.map(mapProductRow));
   }
 
   const rows = await allDb(`${baseSelect} LIMIT ? OFFSET ?`, [...selectParams, pagination.limit, pagination.offset]);
@@ -216,11 +257,12 @@ export async function listProducts(filters = {}, actorUser = null) {
     `SELECT COUNT(*) AS total
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
+     LEFT JOIN store_products sp ON sp.tenant_id = p.tenant_id AND sp.product_cloud_id = p.cloud_id
      ${whereSql}`,
     params
   );
 
-  return withPaginationPayload(rows.map(mapProductRow), {
+  return withPaginationPayload(await applyComposedCosts(rows.map(mapProductRow)), {
     page: pagination.page,
     limit: pagination.limit,
     total: Number(totalRow?.total ?? 0),
@@ -263,39 +305,65 @@ export async function createProduct(payload = {}, actorUser = null) {
   const isService = resolveServiceFlag(productKind, Boolean(payload.is_service));
   const trackLot = resolveTrackLotFlag(payload, productKind, Boolean(isService));
 
-  const result = await runDb(
-    `INSERT INTO products
-      (cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active, unit, description, age_restriction, is_service, product_kind, default_quantity, track_lot, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      cloudId,
-      payload.code ?? null,
-      payload.name,
-      categoryId,
-      payload.barcode ?? null,
-      Number(payload.cost ?? 0),
-      price,
-      Number(taxRate.id),
-      taxAmount,
-      finalPrice,
-      payload.active === false ? 0 : 1,
-      payload.unit ?? 'un',
-      payload.description ?? null,
-      payload.age_restriction ? Number(payload.age_restriction) : null,
-      isService,
-      productKind,
-      payload.default_quantity === false ? 0 : 1,
-      trackLot,
-      Number(payload.stock_quantity ?? 0),
-      Number(payload.min_stock ?? 0),
-      inheritedColor,
-      payload.image ?? null,
-      0,
-      tenantId,
-      now,
-      now,
-    ]
-  );
+  // Pilot Gate offline (achado real): products = mestre do tenant, store_products =
+  // disponibilidade NESTA Store. Criar as duas linhas atomicamente — se
+  // store_products falhar, a criação do produto falha também — para o produto
+  // nascer já vendável nesta Store sem depender de nenhum ciclo de sync (que
+  // pode nunca correr offline). Nao usa cloud_id/cloud_synced_at como sinal:
+  // o cloud_id continua a significar so "id estavel para quando sincronizar".
+  await runDb('BEGIN IMMEDIATE');
+  let result;
+  try {
+    result = await runDb(
+      `INSERT INTO products
+        (cloud_id, code, name, category_id, barcode, cost, price, tax_rate_id, tax, final_price, active, unit, description, age_restriction, is_service, product_kind, default_quantity, track_lot, stock_quantity, min_stock, color, image, deleted, tenant_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        cloudId,
+        payload.code ?? null,
+        payload.name,
+        categoryId,
+        payload.barcode ?? null,
+        Number(payload.cost ?? 0),
+        price,
+        Number(taxRate.id),
+        taxAmount,
+        finalPrice,
+        payload.active === false ? 0 : 1,
+        payload.unit ?? 'un',
+        payload.description ?? null,
+        payload.age_restriction ? Number(payload.age_restriction) : null,
+        isService,
+        productKind,
+        payload.default_quantity === false ? 0 : 1,
+        trackLot,
+        Number(payload.stock_quantity ?? 0),
+        Number(payload.min_stock ?? 0),
+        inheritedColor,
+        payload.image ?? null,
+        0,
+        tenantId,
+        now,
+        now,
+      ]
+    );
+
+    await runDb(
+      `INSERT INTO store_products (tenant_id, product_cloud_id, status, updated_at)
+       VALUES (?, ?, 'active', ?)
+       ON CONFLICT (tenant_id, product_cloud_id) DO NOTHING`,
+      [tenantId, cloudId, now]
+    );
+
+    await runDb('COMMIT');
+  } catch (err) {
+    try {
+      await runDb('ROLLBACK');
+    } catch {
+      // ignore — a transacção pode já não estar activa
+    }
+    throw err;
+  }
 
   const insertedId = result.lastID;
   if (!isService && productKind !== 'composed') {
