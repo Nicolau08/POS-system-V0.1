@@ -15,15 +15,15 @@ test.describe('Smoke: consola /license-admin', () => {
     });
   });
 
-  test('GET /api/license-issuer/store exige Bearer', async ({ request }) => {
-    const res = await request.get('/api/license-issuer/store');
+  test('GET /api/license-issuer/tenants exige Bearer', async ({ request }) => {
+    const res = await request.get('/api/license-issuer/tenants');
     expect([401, 503]).toContain(res.status());
     const body = await res.json();
     expect(body).toHaveProperty('error');
   });
 
-  test('GET /api/license-issuer/store com Bearer inválido → 401', async ({ request }) => {
-    const res = await request.get('/api/license-issuer/store', {
+  test('GET /api/license-issuer/tenants com Bearer inválido → 401', async ({ request }) => {
+    const res = await request.get('/api/license-issuer/tenants', {
       headers: { Authorization: 'Bearer mock-invalid-token' },
     });
     if (res.status() === 503) {
@@ -34,12 +34,12 @@ test.describe('Smoke: consola /license-admin', () => {
     expect(body.error).toMatch(/inválido|ausente/i);
   });
 
-  test('GET /api/license-issuer/store com token de teste', async ({ request }) => {
+  test('GET /api/license-issuer/tenants com token de teste', async ({ request }) => {
     const token = String(process.env.LICENSE_ISSUER_ADMIN_TOKEN || '').trim();
     if (!token) {
       test.skip(true, 'Defina LICENSE_ISSUER_ADMIN_TOKEN para validar Bearer');
     }
-    const res = await request.get('/api/license-issuer/store', {
+    const res = await request.get('/api/license-issuer/tenants', {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status() === 503 && !hasSupabaseEnv()) {
